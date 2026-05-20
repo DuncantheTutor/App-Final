@@ -1,0 +1,12 @@
+---
+description: App Final V3 is the only implementation workspace; Planning is docs-only
+alwaysApply: true
+---
+
+# Canonical workspace
+
+- **All application code, Firebase config, NFC, E2EE, and APK builds** belong in this repository root (**App Final V3**). Do not implement features under `Cursor Projects\App V2`, `App v4`, `App/mobile`, the legacy `App Final` folder on OneDrive, or other duplicate trees unless the user explicitly asks for a one-way migration or comparison.
+- **`Planning/`** holds Markdown specs, checklists, and chat exports. Treat it as **documentation only** (no runtime app code there).
+- When suggesting commands, assume the working directory is **`C:\Users\dunca\OneDrive\Desktop\App FInal V3`** unless the user specifies otherwise.
+- **Git remote (when initialized):** [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final)
+- Prefer updating **`Planning/PLANNING.md`** and related checklists when product decisions or verification steps change.

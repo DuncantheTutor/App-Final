@@ -1,0 +1,11 @@
+---
+description: Always document project changes
+alwaysApply: true
+---
+
+# Documentation Required
+
+- Any product, UX, behavior, test-data, or implementation change in this project must also update the relevant project documentation.
+- Planning specs, exports, and parity notes live under **`Planning/`** at the repo root; keep them aligned when product or verification behavior changes.
+- At minimum, review and update the applicable planning docs and test-scenario docs (including root-level `FEATURE_TEST_SCENARIOS.md`, `PRODUCTION_READINESS_CHECKLIST.md`, and `RUN_MVP_LOCALLY_AND_ON_PHONE.md` when relevant).
+- If a new feature or rule is added, document it in the same task by default unless the user explicitly says not to.

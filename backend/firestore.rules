@@ -1,0 +1,154 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function friendshipDocId(a, b) {
+      return a < b ? a + "_" + b : b + "_" + a;
+    }
+
+    function isFriend(otherUid) {
+      return isSignedIn()
+        && exists(
+          /databases/$(database)/documents/friendships/$(friendshipDocId(request.auth.uid, otherUid))
+        )
+        && get(
+          /databases/$(database)/documents/friendships/$(friendshipDocId(request.auth.uid, otherUid))
+        ).data.status == "accepted";
+    }
+
+    // Sensitive user document is never directly readable except by owner.
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create, update: if isSelf(uid);
+      allow delete: if false;
+    }
+
+    // Fully encrypted profile data. Clients subscribe via the
+    // `recipientAuthUids` mirror (Firebase Auth UID array of the owner +
+    // every friend the owner sent an envelope for) so the snapshot
+    // listener delivers profile updates without a callable round-trip.
+    // The legacy `isSelf/isFriend` rule is kept as a fallback for the
+    // `getEncryptedProfile` callable read path (server runs as admin and
+    // bypasses rules anyway, but this preserves manual emulator scripts).
+    match /encryptedProfiles/{uid} {
+      allow read: if isSignedIn()
+        && resource.data.recipientAuthUids is list
+        && request.auth.uid in resource.data.recipientAuthUids;
+      allow write: if false; // Cloud Functions only
+    }
+
+    // Friendship edge is write-only via Cloud Functions; read allowed for
+    // participants. Reads gate on the Firebase Auth UID mirror
+    // (`participantAuthUids`) populated by every edge-write callable, so that
+    // a signed-in client can run a direct
+    // `onSnapshot(where("participantAuthUids", "array-contains", auth.uid))`
+    // listener and receive friend adds/removes pushed in real time without
+    // the 60 s `listMyFriends` callable poll. The legacy `participants`
+    // (app-uid) array stays on the doc for the backwards-compatible callable
+    // path and for the server-side `isFriend()` helper used by other rules.
+    match /friendships/{edgeId} {
+      allow read: if isSignedIn()
+        && resource.data.participantAuthUids is list
+        && request.auth.uid in resource.data.participantAuthUids;
+      allow write: if false;
+    }
+
+    // Handshakes are backend-managed only.
+    match /handshakes/{code} {
+      allow read, write: if false;
+    }
+
+    // Session/nonce handshake protocol is backend-managed only.
+    match /handshakeSessions/{sessionId} {
+      allow read, write: if false;
+    }
+
+    // OTP entries are backend-managed only.
+    match /emailOtps/{otpId} {
+      allow read, write: if false;
+    }
+
+    // Client telemetry is backend-ingested only.
+    match /clientTelemetry/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /telemetryIpThrottle/{bucketId} {
+      allow read, write: if false;
+    }
+
+    // Encrypted posts: clients subscribe via `recipientAuthUids` (Firebase
+    // Auth UID mirror), populated by `createEncryptedPost` and backfilled on
+    // each `listEncryptedPosts` read. The legacy `recipientUids` (app-uid)
+    // array stays on the doc for the callable path.
+    match /encryptedPosts/{postId} {
+      allow read: if isSignedIn()
+        && resource.data.recipientAuthUids is list
+        && request.auth.uid in resource.data.recipientAuthUids;
+      allow create, update, delete: if false; // Cloud Functions only
+    }
+
+    match /encryptedPostReactions/{postId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /presence/{uid} {
+      allow read: if isSignedIn()
+        && resource.data.viewerAuthUids is list
+        && request.auth.uid in resource.data.viewerAuthUids;
+      allow write: if false;
+    }
+
+    match /conversations/{conversationId} {
+      // Direct client reads use the Firebase Auth UID mirror; the legacy
+      // `participantUids` array stays in the doc for backwards-compatible
+      // Cloud Function pulls but is not the source of truth for client rules.
+      allow read: if isSignedIn()
+        && resource.data.participantAuthUids is list
+        && request.auth.uid in resource.data.participantAuthUids;
+      allow create, update, delete: if false; // Cloud Functions only
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn()
+          && resource.data.participantAuthUids is list
+          && request.auth.uid in resource.data.participantAuthUids;
+        allow create, update, delete: if false; // Cloud Functions only
+      }
+    }
+
+    // App uid -> Firebase Auth UID mirror, written by `registerFirebaseAuthUid`
+    // and consumed server-side by `sendEncryptedMessage` / `upsertConversation`.
+    // Clients never read or write this directly. The path segment `{uid}` is
+    // the app uid (`u_…`), not the Firebase Auth UID.
+    match /userFirebaseAuthMap/{uid} {
+      allow read, write: if false;
+    }
+
+    // Private post comment threads between post owner and one friend.
+    // Reads gate on `participantAuthUids` (Firebase Auth UID mirror) on each
+    // doc — both the thread doc and its message subcollection — so signed-in
+    // clients can subscribe to a thread's messages via `onSnapshot` without
+    // a callable round-trip. The legacy `participants` (app-uid) array
+    // remains for the `listPrivatePostThreadMessages` callable fallback.
+    match /privatePostThreads/{threadId} {
+      allow read: if isSignedIn()
+        && resource.data.participantAuthUids is list
+        && request.auth.uid in resource.data.participantAuthUids;
+      allow create, update, delete: if false;
+      match /messages/{messageId} {
+        allow read: if isSignedIn()
+          && resource.data.participantAuthUids is list
+          && request.auth.uid in resource.data.participantAuthUids;
+        allow create, update, delete: if false;
+      }
+    }
+  }
+}

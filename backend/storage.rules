@@ -1,0 +1,15 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Media uploads use Firebase Auth UID in the path so Storage rules match `request.auth.uid`.
+    match /encrypted-media/{uid}/{allPaths=**} {
+      // Owner uploads; recipients open Firebase download URLs embedded in E2EE payloads (token grants access).
+      allow write: if isSignedIn() && request.auth.uid == uid;
+      allow read: if isSignedIn();
+    }
+  }
+}

@@ -1,0 +1,34 @@
+Next recommended steps (frontend parity vs approved baseline)
+
+CANONICAL CODE: C:\Users\dunca\OneDrive\Desktop\App FInal V3 only. Git: https://github.com/DuncantheTutor/App-Final. Planning docs: this Planning\ folder. Export Cursor chats periodically; reread before long work (see Planning\PLANNING.md section 0).
+
+1) Run structured parity checks against approved v54 frontend
+   - Use: Planning\FRONTEND_REGRESSION_CHECKLIST.md
+   - Test order:
+     a) Auth (login/signup/OTP)
+     b) Connect flow
+     c) Feed + New post
+     d) Messages
+     e) Profile
+
+2) Capture only mismatch deltas
+   For each issue, log:
+   - screen
+   - action taken
+   - expected behavior (from approved v54)
+   - actual behavior (current App Final V3)
+
+3) Patch in small batches
+   - Batch A: Auth parity
+   - Batch B: Connect + Feed parity
+   - Batch C: Messages + Profile parity
+
+4) Rebuild APK after each batch
+   - From repo root:
+     cd "C:\Users\dunca\OneDrive\Desktop\App FInal V3"
+     npm run apk:release
+   - (Debug alternative: npm run apk:debug)
+
+5) Keep parity guardrails updated
+   - Planning\FRONTEND_PARITY_BASELINE.md
+   - Planning\FRONTEND_REGRESSION_CHECKLIST.md

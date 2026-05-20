@@ -1,0 +1,86 @@
+{
+  "expo": {
+    "name": "app-v2-build2",
+    "slug": "app-v2-build2",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.NFC",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_ADVERTISE",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.duncanharper42.appv2build2"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "mockSessionRtdbUrl": "",
+      "useFirebaseEmulators": false,
+      "firebaseAuthEmulatorUrl": "http://127.0.0.1:9099",
+      "firebase": {
+        "apiKey": "AIzaSyClcD5yBFIm0ee5k_7EbjqIOrlUteyaiIc",
+        "authDomain": "nfc-app-7095e.firebaseapp.com",
+        "projectId": "nfc-app-7095e",
+        "storageBucket": "nfc-app-7095e.firebasestorage.app",
+        "messagingSenderId": "127071681912",
+        "appId": "1:127071681912:web:8f54fb23c26731decc5c8d",
+        "measurementId": "G-X8YLR73GMJ"
+      }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to set your profile picture.",
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use your camera for profile pictures."
+        }
+      ],
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "Add Friend reads an NFC handshake from another phone or tag."
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": false,
+          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to use Bluetooth for in-person Add Friend pairing."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#ffffff"
+        }
+      ]
+    ]
+  }
+}
