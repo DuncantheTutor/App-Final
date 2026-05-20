@@ -1,4 +1,5 @@
 import { backendUidForFriendId, callEmulatorFunction } from "../../backendBridge";
+import { friendDisplayNameFromProfile } from "../lib/friendDisplayName";
 import { dedupeFriendsByBackendUid } from "../lib/mergeFriendsCatalog";
 import { normalizeHttpsProfilePictureUrl } from "../lib/profilePictureUrl";
 import type { Friend } from "../domain/types";
@@ -27,11 +28,10 @@ export async function fetchFriendsOnBoot(session: BackendSession): Promise<Frien
   return dedupeFriendsByBackendUid(
     friendUids.map((uid) => {
       const profile = profiles[uid] ?? {};
-      const rawName = (profile?.username ?? "").trim();
       return {
         id: backendUidForFriendId(uid),
         backendUid: uid,
-        displayName: rawName || `User ${uid.slice(0, 6)}`,
+        displayName: friendDisplayNameFromProfile(profile?.username, uid),
         online: false,
         profilePictureUrl: normalizeHttpsProfilePictureUrl(profile?.profilePictureUrl),
         bio: profile?.bio || "",

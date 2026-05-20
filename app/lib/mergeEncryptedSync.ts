@@ -1,6 +1,19 @@
 import type { Message, Post } from "../domain/types";
 import { mergeMessageReactions } from "../messaging/messageMetadata";
+import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt";
 import { CURRENT_USER_ID } from "../theme/preludeConstants";
+
+function isOwnOutgoingMessage(message: Message): boolean {
+  return message.senderId === CURRENT_USER_ID || message.senderId === CURRENT_USER_LOCAL_ID;
+}
+
+/** Server echo confirms delivery — clear stuck `sending` on optimistic rows. */
+function resolveDeliveryStatusAfterSync(existing: Message, incoming: Message): Message["deliveryStatus"] {
+  if (existing.deliveryStatus === "sending" && isOwnOutgoingMessage(incoming)) {
+    return "sent";
+  }
+  return existing.deliveryStatus ?? incoming.deliveryStatus;
+}
 
 export function mergeSyncedMessages(
   current: Message[],
@@ -19,7 +32,7 @@ export function mergeSyncedMessages(
             reactions: mergeMessageReactions(existing.reactions, message.reactions),
             editedAt: message.editedAt ?? existing.editedAt,
             unsentAt: message.unsentAt ?? existing.unsentAt,
-            deliveryStatus: existing.deliveryStatus ?? message.deliveryStatus,
+            deliveryStatus: resolveDeliveryStatusAfterSync(existing, message),
           }
         : message;
     }
@@ -42,7 +55,7 @@ export function mergeSyncedMessages(
           reactions: mergeMessageReactions(existing.reactions, message.reactions),
           editedAt: message.editedAt ?? existing.editedAt,
           unsentAt: message.unsentAt ?? existing.unsentAt,
-          deliveryStatus: existing.deliveryStatus ?? message.deliveryStatus,
+          deliveryStatus: resolveDeliveryStatusAfterSync(existing, message),
         }
       : message;
   }

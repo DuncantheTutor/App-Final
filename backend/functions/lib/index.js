@@ -33,8 +33,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createPrivatePostThreadMessage = exports.getUserProfiles = exports.getFriendPresence = exports.setMyPresence = exports.removeFriendship = exports.listMyFriends = exports.listEncryptedMessages = exports.getHiddenConversationIds = exports.hideConversationForUser = exports.listEncryptedPosts = exports.getEncryptedProfile = exports.getFriendKeyBundles = exports.sendEncryptedMessage = exports.deleteEncryptedPost = exports.createEncryptedPost = exports.putEncryptedProfile = exports.getUserSocialSnapshot = exports.putUserSocialSnapshot = exports.getUserKeyBackup = exports.putUserKeyBackup = exports.publishUserKeyBundle = exports.upsertConversation = exports.seedDemoFriendships = exports.consumeHandshake = exports.finalizeNfcHandshakeSession = exports.getNfcHandshakeSessionStatus = exports.respondNfcHandshakeSession = exports.beginNfcHandshakeSession = exports.finalizeNfcPinPairOffer = exports.confirmNfcPinPairOffer = exports.previewNfcPinPairOffer = exports.getNfcPinPairOfferStatus = exports.cancelNfcPinPairOffer = exports.registerNfcPinPairOffer = exports.peekBleFriendSessionForJoin = exports.getBleFriendSessionStatus = exports.joinBleFriendSession = exports.createBleFriendSession = exports.getNfcFriendVoucherStatus = exports.redeemNfcFriendVoucher = exports.mintNfcFriendVoucher = exports.createHandshake = exports.verifyEmailOtp = exports.cleanupExpiredTransientDocs = exports.logClientTelemetry = exports.requestEmailOtp = exports.upsertUserProfile = exports.releaseDeviceSession = exports.claimDeviceSession = exports.registerFirebaseAuthUid = void 0;
-exports.updateEncryptedMessage = exports.updateMessageMetadata = exports.updateEncryptedPost = exports.setEncryptedPostReaction = exports.manageConversationMembership = exports.setConversationNotificationMute = exports.updateConversationReadPosition = exports.listConversationMessages = exports.registerPushToken = exports.listPrivatePostThreadMessages = exports.togglePrivatePostThreadMessageReaction = void 0;
+exports.getUserProfiles = exports.getFriendPresence = exports.setMyPresence = exports.removeFriendship = exports.listMyFriends = exports.listEncryptedMessages = exports.getHiddenConversationIds = exports.unhideConversationForUser = exports.hideConversationForUser = exports.listEncryptedPosts = exports.getEncryptedProfile = exports.getFriendKeyBundles = exports.sendEncryptedMessage = exports.deleteEncryptedPost = exports.createEncryptedPost = exports.putEncryptedProfile = exports.getUserSocialSnapshot = exports.putUserSocialSnapshot = exports.getUserKeyBackup = exports.putUserKeyBackup = exports.publishUserKeyBundle = exports.upsertConversation = exports.seedDemoFriendships = exports.consumeHandshake = exports.finalizeNfcHandshakeSession = exports.getNfcHandshakeSessionStatus = exports.respondNfcHandshakeSession = exports.beginNfcHandshakeSession = exports.finalizeNfcPinPairOffer = exports.confirmNfcPinPairOffer = exports.previewNfcPinPairOffer = exports.getNfcPinPairOfferStatus = exports.cancelNfcPinPairOffer = exports.registerNfcPinPairOffer = exports.peekBleFriendSessionForJoin = exports.getBleFriendSessionStatus = exports.joinBleFriendSession = exports.createBleFriendSession = exports.getNfcFriendVoucherStatus = exports.redeemNfcFriendVoucher = exports.mintNfcFriendVoucher = exports.createHandshake = exports.verifyEmailOtp = exports.cleanupExpiredTransientDocs = exports.logClientTelemetry = exports.requestEmailOtp = exports.upsertUserProfile = exports.releaseDeviceSession = exports.claimDeviceSession = exports.registerFirebaseAuthUid = void 0;
+exports.updateEncryptedMessage = exports.updateMessageMetadata = exports.updateEncryptedPost = exports.setEncryptedPostReaction = exports.manageConversationMembership = exports.setConversationNotificationMute = exports.updateConversationReadPosition = exports.listConversationMessages = exports.registerPushToken = exports.listPrivatePostThreadMessages = exports.togglePrivatePostThreadMessageReaction = exports.createPrivatePostThreadMessage = void 0;
 require("./firebaseAdmin");
 const admin = __importStar(require("firebase-admin"));
 const https_1 = require("firebase-functions/v2/https");
@@ -328,6 +328,12 @@ exports.registerFirebaseAuthUid = (0, https_1.onCall)(async (req) => {
         firebaseAuthUid: claimedAuthUid,
         updatedAt,
     }, { merge: true });
+    await (0, socialExtensions_1.propagateFirebaseAuthUidToFriendsPresenceViewers)(uid);
+    await (0, socialExtensions_1.mergeFriendAuthOntoRegistrantPresence)(uid);
+    // Heartbeat + full viewer list — `refreshPresenceViewerAuthUids` alone left docs without
+    // a fresh `heartbeatAtMs`, so friends always saw offline in `getFriendPresence`.
+    await (0, socialExtensions_1.writePresenceWithViewers)(uid, deviceId, "active");
+    void (0, socialExtensions_1.backfillMessageParticipantAuthUid)(uid, claimedAuthUid).catch(() => undefined);
     return { ok: true };
 });
 /** Optional PIN for pairing-only profile reads (does not throw if missing or malformed). */
@@ -477,14 +483,19 @@ exports.upsertUserProfile = (0, https_1.onCall)(async (req) => {
     const bio = String(req.data?.bio ?? "").trim();
     const profilePictureUrl = String(req.data?.profilePictureUrl ?? "").trim();
     const phoneNumber = String(req.data?.phoneNumber ?? "").trim();
-    await db.collection("users").doc(uid).set({
+    const patch = {
         uid,
-        username: username || null,
         bio: bio || null,
         profilePictureUrl: profilePictureUrl || null,
         phoneNumber: phoneNumber || null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    };
+    // Only touch `username` when the client sends a non-empty value — never write null on
+    // boot upserts that omit the field (that was wiping Console edits and prior signups).
+    if (username) {
+        patch.username = username;
+    }
+    await db.collection("users").doc(uid).set(patch, { merge: true });
     return { ok: true };
 });
 /**
@@ -1199,6 +1210,7 @@ exports.finalizeNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
         }, { merge: true });
         return redeemer;
     });
+    void (0, socialExtensions_1.refreshPresenceAfterFriendshipPair)(uid, redeemerUid).catch(() => undefined);
     return { ok: true, accepted: true, friendUid: redeemerUid, pin };
 });
 // -----------------------------------------------------------------------------
@@ -1757,6 +1769,11 @@ exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
         envelopes,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    const authUidsAfterWrite = await resolveParticipantAuthUids(participants);
+    if (authUidsAfterWrite.length > 0) {
+        await msgRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
+        await convRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
+    }
     void (0, socialExtensions_1.notifyConversationParticipantsPush)({
         senderUid: uid,
         conversationId,
@@ -1935,6 +1952,28 @@ exports.hideConversationForUser = (0, https_1.onCall)(async (req) => {
     return { ok: true };
 });
 /**
+ * Removes conversation tombstones so sync and the chat list work again after
+ * the user re-opens or continues a 1:1 thread with the same friend.
+ */
+exports.unhideConversationForUser = (0, https_1.onCall)(async (req) => {
+    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const deviceId = String(req.data?.deviceId ?? "").trim();
+    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
+    const single = String(req.data?.conversationId ?? "").trim();
+    const fromArray = Array.isArray(req.data?.conversationIds)
+        ? req.data.conversationIds.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+    const unique = [...new Set([...(single ? [single] : []), ...fromArray])].slice(0, 50);
+    if (unique.length === 0) {
+        throw new https_1.HttpsError("invalid-argument", "conversationId or conversationIds is required.");
+    }
+    await db.collection("users").doc(uid).set({
+        hiddenConversationIds: admin.firestore.FieldValue.arrayRemove(...unique),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { ok: true, conversationIds: unique };
+});
+/**
  * Returns conversation ids the caller has tombstoned (server-side hide list).
  */
 exports.getHiddenConversationIds = (0, https_1.onCall)(async (req) => {
@@ -1953,21 +1992,9 @@ exports.listEncryptedMessages = (0, https_1.onCall)(async (req) => {
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const limit = Math.max(1, Math.min(1000, Number(req.data?.limit ?? 400)));
     const sinceMs = parseSinceMs(req.data?.sinceMs);
-    let query = db
-        .collectionGroup("messages")
-        .where("participantUids", "array-contains", uid);
-    if (sinceMs != null) {
-        query = query
-            .where("createdAt", ">", admin.firestore.Timestamp.fromMillis(sinceMs))
-            .orderBy("createdAt", "asc");
-    }
-    else {
-        query = query.orderBy("createdAt", "desc");
-    }
-    const snap = await query.limit(limit).get();
     const hiddenConversations = await hiddenConversationIdsForUser(uid);
     const convCutoffs = new Map();
-    const items = (await Promise.all(snap.docs.map(async (doc) => {
+    const mapMessageDoc = async (doc) => {
         const data = doc.data();
         const envelope = data.envelopes?.[uid];
         if (!envelope)
@@ -1991,9 +2018,6 @@ exports.listEncryptedMessages = (0, https_1.onCall)(async (req) => {
             convCutoffs.set(conversationId, cutoff);
         }
         const createdAtMs = timestampToMs(data.createdAt);
-        // Join cutoff applies only to the viewer's own pre-rejoin history. Inbound
-        // messages must not be dropped because another participant's send updated
-        // `memberJoinedAt` for everyone (legacy upsert behaviour).
         if (createdAtMs < cutoff && data.senderUid === uid)
             return null;
         return {
@@ -2008,7 +2032,43 @@ exports.listEncryptedMessages = (0, https_1.onCall)(async (req) => {
             editedAt: data.editedAt ?? null,
             unsentAt: data.unsentAt ?? null,
         };
-    }))).filter((x) => !!x);
+    };
+    let docs = [];
+    if (sinceMs != null) {
+        const sinceTs = admin.firestore.Timestamp.fromMillis(sinceMs);
+        const [createdSnap, editedSnap] = await Promise.all([
+            db
+                .collectionGroup("messages")
+                .where("participantUids", "array-contains", uid)
+                .where("createdAt", ">", sinceTs)
+                .orderBy("createdAt", "asc")
+                .limit(limit)
+                .get(),
+            db
+                .collectionGroup("messages")
+                .where("participantUids", "array-contains", uid)
+                .where("editedAt", ">", sinceMs)
+                .orderBy("editedAt", "asc")
+                .limit(limit)
+                .get()
+                .catch(() => ({ docs: [] })),
+        ]);
+        const byId = new Map();
+        for (const doc of [...createdSnap.docs, ...editedSnap.docs]) {
+            byId.set(doc.id, doc);
+        }
+        docs = [...byId.values()];
+    }
+    else {
+        const snap = await db
+            .collectionGroup("messages")
+            .where("participantUids", "array-contains", uid)
+            .orderBy("createdAt", "desc")
+            .limit(limit)
+            .get();
+        docs = snap.docs;
+    }
+    const items = (await Promise.all(docs.map((doc) => mapMessageDoc(doc)))).filter((x) => !!x);
     return { items, incremental: sinceMs != null };
 });
 /**
@@ -2115,7 +2175,8 @@ exports.setMyPresence = (0, https_1.onCall)(async (req) => {
         throw new https_1.HttpsError("invalid-argument", "Presence state must be active or background.");
     }
     const normalized = state === "active" ? "active" : "background";
-    await (0, socialExtensions_1.writePresenceWithViewers)(uid, deviceId, normalized);
+    const heartbeatAtMs = Number(req.data?.heartbeatAtMs ?? 0);
+    await (0, socialExtensions_1.writePresenceWithViewers)(uid, deviceId, normalized, Number.isFinite(heartbeatAtMs) && heartbeatAtMs > 0 ? heartbeatAtMs : undefined);
     return { ok: true };
 });
 /**
@@ -2134,16 +2195,24 @@ exports.getFriendPresence = (0, https_1.onCall)(async (req) => {
             await assertAcceptedFriendship(uid, friendUid);
             const snap = await db.collection("presence").doc(friendUid).get();
             if (!snap.exists)
-                return [friendUid, { state: "offline", heartbeatAtMs: 0 }];
+                return [friendUid, { state: "offline", heartbeatAtMs: 0, online: false }];
             const data = snap.data();
             const state = data?.state === "active" ? "active" : "background";
-            const heartbeatAtMs = Number(data?.heartbeatAtMs ?? 0);
+            const heartbeatAtMs = (0, socialExtensions_1.normalizePresenceHeartbeatMs)(data?.heartbeatAtMs);
             const fresh = (0, socialExtensions_1.isPresenceFresh)(heartbeatAtMs);
+            const online = (0, socialExtensions_1.presenceDocOnlineFromData)({
+                state: data?.state,
+                heartbeatAtMs: data?.heartbeatAtMs,
+                online: data?.online,
+            });
             const effectiveState = fresh ? state : "offline";
-            const online = fresh && effectiveState === "active";
             return [
                 friendUid,
-                { state: effectiveState, heartbeatAtMs: fresh ? heartbeatAtMs : 0, online },
+                {
+                    state: effectiveState,
+                    heartbeatAtMs: fresh ? heartbeatAtMs : 0,
+                    online,
+                },
             ];
         }
         catch {
@@ -2178,11 +2247,12 @@ exports.getUserProfiles = (0, https_1.onCall)(async (req) => {
                 return [targetUid, null];
             const data = snap.data();
             const pairingPreviewOnly = pairingPin && targetUid !== uid;
+            const storedUsername = String(data.username ?? "").trim();
             return [
                 targetUid,
                 {
                     uid: targetUid,
-                    username: data.username ?? "Friend",
+                    username: storedUsername || `User ${targetUid.slice(0, 6)}`,
                     bio: pairingPreviewOnly ? "" : data.bio ?? "",
                     profilePictureUrl: data.profilePictureUrl ?? null,
                 },

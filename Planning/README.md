@@ -11,6 +11,7 @@ Product specs, MVP plans, parity checklists, chat exports, and execution notes f
 ## Entry points
 
 - `MASTER_PRODUCT_PLAN.md` — single planning entry point (scope + tombstone tickets)
+- `BUG_AUDIT_MAY2026_V4.md` — latest static bug audit (messaging, reactions, presence)
 - `CHAT_FEED_IMPLEMENTATION_ROADMAP.md` — **May 2026** chat/feed IMPLEMENT vs TODO
 - `NFC_QR_UNIFIED_PAIRING_PLAN.md` — NFC mirrors QR (button-only Send/Receive, opaque token, no hold-to-pair)
 - `PLANNING.md` — requirements, architecture, phases

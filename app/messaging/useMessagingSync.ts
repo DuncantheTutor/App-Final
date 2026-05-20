@@ -8,7 +8,11 @@ import {
   rememberHiddenConversationIds as rememberHiddenIds,
 } from "./hiddenSync";
 import { resolveRecipientEncryptionKeys } from "./recipientKeys";
-import { attachEncryptedMessageListener, pullEncryptedMessagesIncremental as pullMessages } from "./sync";
+import {
+  attachEncryptedMessageListener,
+  pullEncryptedMessagesForConversation as pullConversationMessages,
+  pullEncryptedMessagesIncremental as pullMessages,
+} from "./sync";
 import type { Dispatch, SetStateAction } from "react";
 import type { Chat, Friend, Message } from "../domain/types";
 import type { BackendSession, EncryptedSyncStateBundle, MessagingSyncRefs } from "./types";
@@ -20,6 +24,8 @@ export type UseMessagingSyncOptions = {
   appLifecycleState: string;
   initialServerSyncDone: boolean;
   viewScreen: string;
+  /** Local chat id while the chat screen is open — triggers a per-thread pull. */
+  activeChatLocalId?: string | null;
   getBackendSession: () => BackendSession | null;
   backendSessionReady: boolean;
   allFriends: Friend[];
@@ -45,6 +51,7 @@ export function useMessagingSync(options: UseMessagingSyncOptions) {
     appLifecycleState,
     initialServerSyncDone,
     viewScreen,
+    activeChatLocalId,
     getBackendSession,
     allFriends,
     backendUidToFriendId,
@@ -164,18 +171,40 @@ export function useMessagingSync(options: UseMessagingSyncOptions) {
     [demoOfflineMode, getBackendSession, refs, persistWatermarksNow, setChats, setMessages]
   );
 
+  const pullEncryptedMessagesForConversation = useCallback(
+    async (conversationId: string) => {
+      if (demoOfflineMode) return;
+      const session = getBackendSession();
+      if (!session) return;
+      await pullConversationMessages({
+        session,
+        conversationId,
+        refs,
+        persistWatermarksNow,
+        setChats,
+        setMessages,
+      });
+    },
+    [demoOfflineMode, getBackendSession, refs, persistWatermarksNow, setChats, setMessages]
+  );
+
   useEffect(() => {
     if (!signedIn || demoOfflineMode || appLifecycleState !== "active" || !initialServerSyncDone) {
       return;
     }
     const session = getBackendSession();
     if (!session) return;
-    const timer = setTimeout(() => {
+    const runPull = () => {
       void pullEncryptedMessagesIncremental().catch((err) => {
         logAppError("messages.foreground_pull", err, {});
       });
-    }, 900);
-    return () => clearTimeout(timer);
+    };
+    const timer = setTimeout(runPull, 900);
+    const interval = setInterval(runPull, 12_000);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, [
     signedIn,
     demoOfflineMode,
@@ -194,6 +223,12 @@ export function useMessagingSync(options: UseMessagingSyncOptions) {
     ) {
       return;
     }
+    if (activeChatLocalId) {
+      const conversationId = resolveConversationId(activeChatLocalId);
+      void pullEncryptedMessagesForConversation(conversationId).catch((err) => {
+        logAppError("messages.chat_thread_pull", err, { conversationId });
+      });
+    }
     void pullEncryptedMessagesIncremental().catch((err) => {
       logAppError("messages.chat_poll", err, {});
     });
@@ -209,6 +244,9 @@ export function useMessagingSync(options: UseMessagingSyncOptions) {
     demoOfflineMode,
     initialServerSyncDone,
     pullEncryptedMessagesIncremental,
+    activeChatLocalId,
+    resolveConversationId,
+    pullEncryptedMessagesForConversation,
   ]);
 
   useEffect(() => {
@@ -238,6 +276,7 @@ export function useMessagingSync(options: UseMessagingSyncOptions) {
 
   return {
     pullEncryptedMessagesIncremental,
+    pullEncryptedMessagesForConversation,
     resolveConversationId,
     resolveRecipientEncryptionKeys: resolveRecipientEncryptionKeysCb,
     refreshHiddenConversationIdsFromServer,

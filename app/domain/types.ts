@@ -73,7 +73,7 @@ export type Message = {
   /** Text layers drawn on outgoing video (normalized positions). */
   videoTextOverlays?: VideoTextOverlayData[];
   /** Outgoing encrypted pipe: set while callable runs; `sent` after server accepts (release builds). */
-  deliveryStatus?: "sending" | "sent";
+  deliveryStatus?: "sending" | "sent" | "failed";
 };
 
 export type Post = {

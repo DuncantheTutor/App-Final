@@ -1,4 +1,5 @@
 import { backendUidForFriendId } from "../../backendBridge";
+import { friendDisplayNameFromProfile, pickFriendDisplayName } from "./friendDisplayName";
 import { mergeProfilePictureUrl } from "./profilePictureUrl";
 import type { Friend } from "../domain/types";
 
@@ -28,7 +29,10 @@ export function dedupeFriendsByBackendUid(
             ...friend,
             id: canonicalId,
             backendUid,
-            displayName: friend.displayName?.trim() || existing.displayName,
+            displayName: pickFriendDisplayName(
+              [friend.displayName, existing.displayName],
+              backendUid
+            ),
             profilePictureUrl: mergeProfilePictureUrl(
               friend.profilePictureUrl,
               existing.profilePictureUrl
@@ -37,7 +41,12 @@ export function dedupeFriendsByBackendUid(
             online: friend.online ?? existing.online,
             messageCount: Math.max(existing.messageCount, friend.messageCount),
           }
-        : { ...friend, id: canonicalId, backendUid };
+        : {
+            ...friend,
+            id: canonicalId,
+            backendUid,
+            displayName: friendDisplayNameFromProfile(friend.displayName, backendUid),
+          };
       byBackendUid.set(backendUid, merged);
       continue;
     }
@@ -115,7 +124,12 @@ export function upsertRitualFriend(prev: Friend[], friend: Friend): Friend[] {
   const backendUid = friend.backendUid?.trim();
   let nextFriend = friend;
   if (backendUid && isAppBackendUid(backendUid)) {
-    nextFriend = { ...friend, id: backendUidForFriendId(backendUid), backendUid };
+    nextFriend = {
+      ...friend,
+      id: backendUidForFriendId(backendUid),
+      backendUid,
+      displayName: friendDisplayNameFromProfile(friend.displayName, backendUid),
+    };
   }
   if (backendUid) {
     const index = prev.findIndex((f) => f.backendUid?.trim() === backendUid);
@@ -126,6 +140,10 @@ export function upsertRitualFriend(prev: Friend[], friend: Friend): Friend[] {
         ...nextFriend,
         id: backendUidForFriendId(backendUid),
         backendUid,
+        displayName: pickFriendDisplayName(
+          [nextFriend.displayName, existing.displayName],
+          backendUid
+        ),
       };
       const unchanged =
         existing.displayName === merged.displayName &&
@@ -163,9 +181,12 @@ export function applyPresenceToFriends(
 ): Friend[] {
   return friends.map((friend) => {
     const bu =
-      friend.backendUid?.trim() || friendIdToBackendUid?.[friend.id]?.trim() || "";
-    if (!bu.startsWith("u_") || onlineByBackendUid[bu] === undefined) return friend;
+      friend.backendUid?.trim() ||
+      friendIdToBackendUid?.[friend.id]?.trim() ||
+      (friend.id.trim().startsWith("u_") ? friend.id.trim() : "");
+    if (!bu.startsWith("u_")) return friend;
     const online = onlineByBackendUid[bu];
+    if (online === undefined) return friend;
     return friend.online === online ? friend : { ...friend, online };
   });
 }

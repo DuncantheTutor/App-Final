@@ -9,6 +9,7 @@ import {
   CURRENT_USER_LOCAL_ID,
   resolveChatParticipantBackendUids,
 } from "../lib/resolveChatMemberBackendUid";
+import { CURRENT_USER_ID } from "../theme/preludeConstants";
 import {
   normalizeMemberJoinedAtForClient,
 } from "../lib/chatMemberJoinedAt";
@@ -18,6 +19,7 @@ import {
   resolveCanonicalDirectChatLocalId,
 } from "../lib/directChatId";
 import { isLegacyDraftChatId } from "./localChatId";
+import { publishActivePresence } from "../presence/heartbeat";
 import { resolveRecipientEncryptionKeys } from "./recipientKeys";
 import type { Chat, Friend, Message } from "../domain/types";
 import type { BackendSession } from "./types";
@@ -137,7 +139,7 @@ export async function deliverOutgoingMessages(
       upsertRes.memberJoinedAt,
       session.uid,
       chatForSend.memberIds,
-      friendIdToBackendUid
+      friendIdToBackendUidRef.current
     );
     if (normalizedJoinedAt) {
       const joinedAtForClient = { ...normalizedJoinedAt };
@@ -205,6 +207,17 @@ export async function deliverOutgoingMessages(
         ...encrypted,
       });
       deliveredIds.push(message.id);
+      const justDelivered = message.id;
+      setMessages((current) =>
+        current.map((row) =>
+          row.id === justDelivered &&
+          (row.senderId === CURRENT_USER_LOCAL_ID ||
+            row.senderId === CURRENT_USER_ID ||
+            row.senderId === "me")
+            ? { ...row, deliveryStatus: "sent" as const }
+            : row
+        )
+      );
     } catch (err) {
       logAppError("send.message", err, {
         chatId: chatForSend.id,
@@ -222,11 +235,14 @@ export async function deliverOutgoingMessages(
       messageCount: deliveredIds.length,
       failedCount: failedIds.length,
     });
+    void publishActivePresence(session, Date.now()).catch(() => undefined);
     const deliveredSet = new Set(deliveredIds);
     setMessages((current) =>
       current.map((message) =>
         deliveredSet.has(message.id) &&
-          (message.senderId === CURRENT_USER_LOCAL_ID || message.senderId === "me")
+          (message.senderId === CURRENT_USER_LOCAL_ID ||
+            message.senderId === CURRENT_USER_ID ||
+            message.senderId === "me")
           ? { ...message, deliveryStatus: "sent" as const }
           : message
       )

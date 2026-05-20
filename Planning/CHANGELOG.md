@@ -10,9 +10,101 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed (Feed list layout jump / “vibrating” posts, May 2026)
+- **Stable feed rows:** `FeedPostCard` moved to a memoized module component (was redefined inside `MainApp` every render, remounting all posts).
+- **Image height:** aspect ratio is preloaded and cached per URI; height no longer changes after `onLoad` once set.
+- **Reactions:** feed cards always reserve space for reaction pills so counts syncing in do not shift the card.
+
+### Fixed (App closing / crash on sign-in, May 2026)
+- **`presenceRosterKey` hook order:** `usePresenceHeartbeat` referenced `presenceRosterKey` before `useMemo` defined it (`ReferenceError` / hard crash on MainApp render after sign-in). Roster key memos now run before the presence hooks.
+- **Message listener:** Firestore snapshot handler wrapped in `try/catch` so merge/decode failures log as sync errors instead of an unhandled rejection.
+
+### Changed (Feed comments + delete chat title, May 2026)
+- **Feed:** removed home-feed comment row; tap post → fullscreen with thread list + **Add comment ...** input (friends); owners reply via **Reply** on a comment.
+- **Delete chat:** long-press actions sheet uses resolved friend display name instead of stale `chat.name` (`u_*`).
+
+### Changed (Reactions + feed media layout, May 2026)
+- **Reactions:** removed feed **+** react buttons; **press and hold** on posts, comments, and chat bubbles opens the emoji picker (chat picker still links to Reply / edit / unsend).
+- **Feed media:** post images and video render **full feed width** with height from aspect ratio (`cover`), not fixed-height letterboxed boxes.
+
+### Fixed (Friends not showing online — poll + UI mapping, May 2026)
+- **`getFriendPresence`:** honors `presence.online` and normalizes `heartbeatAtMs` (number or Timestamp) so Console “online” matches callable results.
+- **Client:** same heartbeat normalization for Firestore listener + poll fallback; friend roster `u_*` ids map into `applyPresenceToFriends` via `serverAcceptedFriendBackendUids`.
+
+### Fixed (Friends not showing online, May 2026)
+- **Presence poll:** uses server-accepted friend uids from boot + Firestore roster, not only hydrated local rows.
+- **Roster repair:** when friends load or change, re-runs `registerFirebaseAuthUid` + immediate `getFriendPresence` poll (fixes boot race where poll ran with zero friends).
+
+### Fixed (Delete chat hid all future DMs with that friend, May 2026)
+- **Delete tombstone:** hiding a `__live` thread no longer adds the canonical `enc_dm_*` server id (deleted canonical thread still stays hidden forever).
+- **New chat after delete:** opening a 1:1 with a friend whose canonical thread is server-hidden creates/uses a `dm_*__live` row and `enc_dm_*__live` sync path instead of reusing the hidden canonical conversation.
+- **Chat list:** last-message preview aggregates per thread so new live rows appear when messages exist; local hide on delete no longer blocks unrelated `__live` rows.
+- **Cold start after delete:** `openDirectChat` / `findActiveDirectChatForFriend` now honor **persisted** local hide (`hiddenChatIds`), not only the in-memory server tombstone set (which was empty until `getHiddenConversationIds` returned).
+- **Inbound sync:** encrypted pull + listener decode redirect messages on a hidden canonical `enc_dm_*` onto the active `dm_*__live` row (or allocate one) instead of dropping them; boot restore seeds canonical `enc_*` tombstones from persisted local hide ids.
+
+### Fixed (Username wiped to null on app reopen, May 2026)
+- **`upsertUserProfile`:** only updates `username` when the client sends a non-empty value — boot/profile sync no longer writes `null` over Console edits or saved names.
+- **Client:** `usernameForProfileUpsert` prefers persisted + server username; never persists placeholder `"User"` to AsyncStorage.
+
+### Fixed (Presence offline + messages show Sent but not received, May 2026)
+- **Presence:** `registerFirebaseAuthUid` now writes a fresh active heartbeat (`writePresenceWithViewers`), not only `viewerAuthUids`; also merges friend auth onto the registrant's presence doc so friends can see them online.
+- **Messages:** Firestore listener no longer applies the global pull watermark (was skipping new inbound DMs); boot pull runs when the listener attaches; background pull every 12s while the app is active; `participantAuthUids` backfill uses merge writes; send path re-resolves auth UIDs on each message doc.
+
+### Fixed (Friend shown as "Friend" instead of username, May 2026)
+- **`getUserProfiles`:** no longer defaults missing `users.username` to the literal string `"Friend"`; uses `User {uid-prefix}` like boot roster fetch.
+- **Client:** `friendDisplayNameFromProfile` strips the legacy placeholder everywhere friends and DM rows are built.
+
+### Fixed (Presence & chat delivery — root cause, May 2026)
+- **Message ingest:** existing DM threads are never dropped when the server friends set is stale or partial (`knownChatIds` checked first; local roster `backendUid` trusted as fallback).
+- **Presence listener:** `registerFirebaseAuthUid` adds the new Firebase Auth UID to each accepted friend’s `presence.viewerAuthUids` so the other phone’s `onSnapshot` can see online state without waiting for the next heartbeat.
+- **Message listener:** recent message docs get `participantAuthUids` backfilled on auth registration so Firestore rules allow real-time reads.
+- **Pairing:** friendship finalize refreshes presence viewer lists for both uids; issuer publishes active presence after PIN pair completes.
+- **Deploy required:** `firebase deploy --only functions,firestore:indexes` then `npm run apk:release` on **both** phones.
+
 ### Changed (Canonical workspace, May 2026)
 - **App Final V3** (`C:\Users\dunca\OneDrive\Desktop\App FInal V3`) is the sole implementation workspace; planning docs, Cursor rules, and README updated from legacy `App Final` path.
 - **Git remote:** [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final) — initialize and push from V3 when ready.
+
+### Fixed (Bug audit v4 — messaging sync & display, May 2026)
+- **Edits (C1/C2):** Firestore listener re-decrypts edited messages; incremental pull also queries `editedAt > sinceMs`.
+- **Chat open (H6):** `listConversationMessages` pull (limit 500) when a thread is opened.
+- **Reactions (H4):** Chat pills friend-filtered like comments.
+- **Send (H7/M2):** Per-chat outbound queue; failed delivery label after timeout.
+- **Presence (H8):** Auth UID registration refreshes `viewerAuthUids` without forcing online.
+- **Display (M5):** Empty server friend list shows **User** until roster is confirmed.
+- **Deploy:** `firebase deploy --only functions,firestore:indexes` + new APK on both phones.
+
+### Changed (Post reactions & owner comments, May 2026)
+- **Comment reactions:** press and hold on a comment (no + button); shared reaction picker.
+- **Post react control:** + FAB anchored bottom-right on post image, video, or caption-only text.
+- **Owner post viewer:** all comment threads expanded; each friend’s top comment is the root with replies indented below.
+
+### Fixed (Comments, crop, delivery, username, May 2026)
+- **Comment layout:** fullscreen threads show name, text, then timestamp (no duplicate author·time + body).
+- **Comment persistence:** optimistic comments survive `hydratePrivateThreadForPost` until the server echoes them; thread replies get optimistic rows too.
+- **Photo editor:** interactive crop rectangle (drag corners, pinch to resize, **OK** to apply); preview/footer labels **Back** / **Send** / **OK** replace arrow icons.
+- **Reaction pills:** sit slightly lower on bubble corners so they do not overlap message text; feed pills include your own reaction.
+- **Chat delivery:** inbound DMs are not dropped while the friends allow-list is still empty on cold start (`messageIngestPolicy`).
+- **Message edits:** Firestore `modified` docs with `editedAt` re-decrypt instead of metadata-only skip.
+- **Identity-locked DMs:** chat title stays **User** (no `friendMap` name leak).
+- **Username:** `claimDeviceSession` / `upsertUserProfile` prefer persisted signup name over email-local server defaults.
+- **Long-press chat:** opens Reply / React / Edit / Unsend sheet again (not reactions-only).
+
+### Fixed (Chat title, reactions UX, sending label, May 2026)
+- **Chat header "User":** trust local friend `displayName` when server allow-list is empty or still backfilling; new DM rows use friend catalog name from online strip.
+- **Reactions:** small **+** on feed posts and comments; **press and hold** opens picker; existing reactions render as a **small pill attached to the bottom** of chat bubbles, comments, and posts (not a separate wide row).
+- **Sending… stuck:** mark **Sent** per message as each `sendEncryptedMessage` succeeds; server echo in sync also clears `sending`; 90s timeout clears stale label.
+
+### Added (Bug audit v4, May 2026)
+- **`Planning/BUG_AUDIT_MAY2026_V4.md`** — static review: message edit sync (critical), message actions regression, identity-locked title leak, feed/chat reaction filtering, sync caps, send queue.
+
+### Fixed (Friend online / presence regression, May 2026)
+- **`registerFirebaseAuthUid`** now refreshes `presence` `viewerAuthUids` server-side so friends can see you in the Firestore listener as soon as auth maps land.
+- **Session init** awaits `publishActivePresence` after a successful auth registration (not only fire-and-forget).
+- **Presence listener** re-subscribes when Firebase Auth uid becomes available (`onAuthStateChanged`).
+- **Boot sync** triggers immediate publish + `getFriendPresence` poll when `initialServerSyncDone` (no 8s wait).
+- **Friendship listener** resolves legacy `participants` Firebase Auth ids to `u_*` for roster + presence friend keys.
+- **Deploy:** `firebase deploy --only functions` + `npm run apk:release` on both phones.
 
 ### Fixed (Messaging / sync audit, May 2026)
 - **Partial send:** per-message delivery tracking; only failed ids marked failed when some sends succeed.

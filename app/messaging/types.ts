@@ -13,6 +13,7 @@ export type MessagingSyncRefs = {
   backendUidToFriendIdRef: RefObject<Record<string, string>>;
   friendMapRef: RefObject<Record<string, Friend>>;
   friendIdToBackendUidRef: RefObject<Record<string, string>>;
+  identityLockedChatIdsRef: RefObject<string[]>;
   /** Accepted server friend `u_*` ids; empty set = ingest no new stranger threads. */
   acceptedFriendBackendUidsRef: RefObject<Set<string>>;
 };

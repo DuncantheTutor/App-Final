@@ -5,17 +5,12 @@ import { useEffect, useRef } from "react";
 import { logAppError } from "../../telemetry";
 
 import {
-
   collectFriendPresenceUids,
-
   PRESENCE_HEARTBEAT_MS,
-
   pollFriendPresence,
-
   publishActivePresence,
-
+  repairPresenceAuthAndHeartbeat,
   setBackgroundPresence,
-
 } from "./heartbeat";
 
 import type { Friend } from "../domain/types";
@@ -41,6 +36,11 @@ export function usePresenceHeartbeat(params: {
   allFriends: Friend[];
 
   friendIdToBackendUid: Record<string, string>;
+
+  /** Changes when boot roster or Firestore friendships listener updates. */
+  presenceRosterKey: string;
+
+  acceptedFriendBackendUidsRef: { current: Set<string> };
 
   setPresenceOnlineByBackendUid: (
 
@@ -68,11 +68,13 @@ export function usePresenceHeartbeat(params: {
 
     friendIdToBackendUid,
 
+    presenceRosterKey,
+
+    acceptedFriendBackendUidsRef,
+
     setPresenceOnlineByBackendUid,
 
   } = params;
-
-
 
   const allFriendsRef = useRef(allFriends);
 
@@ -81,6 +83,20 @@ export function usePresenceHeartbeat(params: {
   allFriendsRef.current = allFriends;
 
   friendIdToBackendUidRef.current = friendIdToBackendUid;
+
+  const mergePresencePoll = (friendUids: string[], nextOnline: Record<string, boolean>) => {
+    if (friendUids.length === 0) return;
+    setPresenceOnlineByBackendUid((current) => {
+      let changed = false;
+      const merged = { ...current };
+      for (const uid of friendUids) {
+        if (merged[uid] === nextOnline[uid]) continue;
+        merged[uid] = nextOnline[uid];
+        changed = true;
+      }
+      return changed ? merged : current;
+    });
+  };
 
 
 
@@ -103,13 +119,9 @@ export function usePresenceHeartbeat(params: {
       if (!session) return;
 
       try {
-
-        await publishActivePresence(session, Date.now());
-
+        await repairPresenceAuthAndHeartbeat(session);
       } catch (err) {
-
         logAppError("presence.publish", err, { uid: session.uid });
-
       }
 
     };
@@ -163,47 +175,20 @@ export function usePresenceHeartbeat(params: {
       const now = Date.now();
 
       const friendUids = collectFriendPresenceUids({
-
         allFriends: allFriendsRef.current,
-
         friendIdToBackendUid: friendIdToBackendUidRef.current,
-
         sessionUid: session.uid,
-
+        acceptedFriendBackendUids: acceptedFriendBackendUidsRef.current,
       });
 
       if (friendUids.length === 0) return;
 
       try {
-
         const nextOnline = await pollFriendPresence({ session, friendUids, now });
-
         if (cancelled) return;
-
-        setPresenceOnlineByBackendUid((current) => {
-
-          let changed = false;
-
-          const merged = { ...current };
-
-          for (const uid of friendUids) {
-
-            if (merged[uid] === nextOnline[uid]) continue;
-
-            merged[uid] = nextOnline[uid];
-
-            changed = true;
-
-          }
-
-          return changed ? merged : current;
-
-        });
-
+        mergePresencePoll(friendUids, nextOnline);
       } catch (err) {
-
         logAppError("presence.poll", err, { uid: session.uid, friendCount: friendUids.length });
-
       }
 
     };
@@ -240,7 +225,99 @@ export function usePresenceHeartbeat(params: {
 
   ]);
 
+  /** After boot friends load, publish + poll once immediately (don't wait 8s). */
+  useEffect(() => {
+    if (!signedIn || !backendSessionReady || !initialServerSyncDone || demoOfflineMode) return;
+    if (appLifecycleState !== "active") return;
 
+    let cancelled = false;
+    const run = async () => {
+      const session = getBackendSession();
+      if (!session || cancelled) return;
+      const now = Date.now();
+      try {
+        await publishActivePresence(session, now);
+      } catch (err) {
+        logAppError("presence.publish.boot", err, { uid: session.uid });
+      }
+      const friendUids = collectFriendPresenceUids({
+        allFriends: allFriendsRef.current,
+        friendIdToBackendUid: friendIdToBackendUidRef.current,
+        sessionUid: session.uid,
+        acceptedFriendBackendUids: acceptedFriendBackendUidsRef.current,
+      });
+      if (friendUids.length === 0 || cancelled) return;
+      try {
+        const nextOnline = await pollFriendPresence({ session, friendUids, now });
+        if (cancelled) return;
+        mergePresencePoll(friendUids, nextOnline);
+      } catch (err) {
+        logAppError("presence.poll.boot", err, { uid: session.uid });
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    signedIn,
+    backendSessionReady,
+    initialServerSyncDone,
+    demoOfflineMode,
+    getBackendSession,
+    appLifecycleState,
+    setPresenceOnlineByBackendUid,
+    presenceRosterKey,
+  ]);
+
+  /** Roster loaded/changed: repair viewer mirrors and poll (boot poll often ran with 0 friends). */
+  useEffect(() => {
+    if (!signedIn || !backendSessionReady || !initialServerSyncDone || demoOfflineMode) return;
+    if (appLifecycleState !== "active") return;
+    if (!presenceRosterKey.trim()) return;
+
+    let cancelled = false;
+    const run = async () => {
+      const session = getBackendSession();
+      if (!session || cancelled) return;
+      const now = Date.now();
+      try {
+        await repairPresenceAuthAndHeartbeat(session);
+      } catch (err) {
+        logAppError("presence.repair.roster", err, { uid: session.uid });
+      }
+      const friendUids = collectFriendPresenceUids({
+        allFriends: allFriendsRef.current,
+        friendIdToBackendUid: friendIdToBackendUidRef.current,
+        sessionUid: session.uid,
+        acceptedFriendBackendUids: acceptedFriendBackendUidsRef.current,
+      });
+      if (friendUids.length === 0 || cancelled) return;
+      try {
+        const nextOnline = await pollFriendPresence({ session, friendUids, now });
+        if (cancelled) return;
+        mergePresencePoll(friendUids, nextOnline);
+      } catch (err) {
+        logAppError("presence.poll.roster", err, {
+          uid: session.uid,
+          friendCount: friendUids.length,
+        });
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    signedIn,
+    backendSessionReady,
+    initialServerSyncDone,
+    demoOfflineMode,
+    getBackendSession,
+    appLifecycleState,
+    presenceRosterKey,
+    setPresenceOnlineByBackendUid,
+  ]);
 
   useEffect(() => {
 

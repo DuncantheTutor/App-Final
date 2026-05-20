@@ -985,7 +985,7 @@ export const PRESENCE_ONLINE_WINDOW_MS = 45_000;
  */
 export const INITIAL_SERVER_SYNC_TIMEOUT_MS = 20_000;
 export const ENCRYPTED_POSTS_SYNC_LIMIT = 150;
-export const ENCRYPTED_MESSAGES_SYNC_LIMIT = 200;
+export const ENCRYPTED_MESSAGES_SYNC_LIMIT = 400;
 /**
  * Wall-clock threshold after which the next poll-on-open for posts asks for
  * a full backlog instead of an incremental `sinceMs` pull. Belt-and-braces
@@ -1063,6 +1063,14 @@ export function isEmailDerivedUsername(username: string, email: string): boolean
   return norm(u) === norm(local);
 }
 
+/** Placeholder labels — must never be written back to Firestore or AsyncStorage. */
+export function isPlaceholderProfileUsername(username: string, email: string): boolean {
+  const c = username.trim();
+  if (!c || c === "User" || c === "Friend") return true;
+  if (/^User u_/i.test(c)) return true;
+  return isEmailDerivedUsername(c, email);
+}
+
 /**
  * Pick the display username for this account. Persisted signup username always wins;
  * never falls back to the email local-part.
@@ -1074,14 +1082,33 @@ export function resolveProfileUsername(params: {
   serverUsername?: string;
 }): string {
   const persisted = (params.persistedUsername ?? "").trim();
-  if (persisted) return persisted;
+  if (persisted && !isPlaceholderProfileUsername(persisted, params.email)) return persisted;
 
   for (const candidate of [params.serverUsername, params.accountUsername]) {
     const c = (candidate ?? "").trim();
-    if (!c || c === "Friend" || isEmailDerivedUsername(c, params.email)) continue;
+    if (!c || isPlaceholderProfileUsername(c, params.email)) continue;
     return c;
   }
   return "User";
+}
+
+/** Username to send on `upsertUserProfile` — omit when empty so server keeps existing value. */
+export function usernameForProfileUpsert(params: {
+  email: string;
+  persistedUsername?: string;
+  accountUsername?: string;
+  serverUsername?: string;
+}): string {
+  for (const candidate of [
+    params.persistedUsername,
+    params.serverUsername,
+    params.accountUsername,
+    resolveProfileUsername(params),
+  ]) {
+    const c = (candidate ?? "").trim();
+    if (c && !isPlaceholderProfileUsername(c, params.email)) return c;
+  }
+  return "";
 }
 
 export function generateMockSessionToken(): string {

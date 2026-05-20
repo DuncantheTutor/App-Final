@@ -37,8 +37,15 @@ exports.updateEncryptedMessage = exports.updateMessageMetadata = exports.updateE
 exports.notifyConversationParticipantsPush = notifyConversationParticipantsPush;
 exports.kickPairFromSharedGroups = kickPairFromSharedGroups;
 exports.filterPostItemsByFriendship = filterPostItemsByFriendship;
+exports.refreshPresenceViewerAuthUids = refreshPresenceViewerAuthUids;
+exports.propagateFirebaseAuthUidToFriendsPresenceViewers = propagateFirebaseAuthUidToFriendsPresenceViewers;
+exports.backfillMessageParticipantAuthUid = backfillMessageParticipantAuthUid;
+exports.mergeFriendAuthOntoRegistrantPresence = mergeFriendAuthOntoRegistrantPresence;
+exports.refreshPresenceAfterFriendshipPair = refreshPresenceAfterFriendshipPair;
 exports.writePresenceWithViewers = writePresenceWithViewers;
+exports.normalizePresenceHeartbeatMs = normalizePresenceHeartbeatMs;
 exports.isPresenceFresh = isPresenceFresh;
+exports.presenceDocOnlineFromData = presenceDocOnlineFromData;
 /**
  * Chat/feed/social extensions (May 2026 roadmap).
  * Imported and re-exported from index.ts.
@@ -260,7 +267,7 @@ exports.listConversationMessages = (0, https_1.onCall)(async (req) => {
     const conversationId = String(req.data?.conversationId ?? "").trim();
     if (!conversationId)
         throw new https_1.HttpsError("invalid-argument", "conversationId is required.");
-    const limit = Math.max(1, Math.min(100, Number(req.data?.limit ?? 50)));
+    const limit = Math.max(1, Math.min(500, Number(req.data?.limit ?? 120)));
     const beforeMs = parseSinceMs(req.data?.beforeMs);
     const { data: conv } = await loadConversation(conversationId);
     assertParticipant(conv, uid);
@@ -598,11 +605,114 @@ async function filterPostItemsByFriendship(uid, items) {
     friendSet.add(uid);
     return items.filter((item) => friendSet.has(item.ownerUid));
 }
-/** Presence heartbeat with viewerAuthUids for client onSnapshot. */
-async function writePresenceWithViewers(uid, deviceId, state) {
+/** Refresh `viewerAuthUids` only — does not mark the user online (auth map repair). */
+async function refreshPresenceViewerAuthUids(uid, deviceId) {
     const friendUids = await getAcceptedFriendUids(uid);
     const viewerAuthUids = await resolveParticipantAuthUids([uid, ...friendUids]);
-    const safeHeartbeatAtMs = nowMs();
+    const patch = {
+        viewerAuthUids,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const trimmedDevice = String(deviceId ?? "").trim();
+    if (trimmedDevice)
+        patch.deviceId = trimmedDevice;
+    await firestoreDb().collection("presence").doc(uid).set(patch, { merge: true });
+}
+/**
+ * After `registerFirebaseAuthUid`, add this device's Firebase Auth UID to each
+ * accepted friend's `presence.viewerAuthUids` so their Firestore listener can
+ * read our presence doc without waiting for our next heartbeat.
+ */
+async function propagateFirebaseAuthUidToFriendsPresenceViewers(registrantAppUid) {
+    const mapSnap = await firestoreDb().collection("userFirebaseAuthMap").doc(registrantAppUid).get();
+    const authUid = String(mapSnap.data()?.firebaseAuthUid ?? "").trim();
+    if (!authUid)
+        return;
+    const friendUids = await getAcceptedFriendUids(registrantAppUid);
+    if (friendUids.length === 0)
+        return;
+    let batch = firestoreDb().batch();
+    let pending = 0;
+    for (const friendUid of friendUids) {
+        batch.set(firestoreDb().collection("presence").doc(friendUid), { viewerAuthUids: admin.firestore.FieldValue.arrayUnion(authUid) }, { merge: true });
+        pending += 1;
+        if (pending >= 400) {
+            await batch.commit();
+            batch = firestoreDb().batch();
+            pending = 0;
+        }
+    }
+    if (pending > 0)
+        await batch.commit();
+}
+/** Backfill `participantAuthUids` on recent message docs after auth registration. */
+async function backfillMessageParticipantAuthUid(appUid, firebaseAuthUid) {
+    const authUid = firebaseAuthUid.trim();
+    if (!authUid || !appUid.startsWith("u_"))
+        return;
+    const snap = await firestoreDb()
+        .collectionGroup("messages")
+        .where("participantUids", "array-contains", appUid)
+        .orderBy("createdAt", "desc")
+        .limit(120)
+        .get();
+    let batch = firestoreDb().batch();
+    let pending = 0;
+    for (const doc of snap.docs) {
+        const existing = (doc.data().participantAuthUids ?? []);
+        if (Array.isArray(existing) && existing.includes(authUid))
+            continue;
+        batch.set(doc.ref, {
+            participantAuthUids: admin.firestore.FieldValue.arrayUnion(authUid),
+        }, { merge: true });
+        pending += 1;
+        if (pending >= 400) {
+            await batch.commit();
+            batch = firestoreDb().batch();
+            pending = 0;
+        }
+    }
+    if (pending > 0)
+        await batch.commit();
+}
+/**
+ * Ensures friends can read this user's presence doc (adds each friend's Firebase Auth
+ * UID to this user's `presence.viewerAuthUids`).
+ */
+async function mergeFriendAuthOntoRegistrantPresence(registrantAppUid) {
+    const friendUids = await getAcceptedFriendUids(registrantAppUid);
+    const friendAuthUids = await resolveParticipantAuthUids(friendUids);
+    const mapSnap = await firestoreDb().collection("userFirebaseAuthMap").doc(registrantAppUid).get();
+    const selfAuth = String(mapSnap.data()?.firebaseAuthUid ?? "").trim();
+    const toUnion = [...new Set([selfAuth, ...friendAuthUids].filter(Boolean))];
+    if (toUnion.length === 0)
+        return;
+    await firestoreDb()
+        .collection("presence")
+        .doc(registrantAppUid)
+        .set({ viewerAuthUids: admin.firestore.FieldValue.arrayUnion(...toUnion) }, { merge: true });
+}
+/** Rebuild presence viewer lists for both sides after a new friendship edge. */
+async function refreshPresenceAfterFriendshipPair(uidA, uidB) {
+    await Promise.all([
+        propagateFirebaseAuthUidToFriendsPresenceViewers(uidA),
+        propagateFirebaseAuthUidToFriendsPresenceViewers(uidB),
+        mergeFriendAuthOntoRegistrantPresence(uidA),
+        mergeFriendAuthOntoRegistrantPresence(uidB),
+        refreshPresenceViewerAuthUids(uidA),
+        refreshPresenceViewerAuthUids(uidB),
+    ]);
+}
+/** Presence heartbeat with viewerAuthUids for client onSnapshot. */
+async function writePresenceWithViewers(uid, deviceId, state, heartbeatAtMs) {
+    const friendUids = await getAcceptedFriendUids(uid);
+    const viewerAuthUids = await resolveParticipantAuthUids([uid, ...friendUids]);
+    const clientHb = Number(heartbeatAtMs ?? 0);
+    const safeHeartbeatAtMs = Number.isFinite(clientHb) &&
+        clientHb > 0 &&
+        nowMs() - clientHb <= PRESENCE_STALE_MS
+        ? clientHb
+        : nowMs();
     await firestoreDb().collection("presence").doc(uid).set({
         uid,
         state,
@@ -613,6 +723,35 @@ async function writePresenceWithViewers(uid, deviceId, state) {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 }
+/** Normalize stored heartbeat (number or legacy Timestamp) to epoch ms. */
+function normalizePresenceHeartbeatMs(raw) {
+    if (typeof raw === "number" && Number.isFinite(raw))
+        return raw;
+    if (raw && typeof raw === "object") {
+        const withToMillis = raw;
+        if (typeof withToMillis.toMillis === "function") {
+            const ms = withToMillis.toMillis();
+            if (Number.isFinite(ms))
+                return ms;
+        }
+        const withSeconds = raw;
+        if (typeof withSeconds.seconds === "number" && Number.isFinite(withSeconds.seconds)) {
+            const nano = Number(withSeconds.nanoseconds ?? 0);
+            return withSeconds.seconds * 1000 + Math.floor(nano / 1_000_000);
+        }
+    }
+    return 0;
+}
 function isPresenceFresh(heartbeatAtMs) {
-    return Number.isFinite(heartbeatAtMs) && nowMs() - heartbeatAtMs <= PRESENCE_STALE_MS;
+    const ms = normalizePresenceHeartbeatMs(heartbeatAtMs);
+    return Number.isFinite(ms) && ms > 0 && nowMs() - ms <= PRESENCE_STALE_MS;
+}
+function presenceDocOnlineFromData(data) {
+    const heartbeatAtMs = normalizePresenceHeartbeatMs(data.heartbeatAtMs);
+    const fresh = isPresenceFresh(heartbeatAtMs);
+    if (!fresh)
+        return false;
+    if (data.online === true)
+        return true;
+    return data.state === "active";
 }

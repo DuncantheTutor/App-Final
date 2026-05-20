@@ -18,6 +18,13 @@ import {
   updateMessageMetadata,
   updateEncryptedMessage,
   setConversationNotificationMute,
+  backfillMessageParticipantAuthUid,
+  mergeFriendAuthOntoRegistrantPresence,
+  normalizePresenceHeartbeatMs,
+  propagateFirebaseAuthUidToFriendsPresenceViewers,
+  presenceDocOnlineFromData,
+  refreshPresenceAfterFriendshipPair,
+  refreshPresenceViewerAuthUids,
   writePresenceWithViewers,
 } from "./socialExtensions";
 import {
@@ -328,6 +335,12 @@ export const registerFirebaseAuthUid = onCall(async (req) => {
     },
     { merge: true }
   );
+  await propagateFirebaseAuthUidToFriendsPresenceViewers(uid);
+  await mergeFriendAuthOntoRegistrantPresence(uid);
+  // Heartbeat + full viewer list — `refreshPresenceViewerAuthUids` alone left docs without
+  // a fresh `heartbeatAtMs`, so friends always saw offline in `getFriendPresence`.
+  await writePresenceWithViewers(uid, deviceId, "active");
+  void backfillMessageParticipantAuthUid(uid, claimedAuthUid).catch(() => undefined);
   return { ok: true };
 });
 
@@ -504,17 +517,19 @@ export const upsertUserProfile = onCall(async (req) => {
   const bio = String(req.data?.bio ?? "").trim();
   const profilePictureUrl = String(req.data?.profilePictureUrl ?? "").trim();
   const phoneNumber = String(req.data?.phoneNumber ?? "").trim();
-  await db.collection("users").doc(uid).set(
-    {
-      uid,
-      username: username || null,
-      bio: bio || null,
-      profilePictureUrl: profilePictureUrl || null,
-      phoneNumber: phoneNumber || null,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const patch: Record<string, unknown> = {
+    uid,
+    bio: bio || null,
+    profilePictureUrl: profilePictureUrl || null,
+    phoneNumber: phoneNumber || null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  // Only touch `username` when the client sends a non-empty value — never write null on
+  // boot upserts that omit the field (that was wiping Console edits and prior signups).
+  if (username) {
+    patch.username = username;
+  }
+  await db.collection("users").doc(uid).set(patch, { merge: true });
   return { ok: true };
 });
 
@@ -1354,6 +1369,7 @@ export const finalizeNfcPinPairOffer = onCall(async (req) => {
     );
     return redeemer;
   });
+  void refreshPresenceAfterFriendshipPair(uid, redeemerUid).catch(() => undefined);
   return { ok: true, accepted: true, friendUid: redeemerUid, pin };
 });
 
@@ -2001,6 +2017,11 @@ export const sendEncryptedMessage = onCall(async (req) => {
     envelopes,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
+  const authUidsAfterWrite = await resolveParticipantAuthUids(participants);
+  if (authUidsAfterWrite.length > 0) {
+    await msgRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
+    await convRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
+  }
   void notifyConversationParticipantsPush({
     senderUid: uid,
     conversationId,
@@ -2202,6 +2223,32 @@ export const hideConversationForUser = onCall(async (req) => {
 });
 
 /**
+ * Removes conversation tombstones so sync and the chat list work again after
+ * the user re-opens or continues a 1:1 thread with the same friend.
+ */
+export const unhideConversationForUser = onCall(async (req) => {
+  const uid = resolveAppUidFromRequest(req);
+  const deviceId = String(req.data?.deviceId ?? "").trim();
+  await assertActiveDeviceSession(uid, deviceId);
+  const single = String(req.data?.conversationId ?? "").trim();
+  const fromArray = Array.isArray(req.data?.conversationIds)
+    ? (req.data.conversationIds as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
+    : [];
+  const unique = [...new Set([...(single ? [single] : []), ...fromArray])].slice(0, 50);
+  if (unique.length === 0) {
+    throw new HttpsError("invalid-argument", "conversationId or conversationIds is required.");
+  }
+  await db.collection("users").doc(uid).set(
+    {
+      hiddenConversationIds: admin.firestore.FieldValue.arrayRemove(...unique),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  return { ok: true, conversationIds: unique };
+});
+
+/**
  * Returns conversation ids the caller has tombstoned (server-side hide list).
  */
 export const getHiddenConversationIds = onCall(async (req) => {
@@ -2222,73 +2269,108 @@ export const listEncryptedMessages = onCall(async (req) => {
 
   const limit = Math.max(1, Math.min(1000, Number(req.data?.limit ?? 400)));
   const sinceMs = parseSinceMs(req.data?.sinceMs);
-  let query: FirebaseFirestore.Query = db
-    .collectionGroup("messages")
-    .where("participantUids", "array-contains", uid);
-  if (sinceMs != null) {
-    query = query
-      .where("createdAt", ">", admin.firestore.Timestamp.fromMillis(sinceMs))
-      .orderBy("createdAt", "asc");
-  } else {
-    query = query.orderBy("createdAt", "desc");
-  }
-  const snap = await query.limit(limit).get();
   const hiddenConversations = await hiddenConversationIdsForUser(uid);
   const convCutoffs = new Map<string, number>();
+
+  const mapMessageDoc = async (
+    doc: FirebaseFirestore.QueryDocumentSnapshot
+  ): Promise<{
+    messageId: string;
+    conversationId: string;
+    senderUid: string;
+    ciphertext: string;
+    nonce: string;
+    envelope: string;
+    createdAtMs: number;
+    reactions: Record<string, string>;
+    editedAt: number | null;
+    unsentAt: number | null;
+  } | null> => {
+    const data = doc.data() as {
+      messageId: string;
+      senderUid: string;
+      participantUids: string[];
+      ciphertext: string;
+      nonce: string;
+      envelopes: EnvelopeMap;
+      createdAt?: unknown;
+      reactions?: Record<string, string>;
+      editedAt?: number;
+      unsentAt?: number;
+    };
+    const envelope = data.envelopes?.[uid];
+    if (!envelope) return null;
+    const conversationId = doc.ref.parent.parent?.id ?? "";
+    if (!conversationId) return null;
+    if (hiddenConversations.has(conversationId)) return null;
+    let cutoff = convCutoffs.get(conversationId);
+    if (cutoff === undefined) {
+      const convSnap = await db.collection("conversations").doc(conversationId).get();
+      const convData = convSnap.data() as
+        | { memberJoinedAt?: Record<string, number>; participantUids?: string[] }
+        | undefined;
+      const participants = convData?.participantUids ?? [];
+      if (participants.length > 0 && !participants.includes(uid)) {
+        convCutoffs.set(conversationId, Number.MAX_SAFE_INTEGER);
+        return null;
+      }
+      const joined = convData?.memberJoinedAt ?? {};
+      cutoff = typeof joined[uid] === "number" ? joined[uid] : 0;
+      convCutoffs.set(conversationId, cutoff);
+    }
+    const createdAtMs = timestampToMs(data.createdAt);
+    if (createdAtMs < cutoff && data.senderUid === uid) return null;
+    return {
+      messageId: data.messageId || doc.id,
+      conversationId,
+      senderUid: data.senderUid,
+      ciphertext: data.ciphertext,
+      nonce: data.nonce,
+      envelope,
+      createdAtMs,
+      reactions: data.reactions ?? {},
+      editedAt: data.editedAt ?? null,
+      unsentAt: data.unsentAt ?? null,
+    };
+  };
+
+  let docs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  if (sinceMs != null) {
+    const sinceTs = admin.firestore.Timestamp.fromMillis(sinceMs);
+    const [createdSnap, editedSnap] = await Promise.all([
+      db
+        .collectionGroup("messages")
+        .where("participantUids", "array-contains", uid)
+        .where("createdAt", ">", sinceTs)
+        .orderBy("createdAt", "asc")
+        .limit(limit)
+        .get(),
+      db
+        .collectionGroup("messages")
+        .where("participantUids", "array-contains", uid)
+        .where("editedAt", ">", sinceMs)
+        .orderBy("editedAt", "asc")
+        .limit(limit)
+        .get()
+        .catch(() => ({ docs: [] as FirebaseFirestore.QueryDocumentSnapshot[] })),
+    ]);
+    const byId = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+    for (const doc of [...createdSnap.docs, ...editedSnap.docs]) {
+      byId.set(doc.id, doc);
+    }
+    docs = [...byId.values()];
+  } else {
+    const snap = await db
+      .collectionGroup("messages")
+      .where("participantUids", "array-contains", uid)
+      .orderBy("createdAt", "desc")
+      .limit(limit)
+      .get();
+    docs = snap.docs;
+  }
+
   const items = (
-    await Promise.all(
-      snap.docs.map(async (doc) => {
-        const data = doc.data() as {
-          messageId: string;
-          senderUid: string;
-          participantUids: string[];
-          ciphertext: string;
-          nonce: string;
-          envelopes: EnvelopeMap;
-          createdAt?: unknown;
-          reactions?: Record<string, string>;
-          editedAt?: number;
-          unsentAt?: number;
-        };
-        const envelope = data.envelopes?.[uid];
-        if (!envelope) return null;
-        const conversationId = doc.ref.parent.parent?.id ?? "";
-        if (!conversationId) return null;
-        if (hiddenConversations.has(conversationId)) return null;
-        let cutoff = convCutoffs.get(conversationId);
-        if (cutoff === undefined) {
-          const convSnap = await db.collection("conversations").doc(conversationId).get();
-          const convData = convSnap.data() as
-            | { memberJoinedAt?: Record<string, number>; participantUids?: string[] }
-            | undefined;
-          const participants = convData?.participantUids ?? [];
-          if (participants.length > 0 && !participants.includes(uid)) {
-            convCutoffs.set(conversationId, Number.MAX_SAFE_INTEGER);
-            return null;
-          }
-          const joined = convData?.memberJoinedAt ?? {};
-          cutoff = typeof joined[uid] === "number" ? joined[uid] : 0;
-          convCutoffs.set(conversationId, cutoff);
-        }
-        const createdAtMs = timestampToMs(data.createdAt);
-        // Join cutoff applies only to the viewer's own pre-rejoin history. Inbound
-        // messages must not be dropped because another participant's send updated
-        // `memberJoinedAt` for everyone (legacy upsert behaviour).
-        if (createdAtMs < cutoff && data.senderUid === uid) return null;
-        return {
-          messageId: data.messageId || doc.id,
-          conversationId,
-          senderUid: data.senderUid,
-          ciphertext: data.ciphertext,
-          nonce: data.nonce,
-          envelope,
-          createdAtMs,
-          reactions: data.reactions ?? {},
-          editedAt: data.editedAt ?? null,
-          unsentAt: data.unsentAt ?? null,
-        };
-      })
-    )
+    await Promise.all(docs.map((doc) => mapMessageDoc(doc)))
   ).filter((x): x is NonNullable<typeof x> => !!x);
 
   return { items, incremental: sinceMs != null };
@@ -2395,7 +2477,13 @@ export const setMyPresence = onCall(async (req) => {
     throw new HttpsError("invalid-argument", "Presence state must be active or background.");
   }
   const normalized = state === "active" ? "active" : "background";
-  await writePresenceWithViewers(uid, deviceId, normalized);
+  const heartbeatAtMs = Number(req.data?.heartbeatAtMs ?? 0);
+  await writePresenceWithViewers(
+    uid,
+    deviceId,
+    normalized,
+    Number.isFinite(heartbeatAtMs) && heartbeatAtMs > 0 ? heartbeatAtMs : undefined
+  );
   return { ok: true };
 });
 
@@ -2415,16 +2503,28 @@ export const getFriendPresence = onCall(async (req) => {
       try {
         await assertAcceptedFriendship(uid, friendUid);
         const snap = await db.collection("presence").doc(friendUid).get();
-        if (!snap.exists) return [friendUid, { state: "offline", heartbeatAtMs: 0 }] as const;
-        const data = snap.data() as { state?: string; heartbeatAtMs?: number } | undefined;
+        if (!snap.exists) return [friendUid, { state: "offline", heartbeatAtMs: 0, online: false }] as const;
+        const data = snap.data() as {
+          state?: string;
+          heartbeatAtMs?: unknown;
+          online?: boolean;
+        };
         const state = data?.state === "active" ? "active" : "background";
-        const heartbeatAtMs = Number(data?.heartbeatAtMs ?? 0);
+        const heartbeatAtMs = normalizePresenceHeartbeatMs(data?.heartbeatAtMs);
         const fresh = isPresenceFresh(heartbeatAtMs);
+        const online = presenceDocOnlineFromData({
+          state: data?.state,
+          heartbeatAtMs: data?.heartbeatAtMs,
+          online: data?.online,
+        });
         const effectiveState = fresh ? state : "offline";
-        const online = fresh && effectiveState === "active";
         return [
           friendUid,
-          { state: effectiveState, heartbeatAtMs: fresh ? heartbeatAtMs : 0, online },
+          {
+            state: effectiveState,
+            heartbeatAtMs: fresh ? heartbeatAtMs : 0,
+            online,
+          },
         ] as const;
       } catch {
         return [friendUid, { state: "offline", heartbeatAtMs: 0 }] as const;
@@ -2463,11 +2563,12 @@ export const getUserProfiles = onCall(async (req) => {
           profilePictureUrl?: string | null;
         };
         const pairingPreviewOnly = pairingPin && targetUid !== uid;
+        const storedUsername = String(data.username ?? "").trim();
         return [
           targetUid,
           {
             uid: targetUid,
-            username: data.username ?? "Friend",
+            username: storedUsername || `User ${targetUid.slice(0, 6)}`,
             bio: pairingPreviewOnly ? "" : data.bio ?? "",
             profilePictureUrl: data.profilePictureUrl ?? null,
           },

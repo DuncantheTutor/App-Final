@@ -1,5 +1,9 @@
 import { backendUidForFriendId } from "../../backendBridge";
 
+import {
+  canonicalDirectChatLocalId,
+  isCanonicalDmHiddenForViewer,
+} from "./directChatId";
 import type { Chat, Friend } from "../domain/types";
 
 export const CURRENT_USER_LOCAL_ID = "me";
@@ -139,13 +143,39 @@ export function findActiveDirectChatForFriend(
   sessionAppUid: string,
   friendMap: Record<string, Friend>,
   friendIdToBackendUid: Record<string, string>,
-  identityLockedChatIds?: ReadonlySet<string>
+  identityLockedChatIds?: ReadonlySet<string>,
+  hiddenServerConversationIds?: ReadonlySet<string>,
+  hiddenLocalChatIds?: ReadonlySet<string>
 ): Chat | undefined {
   const canonicalId = friendMap[friendId]?.id ?? friendId;
+  const friendBackendUid = resolveChatMemberToBackendUid(
+    friendId,
+    sessionAppUid,
+    friendMap,
+    friendIdToBackendUid
+  );
+  const canonicalDmLocalId =
+    friendBackendUid?.startsWith("u_")
+      ? canonicalDirectChatLocalId(sessionAppUid, friendBackendUid)
+      : null;
+  const canonicalHidden =
+    canonicalDmLocalId != null &&
+    friendBackendUid?.startsWith("u_") &&
+    isCanonicalDmHiddenForViewer(
+      sessionAppUid,
+      friendBackendUid,
+      hiddenLocalChatIds ?? new Set<string>(),
+      hiddenServerConversationIds ?? new Set<string>()
+    );
+
   const candidates = chats.filter((chat) =>
     isDirectChatWithFriend(chat, friendId, canonicalId, sessionAppUid, friendMap, friendIdToBackendUid)
   );
-  const unlocked = candidates.filter((chat) => !identityLockedChatIds?.has(chat.id));
+  const unlocked = candidates.filter((chat) => {
+    if (identityLockedChatIds?.has(chat.id)) return false;
+    if (canonicalHidden && chat.id === canonicalDmLocalId) return false;
+    return true;
+  });
   if (unlocked.length === 0) return undefined;
   const live = unlocked.filter((c) => c.id.includes("__live"));
   const pool = live.length > 0 ? live : unlocked;

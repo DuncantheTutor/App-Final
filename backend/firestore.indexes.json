@@ -25,6 +25,14 @@
       ]
     },
     {
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "participantUids", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "editedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "encryptedPosts",
       "queryScope": "COLLECTION",
       "fields": [

@@ -1,4 +1,5 @@
 import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt";
+import { isConversationHiddenForViewer } from "./hiddenConversations";
 import { isAppBackendUid, resolveChatMemberToBackendUid } from "./resolveChatMemberBackendUid";
 import type { Chat, Friend } from "../domain/types";
 
@@ -112,15 +113,164 @@ export function serverConversationIdsToHide(
 ): string[] {
   const out = new Set<string>();
   out.add(serverConversationIdForChat(chat, sessionAppUid, friendMap, friendIdToBackendUid));
-  const canonical = resolveCanonicalDirectChatLocalId(
-    chat,
-    sessionAppUid,
-    friendMap,
-    friendIdToBackendUid
-  );
-  if (canonical) out.add(`enc_${canonical}`);
-  if (isLiveDirectChatLocalId(chat.id)) out.add(`enc_${chat.id.trim()}`);
+  // Only tombstone the canonical `enc_dm_*` when deleting that canonical row — not when
+  // deleting a `__live` thread (otherwise new live chats would still hit a hidden canonical).
+  if (isCanonicalDirectChatId(chat.id)) {
+    const canonical = resolveCanonicalDirectChatLocalId(
+      chat,
+      sessionAppUid,
+      friendMap,
+      friendIdToBackendUid
+    );
+    if (canonical) out.add(`enc_${canonical}`);
+  }
   return [...out];
+}
+
+export function canonicalServerConversationId(
+  sessionAppUid: string,
+  friendBackendUid: string
+): string {
+  return `enc_${canonicalDirectChatLocalId(sessionAppUid, friendBackendUid)}`;
+}
+
+export function isCanonicalDmHiddenForFriend(
+  sessionAppUid: string,
+  friendBackendUid: string,
+  hiddenServerConversationIds: ReadonlySet<string>
+): boolean {
+  return hiddenServerConversationIds.has(canonicalServerConversationId(sessionAppUid, friendBackendUid));
+}
+
+/** Canonical DM tombstoned locally and/or on the server (survives cold start before hidden refresh). */
+export function isCanonicalDmHiddenForViewer(
+  sessionAppUid: string,
+  friendBackendUid: string,
+  hiddenLocalChatIds: ReadonlySet<string>,
+  hiddenServerConversationIds: ReadonlySet<string>
+): boolean {
+  const canonicalLocal = canonicalDirectChatLocalId(sessionAppUid, friendBackendUid);
+  if (hiddenLocalChatIds.has(canonicalLocal)) return true;
+  return isCanonicalDmHiddenForFriend(sessionAppUid, friendBackendUid, hiddenServerConversationIds);
+}
+
+/** Newest `dm_*__live` row for a friend when the canonical thread is hidden. */
+export function findLiveDirectChatForFriend(
+  chats: Chat[],
+  sessionAppUid: string,
+  friendBackendUid: string,
+  friendMap: Record<string, Friend>,
+  friendIdToBackendUid: Record<string, string>
+): Chat | undefined {
+  const canonical = canonicalDirectChatLocalId(sessionAppUid, friendBackendUid);
+  const matches = chats.filter((chat) => {
+    if (!isLiveDirectChatLocalId(chat.id)) return false;
+    if ((chat.kind ?? "standard") !== "standard") return false;
+    const canon = resolveCanonicalDirectChatLocalId(
+      chat,
+      sessionAppUid,
+      friendMap,
+      friendIdToBackendUid
+    );
+    return canon === canonical;
+  });
+  if (matches.length === 0) return undefined;
+  return [...matches].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0];
+}
+
+export type InboundDirectMessageTarget = {
+  conversationIdForHiddenCheck: string;
+  rawLocalChatId: string;
+  resolvedLocalChatId: string;
+  /** When inbound arrives on a hidden canonical server conv, allocate a live row if missing. */
+  ensureLiveChat?: { localId: string; friendBackendUid: string };
+};
+
+/**
+ * Maps inbound encrypted DM docs to the local chat row that should receive them.
+ * When the canonical thread is hidden, redirects to `dm_*__live` instead of dropping.
+ */
+export function resolveInboundDirectMessageTarget(params: {
+  conversationId: string;
+  rawLocalChatId: string;
+  senderAppUid: string;
+  sessionAppUid: string;
+  chats: Chat[];
+  friendMap: Record<string, Friend>;
+  friendIdToBackendUid: Record<string, string>;
+  hiddenLocalChatIds: ReadonlySet<string>;
+  hiddenServerConversationIds: ReadonlySet<string>;
+  identityLockedChatIds?: ReadonlySet<string>;
+  /** Optional payload `chatId` after decrypt. */
+  plainLocalChatId?: string;
+}): InboundDirectMessageTarget | { drop: true } {
+  const {
+    conversationId,
+    rawLocalChatId,
+    senderAppUid,
+    sessionAppUid,
+    chats,
+    friendMap,
+    friendIdToBackendUid,
+    hiddenLocalChatIds,
+    hiddenServerConversationIds,
+    identityLockedChatIds,
+    plainLocalChatId,
+  } = params;
+
+  const sender = senderAppUid.trim();
+  const rawFromPlain = plainLocalChatId?.trim() ?? "";
+  const rawBase = (rawFromPlain || rawLocalChatId).trim();
+  let resolved = resolveIncomingDirectChatId(rawBase, sender, sessionAppUid);
+
+  const friendBackendUid =
+    sender && sender !== sessionAppUid && isAppBackendUid(sender) ? sender : null;
+
+  if (friendBackendUid && isCanonicalDmHiddenForViewer(
+    sessionAppUid,
+    friendBackendUid,
+    hiddenLocalChatIds,
+    hiddenServerConversationIds
+  )) {
+    const live = findLiveDirectChatForFriend(
+      chats,
+      sessionAppUid,
+      friendBackendUid,
+      friendMap,
+      friendIdToBackendUid
+    );
+    const liveLocalId =
+      live?.id ??
+      allocateLiveDirectChatLocalId(sessionAppUid, friendBackendUid, identityLockedChatIds);
+    resolved = liveLocalId;
+    const target: InboundDirectMessageTarget = {
+      conversationIdForHiddenCheck: `enc_${liveLocalId}`,
+      rawLocalChatId: liveLocalId,
+      resolvedLocalChatId: liveLocalId,
+    };
+    if (!live) {
+      target.ensureLiveChat = { localId: liveLocalId, friendBackendUid };
+    }
+    return target;
+  }
+
+  const rawForHidden = rawBase || rawLocalChatId;
+  if (
+    isConversationHiddenForViewer(
+      conversationId,
+      { raw: rawForHidden, resolved },
+      hiddenLocalChatIds,
+      hiddenServerConversationIds
+    )
+  ) {
+    return { drop: true };
+  }
+
+  return {
+    conversationIdForHiddenCheck: conversationId,
+    rawLocalChatId: rawForHidden,
+    resolvedLocalChatId: resolved,
+  };
 }
 
 /** All local chat row ids that belong to the same 1:1 thread (canonical + any legacy local id). */
@@ -157,6 +307,25 @@ export function localChatIdsForDirectThread(
     }
   }
   return ids;
+}
+
+/** Other participant's `u_*` id from a `dm_*` local chat id. */
+export function friendBackendUidFromDirectChatLocalId(
+  localChatId: string,
+  sessionAppUid: string
+): string | null {
+  const id = localChatId.trim();
+  if (!isDirectChatLocalId(id)) return null;
+  let rest = id.replace(/^dm_/, "");
+  const liveMatch = rest.match(/(__live\d*)$/);
+  if (liveMatch) rest = rest.slice(0, -liveMatch[1].length);
+  const sep = rest.indexOf("__");
+  if (sep < 0) return null;
+  const u1 = rest.slice(0, sep).trim();
+  const u2 = rest.slice(sep + 2).trim();
+  if (u1 === sessionAppUid && isAppBackendUid(u2)) return u2;
+  if (u2 === sessionAppUid && isAppBackendUid(u1)) return u1;
+  return null;
 }
 
 export function resolveIncomingDirectChatId(

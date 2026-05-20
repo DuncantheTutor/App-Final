@@ -2,7 +2,9 @@ import { callEmulatorFunction, backendUidForFriendId } from "../../backendBridge
 import { logAppError } from "../../telemetry";
 import { collection, onSnapshot, query as firestoreQuery, where } from "firebase/firestore";
 import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
+import { friendDisplayNameFromProfile } from "../lib/friendDisplayName";
 import { dedupeFriendsByBackendUid } from "../lib/mergeFriendsCatalog";
+import { resolveParticipantToAppUid } from "../lib/resolveParticipantAppUid";
 import { mergeProfilePictureUrl } from "../lib/profilePictureUrl";
 import type { Friend } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
@@ -90,8 +92,12 @@ export function attachFriendRosterListener(params: {
               .map((x) => String(x ?? "").trim())
               .filter((x) => x.length > 0)
           : [];
-        const friendUid = participants.find((p) => p !== session.uid);
-        if (!friendUid?.startsWith("u_")) continue;
+        let friendUid = participants.find((p) => p !== session.uid) ?? "";
+        if (!friendUid.startsWith("u_")) {
+          const resolved = await resolveParticipantToAppUid(friendUid);
+          if (resolved) friendUid = resolved;
+        }
+        if (!friendUid.startsWith("u_")) continue;
         if (friendUid.startsWith("f_")) continue;
         const friendId = backendUidForFriendId(friendUid);
         incomingByBackendUid.set(friendUid, {
@@ -185,12 +191,13 @@ export function attachFriendRosterListener(params: {
         const friendId = backendUidForFriendId(uid);
         const prior = priorByBackendUid.get(uid);
         const profile = fetchedProfiles[uid] ?? {};
-        const rawName = (profile?.username ?? "").trim();
         nextFriends.push({
           id: friendId,
           backendUid: uid,
-          displayName:
-            rawName || prior?.displayName?.trim() || `User ${uid.slice(0, 6)}`,
+          displayName: friendDisplayNameFromProfile(
+            profile?.username ?? prior?.displayName,
+            uid
+          ),
           online: prior?.online ?? false,
           profilePictureUrl: mergeProfilePictureUrl(
             profile?.profilePictureUrl,

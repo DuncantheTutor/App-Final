@@ -201,6 +201,29 @@ function buildPathD(points: { x: number; y: number }[]): string {
   return d;
 }
 
+type CropRect = { x: number; y: number; w: number; h: number };
+
+const CROP_HANDLE = 24;
+const MIN_CROP_SIDE = 56;
+
+function clampCropRect(rect: CropRect, maxW: number, maxH: number): CropRect {
+  const w = Math.max(MIN_CROP_SIDE, Math.min(rect.w, maxW));
+  const h = Math.max(MIN_CROP_SIDE, Math.min(rect.h, maxH));
+  return {
+    x: Math.max(0, Math.min(rect.x, maxW - w)),
+    y: Math.max(0, Math.min(rect.y, maxH - h)),
+    w,
+    h,
+  };
+}
+
+function touchDistance(touches: ReadonlyArray<{ pageX: number; pageY: number }>): number {
+  if (touches.length < 2) return 0;
+  const dx = touches[0].pageX - touches[1].pageX;
+  const dy = touches[0].pageY - touches[1].pageY;
+  return Math.hypot(dx, dy);
+}
+
 function MulticolorCircleIcon({ size = 22 }: { size?: number }) {
   const h = size / 2;
   return (
@@ -292,6 +315,10 @@ export function PhotoEditorModal({
   const [exporting, setExporting] = useState(false);
   const [manipulating, setManipulating] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [cropMode, setCropMode] = useState(false);
+  const [cropRect, setCropRect] = useState<CropRect>({ x: 0, y: 0, w: 100, h: 100 });
+  const cropRectRef = useRef<CropRect>(cropRect);
+  const cropPinchStartRef = useRef<{ distance: number; rect: CropRect } | null>(null);
   const [editToolsH, setEditToolsH] = useState(112);
   const footerBottomPad = stickyFooterPadding(insets.bottom);
   const navButtonStyle = theme.background.toLowerCase() === "#ffffff" ? "dark" : "light";
@@ -382,6 +409,7 @@ export function PhotoEditorModal({
     setTextModalColor(PRESET_COLORS[0]);
     setRgbPickerOpen(false);
     setFiltersOpen(false);
+    setCropMode(false);
     setManipulating(false);
     setTextModalFontId(FONT_OPTIONS[0].id);
     setTextModalFontSize(18);
@@ -432,7 +460,24 @@ export function PhotoEditorModal({
     }
   }, [workingUri, manipulating, applyWorking]);
 
-  const cropCenterSquare = useCallback(async () => {
+  const enterCropMode = useCallback(() => {
+    if (!workingUri || isVideo || manipulating) return;
+    setDrawMode(false);
+    setSelectedTextId(null);
+    const margin = 0.08;
+    const w = displayWidth * (1 - margin * 2);
+    const h = displayImgH * (1 - margin * 2);
+    const next = clampCropRect(
+      { x: displayWidth * margin, y: displayImgH * margin, w, h },
+      displayWidth,
+      displayImgH
+    );
+    cropRectRef.current = next;
+    setCropRect(next);
+    setCropMode(true);
+  }, [workingUri, isVideo, manipulating, displayWidth, displayImgH]);
+
+  const applyCropFromDisplayRect = useCallback(async () => {
     if (!workingUri || manipulating) return;
     setManipulating(true);
     try {
@@ -448,28 +493,114 @@ export function PhotoEditorModal({
         setNaturalW(w);
         setNaturalH(h);
       }
-      const side = Math.min(w, h);
-      if (side < 2) {
-        Alert.alert("Could not crop", "Image dimensions are too small.");
-        return;
-      }
-      const cropW = Math.floor(side);
-      const cropH = Math.floor(side);
-      const originX = Math.max(0, Math.floor((w - cropW) / 2));
-      const originY = Math.max(0, Math.floor((h - cropH) / 2));
+      const rect = cropRectRef.current;
+      const scaleX = w / displayWidth;
+      const scaleY = h / displayImgH;
+      const cropW = Math.max(2, Math.floor(rect.w * scaleX));
+      const cropH = Math.max(2, Math.floor(rect.h * scaleY));
+      const originX = Math.max(0, Math.min(w - cropW, Math.floor(rect.x * scaleX)));
+      const originY = Math.max(0, Math.min(h - cropH, Math.floor(rect.y * scaleY)));
       const result = await manipulateAsync(
         localUri,
         [{ crop: { originX, originY, width: cropW, height: cropH } }],
         { compress: 0.92, format: SaveFormat.JPEG }
       );
       await applyWorking(result);
+      setCropMode(false);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       Alert.alert("Could not crop", detail.slice(0, 120) || "Try again.");
     } finally {
       setManipulating(false);
     }
-  }, [workingUri, naturalW, naturalH, manipulating, applyWorking]);
+  }, [workingUri, naturalW, naturalH, manipulating, applyWorking, displayWidth, displayImgH]);
+
+  const updateCropRect = useCallback(
+    (next: CropRect) => {
+      const clamped = clampCropRect(next, displayWidth, displayImgH);
+      cropRectRef.current = clamped;
+      setCropRect(clamped);
+    },
+    [displayWidth, displayImgH]
+  );
+
+  const cropDragStartRef = useRef<CropRect | null>(null);
+  const createCropCornerPan = (corner: "nw" | "ne" | "sw" | "se") =>
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => cropMode,
+      onMoveShouldSetPanResponder: () => cropMode,
+      onPanResponderGrant: () => {
+        cropDragStartRef.current = { ...cropRectRef.current };
+      },
+      onPanResponderMove: (_, gesture) => {
+        const start = cropDragStartRef.current;
+        if (!start) return;
+        const dx = gesture.dx;
+        const dy = gesture.dy;
+        let next = { ...start };
+        if (corner === "nw") {
+          next = { x: start.x + dx, y: start.y + dy, w: start.w - dx, h: start.h - dy };
+        } else if (corner === "ne") {
+          next = { x: start.x, y: start.y + dy, w: start.w + dx, h: start.h - dy };
+        } else if (corner === "sw") {
+          next = { x: start.x + dx, y: start.y, w: start.w - dx, h: start.h + dy };
+        } else {
+          next = { x: start.x, y: start.y, w: start.w + dx, h: start.h + dy };
+        }
+        updateCropRect(next);
+      },
+      onPanResponderRelease: () => {
+        cropDragStartRef.current = null;
+      },
+    });
+
+  const cropMovePan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => cropMode,
+        onMoveShouldSetPanResponder: () => cropMode,
+        onPanResponderGrant: () => {
+          cropDragStartRef.current = { ...cropRectRef.current };
+          cropPinchStartRef.current = null;
+        },
+        onPanResponderMove: (e, gesture) => {
+          const touches = e.nativeEvent.touches ?? [];
+          if (touches.length >= 2) {
+            const dist = touchDistance(touches);
+            if (!cropPinchStartRef.current) {
+              cropPinchStartRef.current = { distance: dist, rect: cropRectRef.current };
+              return;
+            }
+            const start = cropPinchStartRef.current;
+            if (start.distance < 8) return;
+            const scale = dist / start.distance;
+            const cx = start.rect.x + start.rect.w / 2;
+            const cy = start.rect.y + start.rect.h / 2;
+            const nw = start.rect.w * scale;
+            const nh = start.rect.h * scale;
+            updateCropRect({
+              x: cx - nw / 2,
+              y: cy - nh / 2,
+              w: nw,
+              h: nh,
+            });
+            return;
+          }
+          cropPinchStartRef.current = null;
+          const start = cropDragStartRef.current ?? cropRectRef.current;
+          updateCropRect({
+            ...start,
+            x: start.x + gesture.dx,
+            y: start.y + gesture.dy,
+          });
+        },
+        onPanResponderRelease: () => {
+          cropPinchStartRef.current = null;
+          cropDragStartRef.current = null;
+        },
+      }),
+    [cropMode, cropRect, updateCropRect]
+  );
 
   const strokePointsRef = useRef<{ x: number; y: number }[]>([]);
   const panResponderFixed = useMemo(
@@ -943,6 +1074,62 @@ export function PhotoEditorModal({
             style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
           />
         ) : null}
+        {cropMode && !isVideo ? (
+          <View style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]} pointerEvents="box-none">
+            <View
+              pointerEvents="none"
+              style={[styles.cropShade, { left: 0, top: 0, width: displayWidth, height: cropRect.y }]}
+            />
+            <View
+              pointerEvents="none"
+              style={[
+                styles.cropShade,
+                { left: 0, top: cropRect.y, width: cropRect.x, height: cropRect.h },
+              ]}
+            />
+            <View
+              pointerEvents="none"
+              style={[
+                styles.cropShade,
+                {
+                  left: cropRect.x + cropRect.w,
+                  top: cropRect.y,
+                  width: Math.max(0, displayWidth - cropRect.x - cropRect.w),
+                  height: cropRect.h,
+                },
+              ]}
+            />
+            <View
+              pointerEvents="none"
+              style={[
+                styles.cropShade,
+                {
+                  left: 0,
+                  top: cropRect.y + cropRect.h,
+                  width: displayWidth,
+                  height: Math.max(0, displayImgH - cropRect.y - cropRect.h),
+                },
+              ]}
+            />
+            <View
+              {...cropMovePan.panHandlers}
+              style={[
+                styles.cropFrame,
+                {
+                  left: cropRect.x,
+                  top: cropRect.y,
+                  width: cropRect.w,
+                  height: cropRect.h,
+                },
+              ]}
+            >
+              <View {...createCropCornerPan("nw").panHandlers} style={[styles.cropHandle, styles.cropNw]} />
+              <View {...createCropCornerPan("ne").panHandlers} style={[styles.cropHandle, styles.cropNe]} />
+              <View {...createCropCornerPan("sw").panHandlers} style={[styles.cropHandle, styles.cropSw]} />
+              <View {...createCropCornerPan("se").panHandlers} style={[styles.cropHandle, styles.cropSe]} />
+            </View>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -1037,8 +1224,8 @@ export function PhotoEditorModal({
                       <IconToolButton
                         icon="crop"
                         label="Crop"
-                        active={manipulating}
-                        onPress={() => void cropCenterSquare()}
+                        active={cropMode}
+                        onPress={enterCropMode}
                         accent={theme.accent}
                         text={theme.text}
                       />
@@ -1125,22 +1312,50 @@ export function PhotoEditorModal({
             </View>
 
             <View style={[styles.stickyFooter, { paddingBottom: footerBottomPad }]}>
-              <Pressable
-                style={[
-                  styles.primaryWide,
-                  styles.editFooterPrimary,
-                  (exporting || !workingUri || manipulating) && styles.primaryWideDisabled,
-                ]}
-                onPress={() => void runExportToPreview()}
-                disabled={exporting || !workingUri || manipulating}
-                accessibilityLabel="Continue to preview"
-              >
-                {exporting ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <Feather name="arrow-right" size={22} color="#FFFFFF" />
-                )}
-              </Pressable>
+              {cropMode ? (
+                <View style={styles.cropFooterRow}>
+                  <Pressable
+                    style={styles.secondaryWide}
+                    onPress={() => setCropMode(false)}
+                    accessibilityLabel="Cancel crop"
+                  >
+                    <Text style={styles.secondaryWideText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.primaryWide,
+                      styles.cropApplyBtn,
+                      manipulating && styles.primaryWideDisabled,
+                    ]}
+                    onPress={() => void applyCropFromDisplayRect()}
+                    disabled={manipulating}
+                    accessibilityLabel="Apply crop"
+                  >
+                    {manipulating ? (
+                      <ActivityIndicator color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.primaryWideText}>OK</Text>
+                    )}
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  style={[
+                    styles.primaryWide,
+                    styles.editFooterPrimary,
+                    (exporting || !workingUri || manipulating) && styles.primaryWideDisabled,
+                  ]}
+                  onPress={() => void runExportToPreview()}
+                  disabled={exporting || !workingUri || manipulating}
+                  accessibilityLabel="Continue to preview"
+                >
+                  {exporting ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.primaryWideText}>OK</Text>
+                  )}
+                </Pressable>
+              )}
             </View>
           </View>
         ) : (
@@ -1208,14 +1423,14 @@ export function PhotoEditorModal({
                 onPress={() => setStep("edit")}
                 accessibilityLabel="Back to edit"
               >
-                <Feather name="arrow-left" size={22} color={theme.text} />
+                <Text style={styles.previewBackBtnText}>Back</Text>
               </Pressable>
               <Pressable
                 style={styles.previewPostBtn}
                 onPress={confirmPost}
                 accessibilityLabel={previewSubmitLabel}
               >
-                <Feather name="check" size={22} color="#FFFFFF" />
+                <Text style={styles.previewPostBtnText}>Send</Text>
               </Pressable>
             </View>
           </View>
@@ -1562,6 +1777,37 @@ function makeStyles(theme: PhotoEditorTheme) {
       position: "relative",
       borderRadius: 12,
       overflow: "hidden",
+    },
+    cropShade: {
+      position: "absolute",
+      backgroundColor: "rgba(0,0,0,0.52)",
+    },
+    cropFrame: {
+      position: "absolute",
+      borderWidth: 2,
+      borderColor: "#FFFFFF",
+    },
+    cropHandle: {
+      position: "absolute",
+      width: CROP_HANDLE,
+      height: CROP_HANDLE,
+      borderRadius: 4,
+      borderWidth: 2,
+      borderColor: "#FFFFFF",
+      backgroundColor: theme.accent,
+    },
+    cropNw: { left: -CROP_HANDLE / 2, top: -CROP_HANDLE / 2 },
+    cropNe: { right: -CROP_HANDLE / 2, top: -CROP_HANDLE / 2 },
+    cropSw: { left: -CROP_HANDLE / 2, bottom: -CROP_HANDLE / 2 },
+    cropSe: { right: -CROP_HANDLE / 2, bottom: -CROP_HANDLE / 2 },
+    cropFooterRow: {
+      flexDirection: "row",
+      gap: 10,
+      alignItems: "center",
+    },
+    cropApplyBtn: {
+      flex: 1,
+      marginTop: 0,
     },
     sectionLabel: {
       color: theme.subtleText,

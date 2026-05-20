@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { AttachedReactionBubbles } from "./ReactionBubbleHost";
 import { REACTION_EMOJIS } from "../theme/preludeConstants";
 
 export type HoldToReactTheme = {
@@ -18,6 +19,8 @@ type HoldToReactButtonProps = {
   disabled?: boolean;
   theme: HoldToReactTheme;
   accessibilityLabel?: string;
+  /** `icon` = compact smile (default). `plus` is deprecated — use long-press on the parent surface. */
+  variant?: "icon" | "plus";
 };
 
 export function HoldToReactButton({
@@ -25,9 +28,11 @@ export function HoldToReactButton({
   onPick,
   disabled,
   theme,
-  accessibilityLabel = "Tap to react",
+  accessibilityLabel = "Add reaction",
+  variant = "icon",
 }: HoldToReactButtonProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const longPressOpenedRef = useRef(false);
 
   const openPicker = () => {
     if (disabled) return;
@@ -39,22 +44,33 @@ export function HoldToReactButton({
     onPick(emoji);
   };
 
+  const isPlus = variant === "plus";
+  const triggerStyle = isPlus ? styles.triggerPlus : styles.trigger;
+  const triggerSize = isPlus ? 22 : 32;
+
   return (
     <>
       <Pressable
-        onPress={openPicker}
+        onLongPress={() => {
+          longPressOpenedRef.current = true;
+          openPicker();
+        }}
+        delayLongPress={400}
         disabled={disabled}
         style={[
-          styles.trigger,
+          triggerStyle,
           { borderColor: theme.divider, backgroundColor: `${theme.divider}55` },
           activeEmoji ? { borderColor: theme.accent, backgroundColor: `${theme.accent}22` } : null,
+          isPlus ? { width: triggerSize, height: triggerSize, borderRadius: triggerSize / 2 } : null,
         ]}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
-        accessibilityHint="Opens the reaction picker"
+        accessibilityHint="Press and hold to choose a reaction"
       >
         {activeEmoji ? (
-          <Text style={styles.triggerEmoji}>{activeEmoji}</Text>
+          <Text style={[styles.triggerEmoji, isPlus ? styles.triggerEmojiPlus : null]}>{activeEmoji}</Text>
+        ) : isPlus ? (
+          <Feather name="plus" size={14} color={theme.accent} />
         ) : (
           <Feather name="smile" size={15} color={theme.accent} />
         )}
@@ -96,37 +112,68 @@ export function HoldToReactButton({
   );
 }
 
+/** Inline fallback; prefer `ReactionBubbleHost` wrapping the parent bubble. */
 export function ReactionSummaryChips({
   entries,
   onPressSummary,
   theme,
+  align = "left",
 }: {
   entries: Array<[string, number]>;
   onPressSummary?: () => void;
   theme: HoldToReactTheme;
+  align?: "left" | "right";
 }) {
-  if (entries.length === 0) return null;
-  const body = (
-    <View style={styles.summaryRow}>
-      {entries.map(([emoji, count]) => (
-        <View
-          key={emoji}
-          style={[
-            styles.summaryChip,
-            { backgroundColor: theme.background === "#000000" ? "rgba(255,255,255,0.08)" : `${theme.divider}cc` },
-          ]}
-        >
-          <Text style={styles.summaryEmoji}>{emoji}</Text>
-          {count > 1 ? <Text style={[styles.summaryCount, { color: theme.subtleText }]}>{count}</Text> : null}
-        </View>
-      ))}
-    </View>
-  );
-  if (!onPressSummary) return body;
   return (
-    <Pressable onPress={onPressSummary} accessibilityRole="button" accessibilityLabel="View reactions">
-      {body}
-    </Pressable>
+    <AttachedReactionBubbles
+      entries={entries}
+      align={align}
+      theme={theme}
+      onPress={onPressSummary}
+    />
+  );
+}
+
+/** Opens the shared reaction picker modal (for long-press on bubbles/cards). */
+export function ReactionPickerModal({
+  visible,
+  activeEmoji,
+  onPick,
+  onClose,
+  theme,
+}: {
+  visible: boolean;
+  activeEmoji?: string;
+  onPick: (emoji: string) => void;
+  onClose: () => void;
+  theme: HoldToReactTheme;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.overlay} onPress={onClose}>
+        <Pressable style={[styles.card, { backgroundColor: theme.background }]} onPress={() => {}}>
+          <Text style={[styles.title, { color: theme.text }]}>React</Text>
+          <View style={styles.emojiRow}>
+            {REACTION_EMOJIS.map((emoji) => (
+              <Pressable
+                key={emoji}
+                onPress={() => {
+                  onClose();
+                  onPick(emoji);
+                }}
+                style={[
+                  styles.emojiChip,
+                  { borderColor: theme.divider },
+                  activeEmoji === emoji ? { borderColor: theme.accent } : null,
+                ]}
+              >
+                <Text style={styles.emojiChipText}>{emoji}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -139,9 +186,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  triggerPlus: {
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   triggerEmoji: {
     fontSize: 16,
     lineHeight: 18,
+  },
+  triggerEmojiPlus: {
+    fontSize: 13,
+    lineHeight: 15,
   },
   overlay: {
     flex: 1,
@@ -187,22 +243,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
-    gap: 6,
-    flex: 1,
+    gap: 4,
+    flexShrink: 1,
   },
   summaryChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 3,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 14,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 12,
   },
   summaryEmoji: {
-    fontSize: 16,
+    fontSize: 14,
   },
   summaryCount: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
   },
 });

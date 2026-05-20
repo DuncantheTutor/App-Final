@@ -10,20 +10,24 @@
 
 ## Message Actions
 
-- Outgoing messages (yours): timestamp line may show **` • Sending…`** while the encrypted send runs, then **` • Sent`** after the backend accepts the message (release). Demo builds mark **` • Sent`** immediately when the message is appended. Unsent messages omit delivery labels.
+- Outgoing messages (yours): timestamp line may show **` • Sending…`** while the encrypted send runs, then **` • Sent`** after each `sendEncryptedMessage` succeeds (not only after a full batch). Demo builds mark **` • Sent`** immediately when the message is appended. Unsent messages omit delivery labels.
+- Open chat from **online friends strip** → header shows the friend's display name (not **User**) when they appear online with a linked `u_*` account.
 - Chat screen does **not** render a redundant participant strip under the header; participant identity comes from the chat header/title.
 - Presence must be app-active only: a friend shows online only while their app is in foreground and sending fresh heartbeats; backgrounded/closed app should show offline quickly (about 15 seconds).
-- **Two-phone online strip:** with both accounts accepted friends and both apps in foreground on Chats, each phone should show the other in the home **online** strip within a few seconds (Firestore `presence` listener + 8 s heartbeat poll). Requires latest Cloud Functions (`setMyPresence` writes `viewerAuthUids`) and release APK on both devices.
+- **Two-phone online strip:** with both accounts accepted friends and both apps in foreground on Chats, each phone should show the other in the home **online** strip within a few seconds (immediate boot publish/poll + Firestore `presence` listener + 8 s heartbeat). Requires latest Cloud Functions (`registerFirebaseAuthUid` refreshes `viewerAuthUids`; `setMyPresence` heartbeat) and release APK on both devices. You will **not** appear in your own online strip (friends only).
 - Message order/timestamps must follow backend server-created times after sync (no device-clock reordering between phones).
 - Message reactions must persist across encrypted sync refreshes (must not disappear after a few seconds).
 - Long-press any message -> actions menu appears.
 - Reply to message -> reply banner appears above composer -> sent message shows reply reference.
 - Reply rendering: replied-to message appears as muted context card; reply appears in normal foreground card.
-- **Tap to react (chat):** each message row shows a smile button below the bubble; tap opens the emoji picker; tap an emoji to apply, tap the same emoji again to remove.
-- React to message -> summary chips appear beside the smile button (not overlaid on the bubble).
+- **Press and hold to react (chat):** long-press a message bubble opens the emoji picker; reaction summary chips appear only when reactions exist (no large button row under every message). Picker includes **Reply, edit, and more…** for extra actions.
+- React to message -> a **small reaction pill** attaches to the **bottom edge** of the message bubble (emoji + count); not a full-width row under the bubble.
 - Duplicate emoji reactions collapse into one chip + count bubble.
-- **Tap to react (feed post):** smile button under post media opens picker; reaction applies immediately; summary chips show friend reactions; tap chips to open who reacted.
-- **Tap to react (post comments):** private thread comments use the same smile + chips row (no static 👍); thread replies toggle correctly.
+- **React (feed post):** **press and hold** anywhere on the post card (caption, image, or video) opens the emoji picker; no **+** button; reaction pill **attached to bottom** of post card when reactions exist.
+- **Feed post media:** images and video span **full feed width** (edge-to-edge within the card bleed); height follows aspect ratio (no side letterboxing). After images load, post cards **must not** jump or “vibrate” (no height change when reactions sync in; scroll the feed and return — layout stays stable).
+- **Feed comments:** no comment row or inline threads on the home feed — **tap a post** to open fullscreen; comment list + editable **Add comment ...** field at the bottom (post owner replies via **Reply** on a thread, then the footer field).
+- **React (post comments):** **press and hold** on a comment opens the picker; reaction pill **attached to bottom** of comment bubble; thread replies toggle correctly.
+- **Delete chat (home):** long-press chat row → actions sheet title shows the friend’s **display name**, not a raw `u_*` id.
 - Long-press own message -> Edit updates content and adds edited timestamp marker.
 - Long-press own message -> Unsend replaces body with "You unsent a message."
 
@@ -62,6 +66,9 @@
 - Type in new draft and back out -> prompt appears with Discard/Save draft.
 - Open saved draft, clear composer text, back out -> draft row is removed if no messages.
 - Delete chat from home list -> row disappears and stays hidden after pull/sync/cold restart (must not reappear from encrypted message backfill).
+- Delete a 1:1 chat, then start a new chat with the same friend -> new `__live` row appears on the home list; new messages deliver both ways; opening the thread does not resurrect the deleted canonical history from sync.
+- Delete a 1:1 chat, **force-quit and reopen** the app (do not clear app data), then message the same friend again -> must open/create `dm_*__live`, show new bubbles on the home list, and must **not** silently reuse the hidden canonical `dm_*` thread.
+- After delete, if the other phone still sends on the old canonical server conversation briefly, the deleter's device should still surface those lines on the **`__live`** row once sync runs (canonical tombstone stays server-side; client maps inbound canonical docs to live).
 - Home chat list must use the filtered visible list (hidden/deleted chats do not flash back in immediately).
 
 ## Broadcast

@@ -2,7 +2,11 @@ import { Alert } from "react-native";
 
 import type { Chat, Friend } from "../domain/types";
 import { CURRENT_USER_LOCAL_ID } from "../lib/chatMemberJoinedAt";
-import { allocateLiveDirectChatLocalId, canonicalDirectChatLocalId } from "../lib/directChatId";
+import {
+  allocateLiveDirectChatLocalId,
+  canonicalDirectChatLocalId,
+  isCanonicalDmHiddenForViewer,
+} from "../lib/directChatId";
 import {
   findActiveDirectChatForFriend,
   resolveChatMemberToBackendUid,
@@ -17,6 +21,10 @@ export type OpenDirectChatParams = {
   friendIdToBackendUid: Record<string, string>;
   unfriendedIds: string[];
   identityLockedChatIds?: ReadonlySet<string>;
+  /** Server-side hide tombstones from `hideConversationForUser`. */
+  hiddenServerConversationIds?: ReadonlySet<string>;
+  /** Local hide ids (persisted); includes canonical `dm_*` after delete. */
+  hiddenLocalChatIds?: ReadonlySet<string>;
   resolveDisplayName: (friendId: string) => string;
   normalizeMemberSet: (ids: string[]) => string;
   goToChat: (chatId: string) => void;
@@ -60,6 +68,8 @@ export function openDirectChatWithFriend(params: OpenDirectChatParams): void {
     friendIdToBackendUid,
     unfriendedIds,
     identityLockedChatIds,
+    hiddenServerConversationIds,
+    hiddenLocalChatIds,
     resolveDisplayName,
     normalizeMemberSet,
     goToChat,
@@ -90,7 +100,9 @@ export function openDirectChatWithFriend(params: OpenDirectChatParams): void {
         session.uid,
         friendMap,
         friendIdToBackendUid,
-        identityLockedChatIds
+        identityLockedChatIds,
+        hiddenServerConversationIds,
+        hiddenLocalChatIds
       )
     : chats.find(
         (chat) =>
@@ -112,9 +124,16 @@ export function openDirectChatWithFriend(params: OpenDirectChatParams): void {
   }
 
   const canonicalLocked = identityLockedChatIds?.has(canonicalChatId) ?? false;
-  const newChatId = canonicalLocked
-    ? allocateLiveDirectChatLocalId(session!.uid, friendBackendUid, identityLockedChatIds)
-    : canonicalChatId;
+  const canonicalHidden = isCanonicalDmHiddenForViewer(
+    session!.uid,
+    friendBackendUid,
+    hiddenLocalChatIds ?? new Set<string>(),
+    hiddenServerConversationIds ?? new Set<string>()
+  );
+  const newChatId =
+    canonicalLocked || canonicalHidden
+      ? allocateLiveDirectChatLocalId(session!.uid, friendBackendUid, identityLockedChatIds)
+      : canonicalChatId;
 
   const newChat = buildNewDirectChatRow({
     chatId: newChatId,

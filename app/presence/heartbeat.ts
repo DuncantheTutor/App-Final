@@ -1,5 +1,7 @@
 import { callEmulatorFunction } from "../../backendBridge";
+import { firebaseAuth } from "../../firebaseAuthClient";
 import { logAppError } from "../../telemetry";
+import { normalizePresenceHeartbeatMs } from "../lib/presenceNormalize";
 import { PRESENCE_HEARTBEAT_MS, PRESENCE_ONLINE_WINDOW_MS } from "../theme/preludeConstants";
 import type { Friend } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
@@ -8,16 +10,24 @@ export function collectFriendPresenceUids(params: {
   allFriends: Friend[];
   friendIdToBackendUid: Record<string, string>;
   sessionUid: string;
+  /** Server-accepted friend uids (roster listener / boot); used when local rows lag. */
+  acceptedFriendBackendUids?: ReadonlySet<string>;
 }): string[] {
-  const { allFriends, friendIdToBackendUid, sessionUid } = params;
-  return allFriends
-    .map((friend) => {
-      const direct = friend.backendUid?.trim();
-      if (direct?.startsWith("u_")) return direct;
-      const mapped = friendIdToBackendUid[friend.id]?.trim();
-      return mapped?.startsWith("u_") ? mapped : "";
-    })
-    .filter((uid): uid is string => uid.startsWith("u_") && uid !== sessionUid);
+  const { allFriends, friendIdToBackendUid, sessionUid, acceptedFriendBackendUids } = params;
+  const out = new Set<string>();
+  for (const friend of allFriends) {
+    const direct = friend.backendUid?.trim();
+    if (direct?.startsWith("u_")) out.add(direct);
+    const mapped = friendIdToBackendUid[friend.id]?.trim();
+    if (mapped?.startsWith("u_")) out.add(mapped);
+  }
+  if (acceptedFriendBackendUids) {
+    for (const uid of acceptedFriendBackendUids) {
+      if (uid.startsWith("u_")) out.add(uid);
+    }
+  }
+  out.delete(sessionUid);
+  return [...out];
 }
 
 /** Publish this device's active presence (must run even with zero friends). */
@@ -63,10 +73,11 @@ export async function pollFriendPresence(params: {
       nextOnline[uid] = presence.online;
       continue;
     }
-    const heartbeatAtMs = Number(presence?.heartbeatAtMs ?? 0);
+    const heartbeatAtMs = normalizePresenceHeartbeatMs(presence?.heartbeatAtMs);
     nextOnline[uid] =
       presence?.state === "active" &&
       Number.isFinite(heartbeatAtMs) &&
+      heartbeatAtMs > 0 &&
       now - heartbeatAtMs <= PRESENCE_ONLINE_WINDOW_MS;
   }
   return nextOnline;
@@ -81,6 +92,24 @@ export async function runPresenceHeartbeatTick(params: {
   const { session, friendUids, now } = params;
   await publishActivePresence(session, now);
   return pollFriendPresence({ session, friendUids, now });
+}
+
+/** Re-links Firebase Auth ↔ app uid and rebuilds presence viewer lists (safe to repeat). */
+export async function repairPresenceAuthAndHeartbeat(session: BackendSession): Promise<void> {
+  const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
+  const now = Date.now();
+  if (firebaseAuthUid) {
+    try {
+      await callEmulatorFunction("registerFirebaseAuthUid", {
+        uid: session.uid,
+        deviceId: session.deviceId,
+        firebaseAuthUid,
+      });
+    } catch (err) {
+      logAppError("presence.repair.register_auth", err, { uid: session.uid });
+    }
+  }
+  await publishActivePresence(session, now);
 }
 
 export async function setBackgroundPresence(session: BackendSession): Promise<void> {

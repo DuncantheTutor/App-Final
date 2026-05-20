@@ -25,10 +25,12 @@ function isServerAcceptedFriend(
   friend: Friend,
   serverAcceptedFriendBackendUids: ReadonlySet<string> | null | undefined
 ): boolean {
+  /** `null` = roster still loading (demo offline or pre–`initialServerSyncDone`). */
   if (serverAcceptedFriendBackendUids === null) return true;
   const backendUid = friend.backendUid?.trim();
   if (!backendUid?.startsWith("u_")) return false;
   if (!serverAcceptedFriendBackendUids) return false;
+  if (serverAcceptedFriendBackendUids.size === 0) return false;
   return serverAcceptedFriendBackendUids.has(backendUid);
 }
 

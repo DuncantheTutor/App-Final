@@ -75,8 +75,14 @@ import {
   where,
 } from "firebase/firestore";
 import { joinCutoffMsForViewer, normalizeMemberJoinedAtForClient } from "./lib/chatMemberJoinedAt";
+import { buildLastMessageByChatId } from "./lib/chatListLastMessage";
 import {
+  findLiveDirectChatForFriend,
+  friendBackendUidFromDirectChatLocalId,
+  isCanonicalDirectChatId,
+  isCanonicalDmHiddenForViewer,
   resolveCanonicalDirectChatLocalId,
+  resolveInboundDirectMessageTarget,
   resolveIncomingDirectChatId,
   serverConversationIdForChat,
   serverConversationIdFromLocalChatId,
@@ -109,8 +115,8 @@ import {
   scrollPageBottomPadding,
   stickyFooterPadding,
 } from "./lib/safeAreaInsets";
-import { feedPostMediaHeight } from "./lib/feedPostLayout";
-import { HoldToReactButton, ReactionSummaryChips } from "./components/HoldToReactButton";
+import { FeedPostCard } from "./components/FeedPostCard";
+import { ReactionBubbleHost } from "./components/ReactionBubbleHost";
 import { aggregateReactionCounts, getMyReactionEmoji } from "./lib/reactionHelpers";
 import {
   mapServerReactionsToLocal,
@@ -177,8 +183,10 @@ import {
   isChatIdentityLocked,
   mergeIdentityLockedChatIds,
 } from "./lib/identityLockedChats";
+import { friendDisplayNameFromProfile } from "./lib/friendDisplayName";
 import { resolveParticipantDisplay } from "./lib/participantDisplay";
 import { maxCreatedAtMs, mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
+import { mergeHydratedPostComments } from "./lib/mergePostComments";
 import { makeStyles } from "./styles/makeAppStyles";
 import { AddFriendScreen } from "./screens/AddFriendScreen";
 import {
@@ -255,7 +263,10 @@ import {
   clearStoredSessionLockToken,
   cloneFriendLinks,
   emailLocalPartGuess,
+  isEmailDerivedUsername,
+  isPlaceholderProfileUsername,
   resolveProfileUsername,
+  usernameForProfileUpsert,
   fetchLedgerTokenFromRtdb,
   fetchLedgerTokenWithEtag,
   formatDayTime,
@@ -398,6 +409,12 @@ function MainAppInner() {
   } | null>(null);
   const [messageActionsOpen, setMessageActionsOpen] = useState(false);
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+  const [postReactionTargetId, setPostReactionTargetId] = useState<string | null>(null);
+  const [commentReactionTarget, setCommentReactionTarget] = useState<{
+    postId: string;
+    commentId: string;
+    threadEntryId?: string;
+  } | null>(null);
   const [messageActionTargetId, setMessageActionTargetId] = useState<string | null>(null);
   const [replyTargetMessageId, setReplyTargetMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -443,9 +460,6 @@ function MainAppInner() {
   const [reactionDetailPost, setReactionDetailPost] = useState<Post | null>(null);
   const [commentDraftByPostId, setCommentDraftByPostId] = useState<Record<string, string>>({});
   const [threadDraftByChainKey, setThreadDraftByChainKey] = useState<Record<string, string>>({});
-  const [expandedCommentChainsByPost, setExpandedCommentChainsByPost] = useState<
-    Record<string, Record<string, boolean>>
-  >({});
   const [postDraftText, setPostDraftText] = useState("");
   const [postDraftImageUris, setPostDraftImageUris] = useState<string[]>([]);
   const [postDraftVideoUri, setPostDraftVideoUri] = useState<string | null>(null);
@@ -650,18 +664,6 @@ function MainAppInner() {
     setShouldFocusPostCommentInput(false);
   }, []);
 
-  const openPostCommentComposerFromFeed = useCallback((post: Post) => {
-    setFullScreenPost(post);
-    setPostFullscreenThreadReplyKey(null);
-    setShouldFocusPostCommentInput(true);
-  }, []);
-
-  const openPostThreadReplyFromFeed = useCallback((post: Post, anchorCommentId: string) => {
-    setFullScreenPost(post);
-    setPostFullscreenThreadReplyKey(`${post.id}:${anchorCommentId}`);
-    setShouldFocusPostCommentInput(true);
-  }, []);
-
   useEffect(() => {
     if (Platform.OS !== "android") return;
     if (authMode !== "loginOtp" && authMode !== "signupOtp") return;
@@ -784,23 +786,27 @@ function MainAppInner() {
     });
   }, [signedIn]);
 
-  const friendIdToBackendUidEarly = useMemo(() => {
+  const presenceFriendUidMap = useMemo(() => {
     const out: Record<string, string> = {};
     for (const friend of addedFriendsFromRitual) {
       const bu = friend.backendUid?.trim();
       if (bu?.startsWith("u_")) out[friend.id] = bu;
     }
+    for (const uid of serverAcceptedFriendBackendUids) {
+      if (!uid.startsWith("u_")) continue;
+      out[backendUidForFriendId(uid)] = uid;
+    }
     return out;
-  }, [addedFriendsFromRitual]);
+  }, [addedFriendsFromRitual, serverAcceptedFriendBackendUids]);
 
   const allFriends = useMemo(
     () =>
       applyPresenceToFriends(
         mergeFriendsCatalog(DEMO_OFFLINE_MODE ? FRIENDS : [], addedFriendsFromRitual),
         presenceOnlineByBackendUid,
-        friendIdToBackendUidEarly
+        presenceFriendUidMap
       ),
-    [addedFriendsFromRitual, presenceOnlineByBackendUid, friendIdToBackendUidEarly]
+    [addedFriendsFromRitual, presenceOnlineByBackendUid, presenceFriendUidMap]
   );
 
   const friendMap = useMemo(() => {
@@ -949,6 +955,7 @@ function MainAppInner() {
       backendUidToFriendIdRef,
       friendMapRef,
       friendIdToBackendUidRef,
+      identityLockedChatIdsRef,
       acceptedFriendBackendUidsRef,
     }),
     []
@@ -966,6 +973,8 @@ function MainAppInner() {
     appLifecycleState,
     initialServerSyncDone,
     viewScreen: view.screen,
+    activeChatLocalId:
+      view.screen === "chat" && "chatId" in view ? view.chatId : null,
     getBackendSession,
     backendSessionReady,
     allFriends,
@@ -1526,6 +1535,21 @@ function MainAppInner() {
     setMessages(migrated.messages);
   }, [signedIn, backendSessionReady, getBackendSession, friendMap, friendIdToBackendUid]);
 
+  const friendBackendUidsKey = useMemo(
+    () =>
+      addedFriendsFromRitual
+        .map((f) => f.backendUid?.trim())
+        .filter((uid): uid is string => !!uid?.startsWith("u_"))
+        .sort()
+        .join(","),
+    [addedFriendsFromRitual]
+  );
+
+  const presenceRosterKey = useMemo(() => {
+    const accepted = [...serverAcceptedFriendBackendUids].sort().join(",");
+    return `${accepted}::${friendBackendUidsKey}`;
+  }, [serverAcceptedFriendBackendUids, friendBackendUidsKey]);
+
   usePresenceHeartbeat({
     demoOfflineMode: DEMO_OFFLINE_MODE,
     signedIn,
@@ -1535,6 +1559,8 @@ function MainAppInner() {
     getBackendSession,
     allFriends,
     friendIdToBackendUid,
+    presenceRosterKey,
+    acceptedFriendBackendUidsRef,
     setPresenceOnlineByBackendUid,
   });
 
@@ -1546,16 +1572,6 @@ function MainAppInner() {
     getBackendSession,
     setPresenceOnlineByBackendUid,
   });
-
-  const friendBackendUidsKey = useMemo(
-    () =>
-      addedFriendsFromRitual
-        .map((f) => f.backendUid?.trim())
-        .filter((uid): uid is string => !!uid?.startsWith("u_"))
-        .sort()
-        .join(","),
-    [addedFriendsFromRitual]
-  );
 
   useEffect(() => {
     if (DEMO_OFFLINE_MODE || !signedIn || !initialServerSyncDone) return;
@@ -1758,18 +1774,17 @@ function MainAppInner() {
   );
 
   const lastMessageByChatId = useMemo(() => {
-    const result: Record<string, Message | undefined> = {};
-    for (const message of messages) {
-      if (message.hiddenFromOwner) continue;
-      const chat = chats.find((c) => c.id === message.chatId);
-      if (message.createdAt < joinCutoffForViewer(chat ?? null)) continue;
-      const current = result[message.chatId];
-      if (!current || current.createdAt < message.createdAt) {
-        result[message.chatId] = message;
-      }
-    }
-    return result;
-  }, [messages, chats]);
+    const session = getBackendSession();
+    return buildLastMessageByChatId({
+      chats,
+      messages,
+      sessionAppUid: session?.uid ?? null,
+      friendMap,
+      friendIdToBackendUid,
+      currentUserId: CURRENT_USER_ID,
+      currentUserLocalId: CURRENT_USER_LOCAL_ID,
+    });
+  }, [messages, chats, friendMap, friendIdToBackendUid, getBackendSession]);
 
   const sortedChats = useMemo(() => {
     const hidden = new Set(hiddenChatIds);
@@ -1847,7 +1862,10 @@ function MainAppInner() {
       return pendingDraft?.name ?? resolvedChat?.name ?? "Chat";
     }
     if (activeCounterpartIds.length === 1) {
-      return resolvePd(activeCounterpartIds[0], activeChatId).displayName;
+      if (activeChatIdentityLocked) return "User";
+      const counterpartId = activeCounterpartIds[0];
+      const pd = resolvePd(counterpartId, activeChatId);
+      return pd.displayName;
     }
     if (activeCounterpartIds.length > 1) {
       if (resolvedChat?.isCustomName) return resolvedChat.name;
@@ -1868,7 +1886,10 @@ function MainAppInner() {
     resolvedChat?.isCustomName,
     resolvedChat?.kind,
     activeChatId,
+    activeChatIdentityLocked,
     identityLockedChatIds,
+    serverFriendUidsForDisplay,
+    resolvePd,
   ]);
   /** Direct DM: ex-friend, unknown participant, or identity-locked history after refriend. */
   const isDirectTombstoneChat =
@@ -2006,17 +2027,19 @@ function MainAppInner() {
       const decoded: Message[] = [];
       for (const item of res.items ?? []) {
         const rawLocal = item.conversationId.replace(/^enc_/, "");
-        const resolvedLocal = resolveIncomingDirectChatId(rawLocal, item.senderUid, session.uid);
-        if (
-          isConversationHiddenForViewer(
-            item.conversationId,
-            { raw: rawLocal, resolved: resolvedLocal },
-            hiddenLocal,
-            hiddenServer
-          )
-        ) {
-          continue;
-        }
+        const preTarget = resolveInboundDirectMessageTarget({
+          conversationId: item.conversationId,
+          rawLocalChatId: rawLocal,
+          senderAppUid: item.senderUid,
+          sessionAppUid: session.uid,
+          chats,
+          friendMap,
+          friendIdToBackendUid,
+          hiddenLocalChatIds: hiddenLocal,
+          hiddenServerConversationIds: hiddenServer,
+          identityLockedChatIds: identityLockedChatIdsSet,
+        });
+        if ("drop" in preTarget) continue;
         try {
           const plain = await decryptPayloadForRecipient<{
             messageId: string;
@@ -2036,11 +2059,21 @@ function MainAppInner() {
             editedAt: item.editedAt,
             unsentAt: item.unsentAt,
           };
-          const messageChatId = resolveIncomingDirectChatId(
-            plain.chatId || rawLocal,
-            item.senderUid,
-            session.uid
-          );
+          const postTarget = resolveInboundDirectMessageTarget({
+            conversationId: item.conversationId,
+            rawLocalChatId: rawLocal,
+            senderAppUid: item.senderUid,
+            sessionAppUid: session.uid,
+            chats,
+            friendMap,
+            friendIdToBackendUid,
+            hiddenLocalChatIds: hiddenLocal,
+            hiddenServerConversationIds: hiddenServer,
+            identityLockedChatIds: identityLockedChatIdsSet,
+            plainLocalChatId: plain.chatId,
+          });
+          if ("drop" in postTarget) continue;
+          const messageChatId = postTarget.resolvedLocalChatId;
           const baseRow: Message = {
             id: item.messageId,
             chatId: messageChatId,
@@ -2298,10 +2331,15 @@ function MainAppInner() {
       persistedUsername,
       accountUsername: account.username,
     });
+    const usernameForClaim =
+      persistedUsername ||
+      (claimUsername !== "User" && !isEmailDerivedUsername(claimUsername, account.email)
+        ? claimUsername
+        : "");
     await callEmulatorFunction("claimDeviceSession", {
       uid,
       deviceId,
-      ...(claimUsername !== "User" ? { username: claimUsername } : {}),
+      ...(usernameForClaim ? { username: usernameForClaim } : {}),
     });
 
     const keyRestore = await restoreKeyBundleFromCloudIfMissing(uid, deviceId);
@@ -2335,6 +2373,7 @@ function MainAppInner() {
     // the boot-time `listEncryptedMessages` callable pull.
     const firebaseAuthUid = firebaseAuth.currentUser?.uid;
     if (firebaseAuthUid) {
+      let authRegistryOk = false;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           await callEmulatorFunction("registerFirebaseAuthUid", {
@@ -2342,6 +2381,9 @@ function MainAppInner() {
             deviceId,
             firebaseAuthUid,
           });
+          // registerFirebaseAuthUid also refreshes presence server-side; publish again for redundancy.
+          await publishActivePresence({ uid, deviceId }, Date.now());
+          authRegistryOk = true;
           break;
         } catch (err) {
           if (attempt >= 2) {
@@ -2351,7 +2393,9 @@ function MainAppInner() {
           }
         }
       }
-      void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
+      if (!authRegistryOk) {
+        void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
+      }
     }
 
     let resolvedBio = (account.bio || "").trim();
@@ -2387,7 +2431,11 @@ function MainAppInner() {
       accountUsername: account.username,
       serverUsername: self?.username,
     });
-    void AsyncStorage.setItem(profileUsernameStorageKey(account.email), resolvedUsername).catch(() => {});
+    if (!isPlaceholderProfileUsername(resolvedUsername, account.email)) {
+      void AsyncStorage.setItem(profileUsernameStorageKey(account.email), resolvedUsername).catch(
+        () => {}
+      );
+    }
 
     await callEmulatorFunction("publishUserKeyBundle", {
       uid,
@@ -2406,10 +2454,16 @@ function MainAppInner() {
         postsWatermarkMs: cloudSnapshot.postsWatermarkMs,
       }).catch(() => undefined);
     }
+    const usernameForUpsert = usernameForProfileUpsert({
+      email: account.email,
+      persistedUsername,
+      accountUsername: account.username,
+      serverUsername: self?.username,
+    });
     await callEmulatorFunction("upsertUserProfile", {
       uid,
       deviceId,
-      username: resolvedUsername,
+      ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
       bio: resolvedBio,
       profilePictureUrl: resolvedPicture,
       phoneNumber: account.phoneNumber,
@@ -2541,6 +2595,11 @@ function MainAppInner() {
                   .filter((id) => id.length > 0)
               : [];
             setHiddenChatIds(restoredHidden);
+            for (const id of restoredHidden) {
+              if (isCanonicalDirectChatId(id)) {
+                hiddenServerConversationIdsRef.current.add(`enc_${id}`);
+              }
+            }
             const hiddenLocal = new Set(restoredHidden);
             nextChats = nextChats.filter((c) => !hiddenLocal.has(c.id));
             nextMessages = nextMessages.filter((m) => !hiddenLocal.has(m.chatId));
@@ -2596,6 +2655,7 @@ function MainAppInner() {
         return next;
       });
       setAddedFriendsFromRitual(dedupeFriendsByBackendUid(ritualFriendsFiltered));
+      setPresenceOnlineByBackendUid({});
       setFeedMutedUntilByFriendId({});
       setMyBio(account.bio);
       setMyBioTextEntryOpen(!account.bio.trim());
@@ -3297,12 +3357,35 @@ function MainAppInner() {
     setSelectedBroadcastThreadFriendId(null);
     setReplyTargetMessageId(null);
     setEditingMessageId(null);
-    const chat = chats.find((c) => c.id === chatId);
+    let targetChatId = chatId;
+    const session = getBackendSession();
+    if (session && isCanonicalDirectChatId(chatId)) {
+      const friendBackendUid = friendBackendUidFromDirectChatLocalId(chatId, session.uid);
+      if (
+        friendBackendUid &&
+        isCanonicalDmHiddenForViewer(
+          session.uid,
+          friendBackendUid,
+          new Set(hiddenChatIdsRef.current),
+          hiddenServerConversationIdsRef.current
+        )
+      ) {
+        const live = findLiveDirectChatForFriend(
+          chats,
+          session.uid,
+          friendBackendUid,
+          friendMap,
+          friendIdToBackendUid
+        );
+        if (live) targetChatId = live.id;
+      }
+    }
+    const chat = chats.find((c) => c.id === targetChatId);
     const draftText = chat?.draftComposerText ?? "";
-    setHiddenChatIds((current) => current.filter((id) => id !== chatId));
+    setHiddenChatIds((current) => current.filter((id) => id !== targetChatId));
     setChatInput(draftText);
     setShouldFocusChatInput(draftText.trim().length > 0);
-    setView({ screen: "chat", chatId });
+    setView({ screen: "chat", chatId: targetChatId });
   };
 
   useEffect(() => {
@@ -3466,8 +3549,10 @@ function MainAppInner() {
       friendIdToBackendUid,
       unfriendedIds,
       identityLockedChatIds: identityLockedChatIdsSet,
+      hiddenServerConversationIds: hiddenServerConversationIdsRef.current,
+      hiddenLocalChatIds: new Set(hiddenChatIdsRef.current),
       resolveDisplayName: (id) =>
-        resolvePd(id).displayName,
+        friendMap[id]?.displayName?.trim() || resolvePd(id).displayName,
       normalizeMemberSet: normalizeSet,
       goToChat,
       setChats,
@@ -3578,7 +3663,7 @@ function MainAppInner() {
       const friend: Friend = {
         id: backendUidForFriendId(friendUid),
         backendUid: friendUid,
-        displayName: profile?.username?.trim() || `User ${friendUid.slice(0, 6)}`,
+        displayName: friendDisplayNameFromProfile(profile?.username, friendUid),
         online: false,
         profilePictureUrl: profile?.profilePictureUrl || "",
         bio: profile?.bio || "",
@@ -3872,7 +3957,9 @@ function MainAppInner() {
       syncServerAcceptedFriendBackendUids(
         new Set([...acceptedFriendBackendUidsRef.current, friendUid])
       );
-      return hydrateFriendByUid(session, friendUid, { pairingPin: pin });
+      const hydrated = await hydrateFriendByUid(session, friendUid, { pairingPin: pin });
+      void publishActivePresence(session, Date.now()).catch(() => undefined);
+      return hydrated;
     },
     [getBackendSession, hydrateFriendByUid, demoPendingAddableQueue, syncServerAcceptedFriendBackendUids]
   );
@@ -4873,10 +4960,28 @@ function MainAppInner() {
             if (session && email) {
               const persistedUsername =
                 (await AsyncStorage.getItem(profileUsernameStorageKey(email)))?.trim() ?? "";
+              let serverUsername = "";
+              try {
+                const profilesRes = await callEmulatorFunction<{
+                  profiles?: Record<string, { username?: string } | null>;
+                }>("getUserProfiles", {
+                  uid: session.uid,
+                  deviceId: session.deviceId,
+                  targetUids: [session.uid],
+                });
+                serverUsername = String(profilesRes.profiles?.[session.uid]?.username ?? "").trim();
+              } catch {
+                /* keep existing server username */
+              }
+              const usernameForUpsert = usernameForProfileUpsert({
+                email,
+                persistedUsername,
+                serverUsername,
+              });
               await callEmulatorFunction("upsertUserProfile", {
                 uid: session.uid,
                 deviceId: session.deviceId,
-                ...(persistedUsername ? { username: persistedUsername } : {}),
+                ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
                 bio: myBio,
                 profilePictureUrl: httpsUrl,
               });
@@ -5171,7 +5276,10 @@ function MainAppInner() {
         friendMap,
         friendIdToBackendUid
       );
-      if (canonicalId) idsToHide.add(canonicalId);
+      // Tombstone canonical local row only when deleting the canonical thread — not a `__live` row.
+      if (canonicalId && isCanonicalDirectChatId(chat.id)) {
+        idsToHide.add(canonicalId);
+      }
       if (!DEMO_OFFLINE_MODE) {
         const conversationIdsToHide = serverConversationIdsToHide(
           chat,
@@ -5350,7 +5458,8 @@ function MainAppInner() {
 
   const openChatRowActions = (chat: Chat) => {
     const muted = !!chat.mutedForNotifications;
-    Alert.alert(chat.name, undefined, [
+    const listTitle = resolvedStoredChatListTitle(chat);
+    Alert.alert(listTitle, undefined, [
       {
         text: muted ? "Unmute notifications" : "Mute notifications",
         onPress: () => toggleChatMute(chat.id),
@@ -5536,9 +5645,53 @@ function MainAppInner() {
   );
 
   const applyReaction = (emoji: string) => {
+    if (postReactionTargetId) {
+      const post = posts.find((p) => p.id === postReactionTargetId);
+      if (post) void togglePostReaction(post, emoji);
+      setPostReactionTargetId(null);
+      setReactionPickerOpen(false);
+      return;
+    }
+    if (commentReactionTarget) {
+      const { postId, commentId, threadEntryId } = commentReactionTarget;
+      if (threadEntryId) {
+        toggleThreadReaction(postId, commentId, threadEntryId, emoji);
+      } else {
+        toggleCommentReaction(postId, commentId, emoji);
+      }
+      setCommentReactionTarget(null);
+      setReactionPickerOpen(false);
+      return;
+    }
     if (!messageActionTargetId) return;
     applyReactionToMessage(messageActionTargetId, emoji);
+    setReactionPickerOpen(false);
   };
+
+  const openReactionPickerForMessage = useCallback((messageId: string) => {
+    setPostReactionTargetId(null);
+    setCommentReactionTarget(null);
+    setMessageActionTargetId(messageId);
+    setMessageActionsOpen(false);
+    setReactionPickerOpen(true);
+  }, []);
+
+  const openReactionPickerForPost = useCallback((postId: string) => {
+    setMessageActionTargetId(null);
+    setCommentReactionTarget(null);
+    setPostReactionTargetId(postId);
+    setReactionPickerOpen(true);
+  }, []);
+
+  const openReactionPickerForComment = useCallback(
+    (postId: string, commentId: string, threadEntryId?: string) => {
+      setMessageActionTargetId(null);
+      setPostReactionTargetId(null);
+      setCommentReactionTarget({ postId, commentId, threadEntryId });
+      setReactionPickerOpen(true);
+    },
+    []
+  );
 
   const unsendTargetMessage = () => {
     if (!messageActionTarget) return;
@@ -5631,19 +5784,12 @@ function MainAppInner() {
 
   const getReactionEntries = (message: Message) => {
     const session = getBackendSession();
-    const reactions =
-      session && message.reactions
-        ? mapServerReactionsToLocal(message.reactions, session.uid, backendUidToFriendId) ??
-          message.reactions
-        : message.reactions;
-    const counts = Object.values(reactions ?? {}).reduce<Record<string, number>>(
-      (acc, emoji) => {
-        acc[emoji] = (acc[emoji] ?? 0) + 1;
-        return acc;
-      },
-      {}
+    return aggregateReactionCounts(
+      message.reactions,
+      session?.uid ?? null,
+      backendUidToFriendId,
+      visibleFriendIds
     );
-    return Object.entries(counts).sort((a, b) => a[0].localeCompare(b[0]));
   };
 
   const renderAvatar = (
@@ -5677,13 +5823,16 @@ function MainAppInner() {
     );
   };
 
-  const postAuthorMeta = (authorId: string) => {
-    if (authorId === CURRENT_USER_ID) {
-      return { name: "You", avatarUri: myProfilePictureUrl ?? undefined };
-    }
-    const pd = resolvePd(authorId);
-    return { name: pd.displayName, avatarUri: pd.profilePictureUrl || undefined };
-  };
+  const postAuthorMeta = useCallback(
+    (authorId: string) => {
+      if (authorId === CURRENT_USER_ID) {
+        return { name: "You", avatarUri: myProfilePictureUrl ?? undefined };
+      }
+      const pd = resolvePd(authorId);
+      return { name: pd.displayName, avatarUri: pd.profilePictureUrl || undefined };
+    },
+    [myProfilePictureUrl, friendMap, unfriendedIds, serverFriendUidsForDisplay]
+  );
 
   const feedReactionDetailRows = useMemo(() => {
     if (!reactionDetailPost) return [];
@@ -5695,7 +5844,10 @@ function MainAppInner() {
         name:
           userId === CURRENT_USER_ID
             ? "You"
-            : friendMap[userId]?.displayName ?? "Friend",
+            : friendDisplayNameFromProfile(
+                friendMap[userId]?.displayName,
+                friendMap[userId]?.backendUid ?? userId
+              ),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [reactionDetailPost, visibleFriendIds, friendMap]);
@@ -5837,10 +5989,11 @@ function MainAppInner() {
       setPosts((current) =>
         current.map((candidate) => {
           if (candidate.id !== post.id) return candidate;
+          const merged = mergeHydratedPostComments(candidate.comments, comments);
           const prevSig = commentSignature(candidate.comments ?? []);
-          const nextSig = commentSignature(comments);
+          const nextSig = commentSignature(merged);
           if (prevSig === nextSig) return candidate;
-          return { ...candidate, comments };
+          return { ...candidate, comments: merged };
         })
       );
     },
@@ -5908,6 +6061,26 @@ function MainAppInner() {
         ? friendMap[comment.authorId]?.backendUid ?? null
         : session.uid;
     if (!friendUid) return;
+    const optimisticId = `opt_thread_${Date.now()}`;
+    setPosts((current) =>
+      current.map((candidate) => {
+        if (candidate.id !== postId) return candidate;
+        return {
+          ...candidate,
+          comments: (candidate.comments ?? []).map((c) => {
+            if (c.id !== commentId) return c;
+            const entry = {
+              id: optimisticId,
+              authorId: CURRENT_USER_ID,
+              text,
+              createdAt: Date.now(),
+              reactions: {} as Record<string, string>,
+            };
+            return { ...c, thread: [...(c.thread ?? []), entry] };
+          }),
+        };
+      })
+    );
     void callEmulatorFunction("createPrivatePostThreadMessage", {
       uid: session.uid,
       deviceId: session.deviceId,
@@ -5915,7 +6088,25 @@ function MainAppInner() {
       postOwnerUid,
       friendUid,
       text,
-    }).then(() => hydratePrivateThreadForPost(post));
+    })
+      .then(() => hydratePrivateThreadForPost(post))
+      .catch(() => {
+        setPosts((current) =>
+          current.map((candidate) => {
+            if (candidate.id !== postId) return candidate;
+            return {
+              ...candidate,
+              comments: (candidate.comments ?? []).map((c) => {
+                if (c.id !== commentId) return c;
+                return {
+                  ...c,
+                  thread: (c.thread ?? []).filter((entry) => entry.id !== optimisticId),
+                };
+              }),
+            };
+          })
+        );
+      });
     setThreadDraftByChainKey((current) => ({ ...current, [`${postId}:${commentId}`]: "" }));
   }, [friendMap, getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid]);
 
@@ -6238,468 +6429,56 @@ function MainAppInner() {
     );
   };
 
-  const renderCommentReactionRow = (
-    reactions: Record<string, string> | undefined,
-    onPick: (emoji: string) => void,
-    disabled?: boolean
-  ) => {
-    const session = getBackendSession();
-    return (
-      <View style={styles.commentReactionRow}>
-        <HoldToReactButton
-          activeEmoji={getMyReactionEmoji(reactions, session?.uid, backendUidToFriendId)}
-          onPick={onPick}
-          disabled={disabled || DEMO_OFFLINE_MODE || !session}
-          theme={reactTheme}
-        />
-        <ReactionSummaryChips
-          entries={aggregateReactionCounts(
-            reactions,
-            session?.uid ?? null,
-            backendUidToFriendId,
-            visibleFriendIds
-          )}
-          theme={reactTheme}
-        />
-      </View>
-    );
-  };
-
-  const FeedPostCard = ({
-    post,
-    inFullscreenModal,
-    hideComposers,
-    videoShouldPlay,
-    onToggleReaction,
-    onOpenViewer,
-    onOpenCommentComposer,
-    onOpenThreadReply,
-  }: {
-    post: Post;
-    inFullscreenModal?: boolean;
-    /** When true (fullscreen post modal), comment entry lives in the pinned footer — no inline composers. */
-    hideComposers?: boolean;
-    videoShouldPlay?: boolean;
-    onToggleReaction?: (emoji: string) => void;
-    onOpenViewer?: () => void;
-    onOpenCommentComposer?: () => void;
-    onOpenThreadReply?: (anchorCommentId: string) => void;
-  }) => {
-    const meta = postAuthorMeta(post.authorId);
-    const canDelete = post.authorId === CURRENT_USER_ID;
-    const mediaUris = post.imageUris ?? [];
-    const [photoIndex, setPhotoIndex] = useState(0);
-    const mediaScrollRef = useRef<ScrollView | null>(null);
-    const mediaBoxHeight = feedPostMediaHeight(windowWidth);
-
-    const friendOnlyReactionEntries = useMemo(() => {
-      return Object.entries(post.feedReactions ?? {}).filter(([userId]) =>
-        visibleFriendIds.includes(userId)
+  const commentReactionEntries = useCallback(
+    (reactions: Record<string, string> | undefined) => {
+      const session = getBackendSession();
+      return aggregateReactionCounts(
+        reactions,
+        session?.uid ?? null,
+        backendUidToFriendId,
+        visibleFriendIds
       );
-    }, [post.feedReactions, visibleFriendIds]);
+    },
+    [backendUidToFriendId, getBackendSession, visibleFriendIds]
+  );
 
-    const aggregatedFeedReactions = useMemo(() => {
-      const m = new Map<string, number>();
-      for (const [, emoji] of friendOnlyReactionEntries) {
-        m.set(emoji, (m.get(emoji) ?? 0) + 1);
-      }
-      return [...m.entries()].sort(
-        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
-      );
-    }, [friendOnlyReactionEntries]);
-
-    const isPostOwnerView = post.authorId === CURRENT_USER_ID;
-    const visibleComments = useMemo(() => {
-      const comments = post.comments ?? [];
-      if (isPostOwnerView) return comments;
-      return comments.filter((comment) => comment.authorId === CURRENT_USER_ID);
-    }, [post.comments, isPostOwnerView]);
-
-    const chainsByFriend = useMemo(() => {
-      const grouped: Record<string, PostComment[]> = {};
-      for (const comment of visibleComments) {
-        const key = comment.authorId;
-        if (!grouped[key]) grouped[key] = [];
-        grouped[key].push(comment);
-      }
-      return grouped;
-    }, [visibleComments]);
-
-    const ownerChainCards = useMemo(() => {
-      return Object.entries(chainsByFriend)
-        .map(([friendId, comments]) => {
-          const newest = [...comments].sort((a, b) => b.createdAt - a.createdAt)[0];
-          return {
-            friendId,
-            count: comments.length,
-            newestAt: newest?.createdAt ?? 0,
-            newestText: newest?.text ?? "",
-          };
-        })
-        .sort((a, b) => b.newestAt - a.newestAt);
-    }, [chainsByFriend]);
-
-    useEffect(() => {
-      setPhotoIndex(0);
-    }, [post.id]);
-
-    const goToPhoto = (nextIndex: number) => {
-      if (mediaUris.length <= 1) return;
-      const clamped = Math.max(0, Math.min(nextIndex, mediaUris.length - 1));
-      setPhotoIndex(clamped);
-      mediaScrollRef.current?.scrollTo({ x: clamped * windowWidth, animated: true });
-    };
-
-    const anchorCommentForChain = (friendId: string) => {
-      const chain = chainsByFriend[friendId] ?? [];
-      const first = [...chain].sort((a, b) => a.createdAt - b.createdAt)[0];
-      return first?.id ?? "";
-    };
-
-    const myFeedReactionEmoji = post.feedReactions?.[CURRENT_USER_ID];
-    const canReactToComment = (messageId: string) => !messageId.startsWith("srv_");
-
-    return (
-      <View style={styles.postFeedCard}>
-        <Pressable
-          onPress={() => {
-            if (!inFullscreenModal) {
-              onOpenViewer?.();
-            }
-          }}
-          onLongPress={() => {
-            if (canDelete) confirmDeletePost(post);
-          }}
-          delayLongPress={450}
-          disabled={inFullscreenModal}
-        >
-        <View style={styles.postFeedHeaderRow}>
-          <Pressable
-            onPress={() => {
-              if (post.authorId === CURRENT_USER_ID) {
-                openMyProfile();
-                return;
-              }
-              if (resolvePd(post.authorId).canOpenProfile) {
-                openFriendProfile(post.authorId, "home");
-              }
-            }}
-            accessibilityLabel={`Open ${meta.name} profile`}
-          >
-            {renderAvatar(meta.avatarUri, meta.name.slice(0, 1), 34)}
-          </Pressable>
-          <View style={styles.postFeedHeaderTextCol}>
-            <Text style={styles.postFeedAuthor} numberOfLines={1}>
-              {meta.name}
-            </Text>
-            <Text style={styles.postFeedTime}>{formatDayTime(post.createdAt)}</Text>
-          </View>
-          <Pressable
-            style={styles.postFeedHeaderAction}
-            onPress={() => openFeedPostActions(post)}
-            accessibilityLabel="Post actions"
-          >
-            <Ionicons name="ellipsis-horizontal" size={20} color={theme.subtleText} />
-          </Pressable>
-        </View>
-        {post.text?.trim() ? <Text style={styles.postFeedBody}>{post.text}</Text> : null}
-
-        {mediaUris.length > 0 ? (
-          <View style={styles.postFeedMediaWrap}>
-            <ScrollViewUntilScroll
-              ref={mediaScrollRef}
-              horizontal
-              pagingEnabled
-              showsHorizontalScrollIndicator={false}
-              style={styles.postFeedImageStrip}
-              onMomentumScrollEnd={({ nativeEvent }) => {
-                const next = Math.round(nativeEvent.contentOffset.x / windowWidth);
-                setPhotoIndex(Math.max(0, Math.min(next, mediaUris.length - 1)));
-              }}
-            >
-              {mediaUris.map((uri) => {
-                return (
-                  <View key={uri} style={{ width: windowWidth, height: mediaBoxHeight }}>
-                    <Image
-                      source={{ uri }}
-                      style={[styles.postFeedImageFullWidth, { height: mediaBoxHeight }]}
-                      resizeMode="contain"
-                    />
-                  </View>
-                );
-              })}
-            </ScrollViewUntilScroll>
-            {mediaUris.length > 1 ? (
-              <>
-                <Pressable
-                  style={[styles.postCarouselChevron, styles.postCarouselChevronLeft]}
-                  onPress={() => goToPhoto(photoIndex - 1)}
-                  accessibilityLabel="Previous photo"
-                >
-                  <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
-                </Pressable>
-                <Pressable
-                  style={[styles.postCarouselChevron, styles.postCarouselChevronRight]}
-                  onPress={() => goToPhoto(photoIndex + 1)}
-                  accessibilityLabel="Next photo"
-                >
-                  <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-                </Pressable>
-                <View style={styles.postCarouselCountBadge}>
-                  <Text style={styles.postCarouselCountText}>
-                    {photoIndex + 1}/{mediaUris.length}
-                  </Text>
-                </View>
-              </>
-            ) : null}
-          </View>
-        ) : null}
-
-        {post.videoUri ? (
-          <Video
-            style={styles.postFeedVideo}
-            source={{ uri: post.videoUri }}
-            usePoster={!!post.videoPosterUri}
-            posterSource={post.videoPosterUri ? { uri: post.videoPosterUri } : undefined}
-            resizeMode={ResizeMode.CONTAIN}
-            useNativeControls={!videoShouldPlay}
-            isMuted
-            shouldPlay={!!videoShouldPlay}
-          />
-        ) : null}
-        </Pressable>
-
-        {onToggleReaction || aggregatedFeedReactions.length > 0 || inFullscreenModal ? (
-          <View style={styles.feedReactionRow}>
-            {onToggleReaction ? (
-              <HoldToReactButton
-                activeEmoji={myFeedReactionEmoji}
-                onPick={onToggleReaction}
-                disabled={DEMO_OFFLINE_MODE}
-                theme={reactTheme}
-                accessibilityLabel="React to post"
-              />
-            ) : null}
-            <ReactionSummaryChips
-              entries={aggregatedFeedReactions}
-              onPressSummary={
-                aggregatedFeedReactions.length > 0 ? () => setReactionDetailPost(post) : undefined
-              }
-              theme={reactTheme}
-            />
-          </View>
-        ) : null}
-
-        <Pressable
-          style={styles.feedCommentActionRow}
-          onPress={() => {
-            if (!inFullscreenModal) {
-              onOpenViewer?.();
-            }
-          }}
-          disabled={inFullscreenModal}
-          accessibilityRole="button"
-          accessibilityLabel="View comments"
-        >
-          <Ionicons name="chatbubble-outline" size={15} color={theme.subtleText} />
-          <Text style={styles.feedCommentActionText}>
-            {visibleComments.length > 0 ? `Comments (${visibleComments.length})` : "No comments yet"}
-          </Text>
-        </Pressable>
-
-        {isPostOwnerView && inFullscreenModal ? (
-          <View style={styles.privateCommentInlineSection}>
-            {ownerChainCards.map((chain) => {
-              const expanded =
-                expandedCommentChainsByPost[post.id]?.[chain.friendId] ??
-                ownerChainCards.length === 1;
-              const chainComments = chainsByFriend[chain.friendId] ?? [];
-              const flatThread = chainComments
-                .flatMap((comment) => [
-                  {
-                    id: comment.id,
-                    authorId: comment.authorId,
-                    text: comment.text,
-                    createdAt: comment.createdAt,
-                    reactions: comment.reactions,
-                    parentCommentId: comment.id,
-                  },
-                  ...(comment.thread ?? []).map((entry) => ({
-                    ...entry,
-                    parentCommentId: comment.id,
-                  })),
-                ])
-                .sort((a, b) => a.createdAt - b.createdAt);
-              return (
-                <View key={`${post.id}:${chain.friendId}`} style={styles.privateCommentCard}>
-                  <Pressable
-                    style={styles.privateCommentChainHeader}
-                    onPress={() =>
-                      setExpandedCommentChainsByPost((current) => ({
-                        ...current,
-                        [post.id]: {
-                          ...(current[post.id] ?? {}),
-                          [chain.friendId]: !expanded,
-                        },
-                      }))
-                    }
-                  >
-                    <Text style={styles.privateCommentChainName}>
-                      {postAuthorMeta(chain.friendId).name}
-                    </Text>
-                    <Text style={styles.privateCommentChainPreview} numberOfLines={1}>
-                      {chain.newestText}
-                    </Text>
-                  </Pressable>
-                  {expanded ? (
-                    <View style={styles.privateCommentThreadPlain}>
-                      {flatThread.map((entry) => {
-                        const isRootComment = entry.id === entry.parentCommentId;
-                        return (
-                          <View key={entry.id} style={styles.privateCommentPlainRow}>
-                            <Text style={styles.privateCommentMeta}>
-                              {entry.authorId === CURRENT_USER_ID
-                                ? "You"
-                                : postAuthorMeta(entry.authorId).name}{" "}
-                              · {formatDayTime(entry.createdAt)}
-                            </Text>
-                            {entry.text.trim() ? (
-                              <View style={styles.privateCommentBubble}>
-                                <Text style={styles.privateCommentBody}>{entry.text}</Text>
-                                {renderCommentReactionRow(
-                                  entry.reactions,
-                                  (emoji) => {
-                                    if (isRootComment) {
-                                      toggleCommentReaction(post.id, entry.id, emoji);
-                                      return;
-                                    }
-                                    toggleThreadReaction(
-                                      post.id,
-                                      entry.parentCommentId,
-                                      entry.id,
-                                      emoji
-                                    );
-                                  },
-                                  !canReactToComment(entry.id)
-                                )}
-                              </View>
-                            ) : (
-                              renderCommentReactionRow(
-                                entry.reactions,
-                                (emoji) => {
-                                  if (isRootComment) {
-                                    toggleCommentReaction(post.id, entry.id, emoji);
-                                    return;
-                                  }
-                                  toggleThreadReaction(
-                                    post.id,
-                                    entry.parentCommentId,
-                                    entry.id,
-                                    emoji
-                                  );
-                                },
-                                !canReactToComment(entry.id)
-                              )
-                            )}
-                          </View>
-                        );
-                      })}
-                      {chainComments.length > 0 && (!hideComposers || inFullscreenModal) ? (
-                        <Pressable
-                          style={styles.postCommentPlaceholderBar}
-                          onPress={() =>
-                            onOpenThreadReply?.(chainComments[0]?.id ?? anchorCommentForChain(chain.friendId))
-                          }
-                        >
-                          <Text style={styles.postCommentPlaceholderText}>{`Reply to ${postAuthorMeta(chain.friendId).name}...`}</Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </View>
-              );
-            })}
-          </View>
-        ) : inFullscreenModal ? (
-          <View style={styles.privateCommentInlineSection}>
-            {visibleComments.map((comment) => {
-              const flatThread = [
-                {
-                  id: comment.id,
-                  authorId: comment.authorId,
-                  text: comment.text,
-                  createdAt: comment.createdAt,
-                  reactions: comment.reactions,
-                  parentCommentId: comment.id,
-                },
-                ...(comment.thread ?? []).map((entry) => ({ ...entry, parentCommentId: comment.id })),
-              ].sort((a, b) => a.createdAt - b.createdAt);
-              return (
-                <View key={comment.id} style={styles.privateCommentCard}>
-                  <View style={styles.privateCommentThreadPlain}>
-                    {flatThread.map((entry) => {
-                      const isRootComment = entry.id === entry.parentCommentId;
-                      return (
-                        <View key={entry.id} style={styles.privateCommentPlainRow}>
-                          <Text style={styles.privateCommentMeta}>
-                            {entry.authorId === CURRENT_USER_ID ? "You" : postAuthorMeta(entry.authorId).name} ·{" "}
-                            {formatDayTime(entry.createdAt)}
-                          </Text>
-                          {entry.text.trim() ? (
-                            <View style={styles.privateCommentBubble}>
-                              <Text style={styles.privateCommentBody}>{entry.text}</Text>
-                              {renderCommentReactionRow(
-                                entry.reactions,
-                                (emoji) => {
-                                  if (isRootComment) {
-                                    toggleCommentReaction(post.id, entry.id, emoji);
-                                    return;
-                                  }
-                                  toggleThreadReaction(
-                                    post.id,
-                                    entry.parentCommentId,
-                                    entry.id,
-                                    emoji
-                                  );
-                                },
-                                !canReactToComment(entry.id)
-                              )}
-                            </View>
-                          ) : (
-                            renderCommentReactionRow(
-                              entry.reactions,
-                              (emoji) => {
-                                if (isRootComment) {
-                                  toggleCommentReaction(post.id, entry.id, emoji);
-                                  return;
-                                }
-                                toggleThreadReaction(
-                                  post.id,
-                                  entry.parentCommentId,
-                                  entry.id,
-                                  emoji
-                                );
-                              },
-                              !canReactToComment(entry.id)
-                            )
-                          )}
-                        </View>
-                      );
-                    })}
-                  </View>
-                </View>
-              );
-            })}
-            {!hideComposers ? (
-              <Pressable style={styles.postCommentPlaceholderBar} onPress={() => onOpenCommentComposer?.()}>
-                <Text style={styles.postCommentPlaceholderText}>Add comment...</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
-    );
-  };
+  const feedPostCardShared = useMemo(
+    () => ({
+      windowWidth,
+      subtleTextColor: theme.subtleText,
+      styles,
+      reactTheme,
+      currentUserId: CURRENT_USER_ID,
+      visibleFriendIds,
+      demoOfflineMode: DEMO_OFFLINE_MODE,
+      resolveAuthorMeta: postAuthorMeta,
+      resolveCanOpenProfile: (friendId: string) => resolvePd(friendId).canOpenProfile,
+      formatTime: formatDayTime,
+      renderAvatar,
+      getBackendSession,
+      commentReactionEntries,
+      canReactToComment: (messageId: string) => !messageId.startsWith("srv_"),
+      onOpenFriendProfile: (friendId: string) => openFriendProfile(friendId, "home"),
+      onOpenMyProfile: openMyProfile,
+      onOpenPostActions: openFeedPostActions,
+      onConfirmDeletePost: confirmDeletePost,
+      onOpenReactionPickerForPost: openReactionPickerForPost,
+      onOpenReactionPickerForComment: openReactionPickerForComment,
+      onOpenReactionDetail: setReactionDetailPost,
+    }),
+    [
+      windowWidth,
+      theme.subtleText,
+      styles,
+      reactTheme,
+      visibleFriendIds,
+      postAuthorMeta,
+      getBackendSession,
+      commentReactionEntries,
+      openReactionPickerForPost,
+      openReactionPickerForComment,
+    ]
+  );
 
   const showHome = view.screen === "home";
   const showChatScreen =
@@ -7068,27 +6847,32 @@ function MainAppInner() {
                 style={{ flex: 1 }}
                 contentContainerStyle={[
                   styles.friendProfileScroll,
-                  { paddingBottom: scrollPageBottomPadding(insets.bottom, 16) },
+                  { paddingBottom: scrollPageBottomPadding(insets.bottom, 96) },
                 ]}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="on-drag"
               >
                 <FeedPostCard
+                  {...feedPostCardShared}
                   post={fullScreenPost}
                   inFullscreenModal
                   hideComposers
                   onToggleReaction={(emoji) => togglePostReaction(fullScreenPost, emoji)}
-                  onOpenThreadReply={(cid) => {
-                    setPostFullscreenThreadReplyKey(`${fullScreenPost.id}:${cid}`);
-                    requestAnimationFrame(() => postCommentInputRef.current?.focus());
-                  }}
+                  onOpenThreadReply={
+                    fullScreenPost.authorId === CURRENT_USER_ID
+                      ? (cid) => {
+                          setPostFullscreenThreadReplyKey(`${fullScreenPost.id}:${cid}`);
+                          requestAnimationFrame(() => postCommentInputRef.current?.focus());
+                        }
+                      : undefined
+                  }
                 />
               </ScrollViewUntilScroll>
               {(() => {
                 const pc = fullScreenPost;
                 const isViewerOwner = pc.authorId === CURRENT_USER_ID;
                 const threadDraftKey = postFullscreenThreadReplyKey;
-                const composerActive = !isViewerOwner || !!threadDraftKey;
+                const composerActive = isViewerOwner ? !!threadDraftKey : true;
                 const commentValue = threadDraftKey
                   ? (threadDraftByChainKey[threadDraftKey] ?? "")
                   : (commentDraftByPostId[pc.id] ?? "");
@@ -7155,8 +6939,8 @@ function MainAppInner() {
                           composerActive
                             ? postFullscreenThreadReplyKey
                               ? "Reply…"
-                              : "Add comment…"
-                            : "Select a thread above…"
+                              : "Add comment ..."
+                            : "Tap Reply on a comment above"
                         }
                         placeholderTextColor={theme.subtleText}
                         style={[styles.chatInputMultiline, !composerActive && { opacity: 0.55 }]}
@@ -7578,12 +7362,11 @@ function MainAppInner() {
                 ListEmptyComponent={<Text style={styles.feedEmpty}>No posts from friends yet.</Text>}
                 renderItem={({ item }) => (
                   <FeedPostCard
+                    {...feedPostCardShared}
                     post={item}
                     videoShouldPlay={playingFeedVideoPostId === item.id}
                     onToggleReaction={(emoji) => togglePostReaction(item, emoji)}
                     onOpenViewer={() => openPostViewerFromFeed(item)}
-                    onOpenCommentComposer={() => openPostCommentComposerFromFeed(item)}
-                    onOpenThreadReply={(cid) => openPostThreadReplyFromFeed(item, cid)}
                   />
                 )}
               />
@@ -7700,12 +7483,11 @@ function MainAppInner() {
               <View style={styles.profilePostsSection}>
                 {friendProfilePosts.map((post) => (
                   <FeedPostCard
+                    {...feedPostCardShared}
                     key={`friend-post-${post.id}`}
                     post={post}
                     onToggleReaction={(emoji) => togglePostReaction(post, emoji)}
                     onOpenViewer={() => openPostViewerFromFeed(post)}
-                    onOpenCommentComposer={() => openPostCommentComposerFromFeed(post)}
-                    onOpenThreadReply={(cid) => openPostThreadReplyFromFeed(post, cid)}
                   />
                 ))}
               </View>
@@ -7911,12 +7693,11 @@ function MainAppInner() {
               <View style={styles.profilePostsSection}>
                 {myProfilePosts.map((post) => (
                   <FeedPostCard
+                    {...feedPostCardShared}
                     key={`my-post-${post.id}`}
                     post={post}
                     onToggleReaction={(emoji) => togglePostReaction(post, emoji)}
                     onOpenViewer={() => openPostViewerFromFeed(post)}
-                    onOpenCommentComposer={() => openPostCommentComposerFromFeed(post)}
-                    onOpenThreadReply={(cid) => openPostThreadReplyFromFeed(post, cid)}
                   />
                 ))}
               </View>
@@ -8464,34 +8245,19 @@ function MainAppInner() {
                       letter: peerPd!.letter,
                     };
               const isMine = item.senderId === CURRENT_USER_ID;
-              const myMessageReactionEmoji = getMyReactionEmoji(
-                item.reactions,
-                getBackendSession()?.uid,
-                backendUidToFriendId
-              );
-              const messageReactionFooter = !item.unsentAt ? (
-                <View
-                  style={[
-                    styles.messageReactionFooter,
-                    isMine ? styles.messageReactionFooterMine : null,
-                  ]}
-                >
-                  <HoldToReactButton
-                    activeEmoji={myMessageReactionEmoji}
-                    onPick={(emoji) => applyReactionToMessage(item.id, emoji)}
-                    disabled={DEMO_OFFLINE_MODE}
-                    theme={reactTheme}
-                  />
-                  <ReactionSummaryChips entries={reactionEntries} theme={reactTheme} />
-                </View>
-              ) : null;
+              const reactionAlign: "left" | "right" = isMine ? "right" : "left";
+              const messageReactionHostStyle = isMine
+                ? styles.messageReactionHostMine
+                : styles.messageReactionHost;
               const mineDeliveryLabel =
                 isMine && !item.unsentAt
                   ? item.deliveryStatus === "sending"
                     ? " • Sending…"
                     : item.deliveryStatus === "sent"
                       ? " • Sent"
-                      : ""
+                      : item.deliveryStatus === "failed"
+                        ? " • Not sent"
+                        : ""
                   : "";
               const isReplyTarget =
                 replyTargetMessageId !== null && item.id === replyTargetMessageId;
@@ -8612,39 +8378,46 @@ function MainAppInner() {
                           {sender.displayName}
                         </Text>
                       ) : null}
-                      <Pressable
-                        style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
-                        onLongPress={() => openMessageActions(item)}
-                        onPress={() => {
-                          if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
-                            setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
-                          } else {
-                            setFullscreenMedia({
-                              uri: item.mediaUri!,
-                              kind: item.kind === "gif" ? "gif" : "photo",
-                            });
-                          }
-                        }}
+                      <ReactionBubbleHost
+                        entries={item.unsentAt ? [] : reactionEntries}
+                        align={reactionAlign}
+                        theme={reactTheme}
+                        style={messageReactionHostStyle}
                       >
-                        <Image
-                          source={{ uri: item.mediaUri }}
-                          style={[styles.photoMessageImageDetached, getPhotoMessageSize(item)]}
-                        />
-                        {hasPhotoBubbleContent ? (
-                          <View
-                            style={[
-                              styles.messageCard,
-                              isMine ? styles.myMessageCard : styles.otherMessageCard,
-                              isMine ? styles.photoCaptionCardMine : styles.photoCaptionCard,
-                            ]}
-                          >
-                            {captionBlock}
-                            {messageReactionFooter}
-                          </View>
-                        ) : (
-                          messageReactionFooter
-                        )}
-                      </Pressable>
+                        <Pressable
+                          style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
+                          onLongPress={() => {
+                            if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
+                            openReactionPickerForMessage(item.id);
+                          }}
+                          onPress={() => {
+                            if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
+                              setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
+                            } else {
+                              setFullscreenMedia({
+                                uri: item.mediaUri!,
+                                kind: item.kind === "gif" ? "gif" : "photo",
+                              });
+                            }
+                          }}
+                        >
+                          <Image
+                            source={{ uri: item.mediaUri }}
+                            style={[styles.photoMessageImageDetached, getPhotoMessageSize(item)]}
+                          />
+                          {hasPhotoBubbleContent ? (
+                            <View
+                              style={[
+                                styles.messageCard,
+                                isMine ? styles.myMessageCard : styles.otherMessageCard,
+                                isMine ? styles.photoCaptionCardMine : styles.photoCaptionCard,
+                              ]}
+                            >
+                              {captionBlock}
+                            </View>
+                          ) : null}
+                        </Pressable>
+                      </ReactionBubbleHost>
                       <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
                         {formatDayTime(item.createdAt)}
                         {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
@@ -8678,22 +8451,31 @@ function MainAppInner() {
                           {sender.displayName}
                         </Text>
                       ) : null}
-                      <Pressable
-                        style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
-                        onLongPress={() => openMessageActions(item)}
-                        onPress={() => {
-                          if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
-                            setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
-                            return;
-                          }
-                          if (videoHasPlayed || videoIsPlaying) return;
-                          setPlayingVideoMessageId(item.id);
-                        }}
-                        accessibilityRole="button"
-                        accessibilityLabel={
-                          videoHasPlayed ? "Video already played" : "Play video message"
-                        }
+                      <ReactionBubbleHost
+                        entries={item.unsentAt ? [] : reactionEntries}
+                        align={reactionAlign}
+                        theme={reactTheme}
+                        style={messageReactionHostStyle}
                       >
+                        <Pressable
+                          style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
+                          onLongPress={() => {
+                            if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
+                            openReactionPickerForMessage(item.id);
+                          }}
+                          onPress={() => {
+                            if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
+                              setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
+                              return;
+                            }
+                            if (videoHasPlayed || videoIsPlaying) return;
+                            setPlayingVideoMessageId(item.id);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            videoHasPlayed ? "Video already played" : "Play video message"
+                          }
+                        >
                         <View
                           style={[
                             styles.videoMessageWrap,
@@ -8757,12 +8539,10 @@ function MainAppInner() {
                             ]}
                           >
                             {captionBlock}
-                            {messageReactionFooter}
                           </View>
-                        ) : (
-                          messageReactionFooter
-                        )}
-                      </Pressable>
+                        ) : null}
+                        </Pressable>
+                      </ReactionBubbleHost>
                       <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
                         {formatDayTime(item.createdAt)}
                         {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
@@ -8787,12 +8567,21 @@ function MainAppInner() {
                         {sender.displayName}
                       </Text>
                     ) : null}
+                    <ReactionBubbleHost
+                      entries={item.unsentAt ? [] : reactionEntries}
+                      align={reactionAlign}
+                      theme={reactTheme}
+                      style={messageReactionHostStyle}
+                    >
                     <Pressable
                       style={[
                         styles.messageCard,
                         isMine ? styles.myMessageCard : styles.otherMessageCard,
                       ]}
-                      onLongPress={() => openMessageActions(item)}
+                      onLongPress={() => {
+                        if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
+                        openReactionPickerForMessage(item.id);
+                      }}
                       onPress={() => {
                         if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
                           setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
@@ -8855,8 +8644,8 @@ function MainAppInner() {
                       ) : (
                         <Text style={isMine ? styles.messageTextMine : styles.messageText}>{item.text}</Text>
                       )}
-                      {messageReactionFooter}
                     </Pressable>
+                    </ReactionBubbleHost>
                     <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
                       {formatDayTime(item.createdAt)}
                       {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
@@ -9579,16 +9368,6 @@ function MainAppInner() {
               <Feather name="corner-up-left" size={18} color={theme.text} />
               <Text style={styles.menuRowText}>Reply</Text>
             </Pressable>
-            <Pressable
-              style={styles.menuRow}
-              onPress={() => {
-                setReactionPickerOpen(true);
-                setMessageActionsOpen(false);
-              }}
-            >
-              <Feather name="smile" size={18} color={theme.text} />
-              <Text style={styles.menuRowText}>React</Text>
-            </Pressable>
             {messageActionTarget?.senderId === CURRENT_USER_ID && !messageActionTarget.unsentAt ? (
               <>
                 <Pressable style={styles.menuRow} onPress={startEditMessage}>
@@ -9609,9 +9388,20 @@ function MainAppInner() {
         visible={reactionPickerOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setReactionPickerOpen(false)}
+        onRequestClose={() => {
+          setReactionPickerOpen(false);
+          setPostReactionTargetId(null);
+          setCommentReactionTarget(null);
+        }}
       >
-        <Pressable style={styles.settingsOverlay} onPress={() => setReactionPickerOpen(false)}>
+        <Pressable
+          style={styles.settingsOverlay}
+          onPress={() => {
+            setReactionPickerOpen(false);
+            setPostReactionTargetId(null);
+            setCommentReactionTarget(null);
+          }}
+        >
           <Pressable style={styles.settingsCard} onPress={() => {}}>
             <Text style={styles.chatScreenTitle}>React</Text>
             <View style={styles.reactionPickerRow}>
@@ -9621,6 +9411,18 @@ function MainAppInner() {
                 </Pressable>
               ))}
             </View>
+            {messageActionTarget && !postReactionTargetId && !commentReactionTarget ? (
+              <Pressable
+                style={[styles.menuRow, { marginTop: 12 }]}
+                onPress={() => {
+                  setReactionPickerOpen(false);
+                  setMessageActionsOpen(true);
+                }}
+              >
+                <Feather name="more-horizontal" size={18} color={theme.text} />
+                <Text style={styles.menuRowText}>Reply, edit, and more…</Text>
+              </Pressable>
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>

@@ -214,17 +214,27 @@ export const makeStyles = (theme: ThemePalette) =>
       fontSize: 12,
       marginTop: 2,
     },
+    postFeedBodyWrap: {
+      position: "relative",
+      marginBottom: 8,
+    },
     postFeedBody: {
       color: theme.text,
       fontSize: 15,
       lineHeight: 21,
-      marginBottom: 8,
     },
     postFeedMediaWrap: {
       marginHorizontal: -14,
       marginBottom: 8,
       backgroundColor: "#000000",
       position: "relative",
+    },
+    feedReactCornerFab: {
+      position: "absolute",
+      right: 12,
+      bottom: 12,
+      zIndex: 6,
+      elevation: 6,
     },
     postFeedImageStrip: {
       width: "100%",
@@ -233,28 +243,25 @@ export const makeStyles = (theme: ThemePalette) =>
       width: "100%",
       backgroundColor: "#000000",
     },
+    postFeedVideoWrap: {
+      position: "relative",
+      marginHorizontal: -14,
+      marginBottom: 8,
+      backgroundColor: "#000000",
+    },
     postFeedVideo: {
       width: "100%" as const,
-      height: 260,
-      backgroundColor: theme.divider,
-      marginBottom: 8,
+      backgroundColor: "#000000",
     },
-    feedReactionRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 8,
-      marginTop: 8,
-      marginBottom: 4,
-      paddingHorizontal: 12,
-      minHeight: 40,
+    feedReactionHost: {
+      width: "100%",
     },
-    commentReactionRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 8,
-      marginTop: 6,
+    privateCommentBubbleColumn: {
+      alignSelf: "flex-start",
+      maxWidth: "92%",
+    },
+    privateCommentBubbleColumnRight: {
+      alignSelf: "flex-end",
     },
     privateCommentBubble: {
       alignSelf: "flex-start",
@@ -266,18 +273,12 @@ export const makeStyles = (theme: ThemePalette) =>
       backgroundColor:
         theme.background === "#000000" ? "rgba(255,255,255,0.06)" : `${theme.divider}88`,
     },
-    messageReactionFooter: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 6,
-      marginTop: 6,
-      paddingTop: 4,
+    messageReactionHost: {
+      maxWidth: "85%",
       alignSelf: "flex-start",
     },
-    messageReactionFooterMine: {
+    messageReactionHostMine: {
       alignSelf: "flex-end",
-      justifyContent: "flex-end",
     },
     feedReactionChipActive: {
       borderWidth: 1,
@@ -442,6 +443,18 @@ export const makeStyles = (theme: ThemePalette) =>
     },
     privateCommentPlainRow: {
       gap: 4,
+    },
+    privateCommentPlainRowRight: {
+      alignItems: "flex-end",
+    },
+    privateCommentAuthorLine: {
+      color: theme.text,
+      fontSize: 14,
+      fontWeight: "700",
+    },
+    privateCommentTimeLine: {
+      color: theme.subtleText,
+      fontSize: 11,
     },
     privateCommentMeta: {
       color: theme.subtleText,
