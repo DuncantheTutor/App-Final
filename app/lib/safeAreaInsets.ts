@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import { Platform, Dimensions } from "react-native";
 
 const ANDROID_NAV_MIN = 28;
 const IOS_NAV_MIN = 12;
@@ -54,20 +54,23 @@ export function keyboardComposerBottomPadding(
 /** Shrink `absoluteFill` chat (and similar) roots above the keyboard on Android edge-to-edge. */
 export function androidAbsoluteOverlayKeyboardBottom(
   keyboardVisible: boolean,
-  keyboardHeight: number,
-  options?: { windowHeight?: number; baselineWindowHeight?: number }
+  keyboardHeight: number
 ): number {
   if (Platform.OS !== "android" || !keyboardVisible || keyboardHeight <= 0) return 0;
-  const windowHeight = options?.windowHeight;
-  const baselineWindowHeight = options?.baselineWindowHeight;
-  if (
-    baselineWindowHeight != null &&
-    windowHeight != null &&
-    baselineWindowHeight - windowHeight >= keyboardHeight * 0.85
-  ) {
-    return 0;
-  }
   return keyboardHeight;
+}
+
+/** Visible keyboard overlap — `screenY` is more reliable than `height` on edge-to-edge Android. */
+export function keyboardOverlapFromEvent(e: {
+  endCoordinates: { height: number; screenY: number };
+}): number {
+  const { height, screenY } = e.endCoordinates;
+  if (Platform.OS === "android") {
+    const screenH = Dimensions.get("screen").height;
+    const fromScreenY = Math.round(screenH - screenY);
+    if (fromScreenY > 0) return Math.max(fromScreenY, height);
+  }
+  return height;
 }
 
 /** iOS-only KAV — Android absolute overlays use `androidAbsoluteOverlayKeyboardBottom`. */

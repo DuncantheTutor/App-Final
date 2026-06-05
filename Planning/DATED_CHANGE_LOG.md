@@ -10,6 +10,38 @@
 
 ---
 
+## 2026-06-05 22:11 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 22:11 +01:00 | Chat | Skip pagination fetch when thread has ≤7 messages; disable onEndReached for short chats. |
+
+---
+
+## 2026-06-05 21:59 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:59 +01:00 | Chat / Media | Photo+video captions use one bubble (thin image inset, full-width caption below); pending preview matches. |
+
+---
+
+## 2026-06-05 21:43 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:43 +01:00 | Chat | Pagination spinner/read loop fix; photo caption uses chat-sized preview + compact composer. |
+
+---
+
+## 2026-06-05 21:41 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:41 +01:00 | Chat / Android | Keyboard: `adjustNothing` + always shrink chat overlay by overlap (`screenY`); removed false adjustResize skip that left composer behind keyboard. |
+
+---
+
 ## 2026-06-05 21:28 +01:00
 
 | Time | Area | Change |

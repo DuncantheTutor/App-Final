@@ -40,7 +40,6 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   Vibration,
-  Dimensions,
   View,
   type ScrollView,
   type ViewToken,
@@ -166,6 +165,7 @@ import {
   composerKeyboardAvoidanceEnabled,
   keyboardComposerBottomPadding,
   androidAbsoluteOverlayKeyboardBottom,
+  keyboardOverlapFromEvent,
   navDeadZoneHeight,
   scrollPageBottomPadding,
   stickyFooterPadding,
@@ -683,6 +683,9 @@ function MainAppInner() {
   const [feedMediaResolveIds, setFeedMediaResolveIds] = useState<Set<string>>(() => new Set());
   const [chatLoadingOlder, setChatLoadingOlder] = useState(false);
   const [chatHasMoreOlder, setChatHasMoreOlder] = useState<Record<string, boolean>>({});
+  /** Per-chat pagination cursor when server rows decode to zero (avoids repeat reads). */
+  const chatPaginationBeforeMsRef = useRef<Record<string, number>>({});
+  const chatEndReachedBusyRef = useRef(false);
   const [feedPullNonce, setFeedPullNonce] = useState(0);
   const feedViewabilityConfig = useRef({ itemVisiblePercentThreshold: 55 }).current;
   const feedViewableHydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -907,39 +910,24 @@ function MainAppInner() {
   );
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const [windowHeight, setWindowHeight] = useState(() => Dimensions.get("window").height);
-  const windowHeightBaselineRef = useRef(windowHeight);
   useEffect(() => {
     const show = Keyboard.addListener(
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
       (e) => {
         setKeyboardVisible(true);
-        setKeyboardHeight(e.endCoordinates.height);
+        setKeyboardHeight(keyboardOverlapFromEvent(e));
       }
     );
     /** `keyboardDidHide` avoids leftover padding from KeyboardAvoidingView (bar stuck too high). */
     const hide = Keyboard.addListener("keyboardDidHide", () => {
       setKeyboardVisible(false);
       setKeyboardHeight(0);
-      windowHeightBaselineRef.current = Dimensions.get("window").height;
-      setWindowHeight(windowHeightBaselineRef.current);
     });
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
-  useEffect(() => {
-    const sub = Dimensions.addEventListener("change", ({ window }) => {
-      setWindowHeight(window.height);
-    });
-    return () => sub.remove();
-  }, []);
-  useEffect(() => {
-    if (!keyboardVisible) {
-      windowHeightBaselineRef.current = windowHeight;
-    }
-  }, [keyboardVisible, windowHeight]);
 
   /** Full-screen overlays that manage their own keyboard — don't shift chat/post composers underneath. */
   const overlaySuppressesKeyboardAvoidance =
@@ -3063,8 +3051,6 @@ function MainAppInner() {
     [invertedChatMessages, chatListDisplayLimit]
   );
 
-  const chatListCanExpandLocally = invertedChatMessages.length > chatListDisplayLimit;
-
   /** FlatList extraData — avoid passing the global `messages` array (re-renders every row on any chat update). */
   const activeChatListRenderKey = useMemo(() => {
     const last = activeChatMessages[activeChatMessages.length - 1];
@@ -3108,9 +3094,12 @@ function MainAppInner() {
     if (view.screen !== "chat" || !("chatId" in view) || chatLoadingOlder) return;
     const chatId = view.chatId;
     if (chatHasMoreOlder[chatId] === false) return;
+    if (activeChatMessages.length <= CHAT_UI_INITIAL_DISPLAY_COUNT) return;
     const session = getBackendSession();
     if (!session || DEMO_OFFLINE_MODE) return;
     const oldest = activeChatMessages[0];
+    const paginationBeforeMs =
+      chatPaginationBeforeMsRef.current[chatId] ?? oldest?.createdAt;
     setChatLoadingOlder(true);
     try {
       const res = await callEmulatorFunction<{
@@ -3131,7 +3120,7 @@ function MainAppInner() {
         uid: session.uid,
         deviceId: session.deviceId,
         conversationId: resolveConversationId(chatId),
-        beforeMs: oldest?.createdAt,
+        beforeMs: paginationBeforeMs,
         limit: CHAT_OLDER_MESSAGES_PAGE_SIZE,
       });
       const chatRow = chats.find((c) => c.id === chatId) ?? null;
@@ -3236,10 +3225,38 @@ function MainAppInner() {
           current + Math.max(decoded.length, CHAT_UI_DISPLAY_PAGE_SIZE)
         );
       }
-      setChatHasMoreOlder((current) => ({
-        ...current,
-        [chatId]: fetchedCount === 0 ? false : Boolean(res.hasMore),
-      }));
+      if (fetchedCount === 0) {
+        setChatHasMoreOlder((current) => ({ ...current, [chatId]: false }));
+      } else if (decoded.length === 0) {
+        const oldestFetchedMs = Math.min(
+          ...(res.items ?? []).map((item) => item.createdAtMs ?? Number.MAX_SAFE_INTEGER)
+        );
+        if (
+          Number.isFinite(oldestFetchedMs) &&
+          oldestFetchedMs < Number.MAX_SAFE_INTEGER &&
+          oldestFetchedMs !== paginationBeforeMs
+        ) {
+          chatPaginationBeforeMsRef.current[chatId] = oldestFetchedMs;
+          setChatHasMoreOlder((current) => ({
+            ...current,
+            [chatId]: Boolean(res.hasMore),
+          }));
+        } else {
+          setChatHasMoreOlder((current) => ({ ...current, [chatId]: false }));
+        }
+      } else {
+        const decodedOldestMs = decoded.reduce(
+          (min, row) => Math.min(min, row.createdAt),
+          Number.MAX_SAFE_INTEGER
+        );
+        if (decodedOldestMs < Number.MAX_SAFE_INTEGER) {
+          chatPaginationBeforeMsRef.current[chatId] = decodedOldestMs;
+        }
+        setChatHasMoreOlder((current) => ({
+          ...current,
+          [chatId]: Boolean(res.hasMore),
+        }));
+      }
     } finally {
       setChatLoadingOlder(false);
     }
@@ -3257,6 +3274,7 @@ function MainAppInner() {
   useEffect(() => {
     if (view.screen !== "chat" || !("chatId" in view)) return;
     setChatListDisplayLimit(CHAT_UI_INITIAL_DISPLAY_COUNT);
+    delete chatPaginationBeforeMsRef.current[view.chatId];
   }, [view]);
 
   useEffect(() => {
@@ -3265,12 +3283,30 @@ function MainAppInner() {
   }, [view]);
 
   const handleChatListEndReached = useCallback(() => {
+    if (view.screen !== "chat" || !("chatId" in view)) return;
+    const chatId = view.chatId;
     if (invertedChatMessages.length > chatListDisplayLimit) {
       setChatListDisplayLimit((current) => current + CHAT_UI_DISPLAY_PAGE_SIZE);
       return;
     }
-    void loadOlderChatMessages();
-  }, [invertedChatMessages.length, chatListDisplayLimit, loadOlderChatMessages]);
+    if (invertedChatMessages.length <= CHAT_UI_INITIAL_DISPLAY_COUNT) return;
+    if (chatHasMoreOlder[chatId] === false) return;
+    if (chatEndReachedBusyRef.current || chatLoadingOlder) return;
+    chatEndReachedBusyRef.current = true;
+    void loadOlderChatMessages().finally(() => {
+      chatEndReachedBusyRef.current = false;
+    });
+  }, [
+    view,
+    invertedChatMessages.length,
+    chatListDisplayLimit,
+    chatHasMoreOlder,
+    chatLoadingOlder,
+    loadOlderChatMessages,
+  ]);
+
+  const chatPaginationEnabled =
+    invertedChatMessages.length > CHAT_UI_INITIAL_DISPLAY_COUNT;
 
   const loadMoreProfileFeedPosts = useCallback(() => {
     setProfileFeedPostLimit((current) => current + PROFILE_FEED_POSTS_PAGE_SIZE);
@@ -8892,7 +8928,16 @@ function MainAppInner() {
   );
 
   const showCompactComposer =
-    keyboardVisible && (!!chatInput.trim() || !!pendingChatMediaAttachment);
+    !!pendingChatMediaAttachment || (keyboardVisible && !!chatInput.trim());
+
+  const pendingChatMediaPreviewSize = useMemo(() => {
+    if (!pendingChatMediaAttachment) return null;
+    return chatPhotoMessageSize(
+      windowWidth,
+      pendingChatMediaAttachment.width,
+      pendingChatMediaAttachment.height
+    );
+  }, [pendingChatMediaAttachment, windowWidth]);
 
   useEffect(() => {
     if (!showChatScreen || !shouldFocusChatInput) return;
@@ -10444,10 +10489,7 @@ function MainAppInner() {
             styles.chatScreen,
             { paddingTop: safeTop },
             {
-              bottom: androidAbsoluteOverlayKeyboardBottom(keyboardVisible, keyboardHeight, {
-                windowHeight,
-                baselineWindowHeight: windowHeightBaselineRef.current,
-              }),
+              bottom: androidAbsoluteOverlayKeyboardBottom(keyboardVisible, keyboardHeight),
             },
           ]}
           behavior="padding"
@@ -10575,10 +10617,10 @@ function MainAppInner() {
             updateCellsBatchingPeriod={50}
             contentContainerStyle={styles.messageList}
             keyboardShouldPersistTaps="handled"
-            onEndReached={handleChatListEndReached}
-            onEndReachedThreshold={0.25}
+            onEndReached={chatPaginationEnabled ? handleChatListEndReached : undefined}
+            onEndReachedThreshold={chatPaginationEnabled ? 0.25 : 0}
             ListFooterComponent={
-              chatLoadingOlder || chatListCanExpandLocally ? (
+              chatLoadingOlder ? (
                 <ActivityIndicator color={theme.accent} style={{ marginVertical: 8 }} />
               ) : null
             }
@@ -10792,7 +10834,17 @@ function MainAppInner() {
                         style={messageReactionHostStyle}
                       >
                         <Pressable
-                          style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
+                          style={
+                            hasPhotoBubbleContent
+                              ? [
+                                  ...bubbleCardStyle,
+                                  styles.photoMediaBubble,
+                                  isMine ? styles.photoMessageStackMine : styles.photoMessageStack,
+                                ]
+                              : isMine
+                                ? styles.photoMessageStackMine
+                                : styles.photoMessageStack
+                          }
                           delayLongPress={CHAT_MESSAGE_LONG_PRESS_MS}
                           onLongPress={() => {
                             if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
@@ -10811,37 +10863,55 @@ function MainAppInner() {
                             });
                           }}
                         >
-                          <Image
-                            source={{ uri: resolvedUri }}
-                            style={[
-                              styles.photoMessageImageDetached,
-                              isMine ? styles.photoMessageImageDetachedMine : null,
-                              getPhotoMessageSize(item),
-                            ]}
-                            resizeMode="cover"
-                            onLoad={(event) => {
-                              if (item.mediaWidth && item.mediaHeight) return;
-                              const src = event.nativeEvent.source;
-                              const w = Number(src?.width ?? 0);
-                              const h = Number(src?.height ?? 0);
-                              if (!w || !h) return;
-                              setMeasuredChatMediaByMessageId((prev) => {
-                                const cur = prev[item.id];
-                                if (cur?.width === w && cur?.height === h) return prev;
-                                return { ...prev, [item.id]: { width: w, height: h } };
-                              });
-                            }}
-                          />
                           {hasPhotoBubbleContent ? (
-                            <View
+                            <>
+                              <View style={styles.photoMediaBubbleImageInset}>
+                                <Image
+                                  source={{ uri: resolvedUri }}
+                                  style={[
+                                    styles.photoMediaBubbleImage,
+                                    getPhotoMessageSize(item),
+                                  ]}
+                                  resizeMode="cover"
+                                  onLoad={(event) => {
+                                    if (item.mediaWidth && item.mediaHeight) return;
+                                    const src = event.nativeEvent.source;
+                                    const w = Number(src?.width ?? 0);
+                                    const h = Number(src?.height ?? 0);
+                                    if (!w || !h) return;
+                                    setMeasuredChatMediaByMessageId((prev) => {
+                                      const cur = prev[item.id];
+                                      if (cur?.width === w && cur?.height === h) return prev;
+                                      return { ...prev, [item.id]: { width: w, height: h } };
+                                    });
+                                  }}
+                                />
+                              </View>
+                              <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
+                            </>
+                          ) : (
+                            <Image
+                              source={{ uri: resolvedUri }}
                               style={[
-                                ...bubbleCardStyle,
-                                isMine ? styles.photoCaptionCardMine : styles.photoCaptionCard,
+                                styles.photoMessageImageDetached,
+                                isMine ? styles.photoMessageImageDetachedMine : null,
+                                getPhotoMessageSize(item),
                               ]}
-                            >
-                              {captionBlock}
-                            </View>
-                          ) : null}
+                              resizeMode="cover"
+                              onLoad={(event) => {
+                                if (item.mediaWidth && item.mediaHeight) return;
+                                const src = event.nativeEvent.source;
+                                const w = Number(src?.width ?? 0);
+                                const h = Number(src?.height ?? 0);
+                                if (!w || !h) return;
+                                setMeasuredChatMediaByMessageId((prev) => {
+                                  const cur = prev[item.id];
+                                  if (cur?.width === w && cur?.height === h) return prev;
+                                  return { ...prev, [item.id]: { width: w, height: h } };
+                                });
+                              }}
+                            />
+                          )}
                         </Pressable>
                       </ReactionBubbleHost>
                       <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
@@ -10942,7 +11012,76 @@ function MainAppInner() {
                         theme={reactTheme}
                         style={messageReactionHostStyle}
                       >
-                        <View style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}>
+                        <View
+                          style={
+                            hasVideoBubbleContent
+                              ? [
+                                  ...bubbleCardStyle,
+                                  styles.photoMediaBubble,
+                                  isMine ? styles.photoMessageStackMine : styles.photoMessageStack,
+                                ]
+                              : isMine
+                                ? styles.photoMessageStackMine
+                                : styles.photoMessageStack
+                          }
+                        >
+                        {hasVideoBubbleContent ? (
+                          <View style={styles.photoMediaBubbleImageInset}>
+                            <View
+                              style={[
+                                styles.videoMessageWrap,
+                                isMine ? styles.videoMessageWrapMine : null,
+                                { width: videoSize.width, height: videoSize.height },
+                              ]}
+                            >
+                              <ChatVideoMessageBubble
+                                resolvedUri={resolvedUri}
+                                resolving={resolving}
+                                preparePending={videoPlayAfterPrepareId === item.id}
+                                width={videoSize.width}
+                                height={videoSize.height}
+                                isSending={item.deliveryStatus === "sending"}
+                                isPlaying={videoIsPlaying}
+                                showPlayOverlay={showVideoPlayButton}
+                                accentColor={theme.accent}
+                                playbackKey={item.id}
+                                onPressSurface={handleVideoMessagePress}
+                                onLongPress={() => {
+                                  if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
+                                  openReactionPickerForMessage(item.id);
+                                }}
+                                messageId={item.id}
+                                onCancelPrepare={() => cancelVideoPrepare(item.id)}
+                                onPosterDimensions={rememberChatVideoDimensions}
+                                onDidFinish={() => {
+                                  setPlayingVideoMessageId((cur) => (cur === item.id ? null : cur));
+                                }}
+                              />
+                              {item.videoTextOverlays?.map((o) => (
+                                <Text
+                                  key={o.id}
+                                  pointerEvents="none"
+                                  style={[
+                                    styles.videoOverlayText,
+                                    {
+                                      left: o.relX * videoSize.width,
+                                      top: o.relY * videoSize.height,
+                                      width: o.relW * videoSize.width,
+                                      minHeight: o.relH * videoSize.height,
+                                      fontSize: Math.max(10, o.relFontSize * videoSize.width),
+                                      color: o.color,
+                                      fontFamily: o.fontFamily,
+                                      fontWeight: o.fontWeight ?? "700",
+                                      fontStyle: o.fontStyle ?? "normal",
+                                    },
+                                  ]}
+                                >
+                                  {o.text}
+                                </Text>
+                              ))}
+                            </View>
+                          </View>
+                        ) : (
                         <View
                           style={[
                             styles.videoMessageWrap,
@@ -10996,15 +11135,9 @@ function MainAppInner() {
                             </Text>
                           ))}
                         </View>
+                        )}
                         {hasVideoBubbleContent ? (
-                          <View
-                            style={[
-                              ...bubbleCardStyle,
-                              isMine ? styles.photoCaptionCardMine : styles.photoCaptionCard,
-                            ]}
-                          >
-                            {captionBlock}
-                          </View>
+                          <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
                         ) : null}
                         </View>
                       </ReactionBubbleHost>
@@ -11343,27 +11476,43 @@ function MainAppInner() {
                 </View>
               ) : null}
 
-              {pendingChatMediaAttachment ? (
+              {pendingChatMediaAttachment && pendingChatMediaPreviewSize ? (
                 <View
                   style={[
-                    styles.replyBanner,
-                    { borderBottomColor: theme.divider, backgroundColor: theme.replyBannerQuotingOtherBg },
+                    styles.pendingChatMediaPreviewShell,
+                    { borderBottomColor: theme.divider, backgroundColor: theme.background },
                   ]}
                 >
-                  <Image
-                    source={{ uri: pendingChatMediaAttachment.uri }}
-                    style={styles.pendingChatMediaThumb}
-                    accessibilityIgnoresInvertColors
-                  />
-                  <Text style={[styles.replyBannerText, { color: theme.text, flex: 1 }]}>
-                    Photo ready — add a caption below or send
-                  </Text>
+                  <View style={styles.photoMessageColumnMine}>
+                    <View
+                      style={[
+                        styles.messageCard,
+                        styles.myMessageCard,
+                        styles.photoMediaBubble,
+                        styles.photoMessageStackMine,
+                      ]}
+                    >
+                      <View style={styles.photoMediaBubbleImageInset}>
+                        <Image
+                          source={{ uri: pendingChatMediaAttachment.uri }}
+                          style={[styles.photoMediaBubbleImage, pendingChatMediaPreviewSize]}
+                          resizeMode="cover"
+                          accessibilityIgnoresInvertColors
+                        />
+                      </View>
+                      {chatInput.trim() ? (
+                        <View style={styles.photoMediaBubbleCaption}>
+                          <Text style={styles.messageTextMine}>{chatInput.trim()}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
                   <Pressable
-                    style={styles.attachButton}
+                    style={styles.pendingChatMediaDiscard}
                     onPress={discardPendingChatMedia}
                     accessibilityLabel="Discard photo"
                   >
-                    <Ionicons name="trash-outline" size={18} color={theme.danger} />
+                    <Ionicons name="close-circle" size={26} color={theme.subtleText} />
                   </Pressable>
                 </View>
               ) : null}

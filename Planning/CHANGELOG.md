@@ -12,6 +12,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed (Jun 2026 — chat photo caption bubble)
+- **Unified media bubble:** Photos/videos with caption (or reply/unsent text) render in **one bubble** — 2px inset on top/sides around the media, caption full width below. Pending send preview matches as you type.
+
+### Fixed (Jun 2026 — chat pagination spinner)
+- **Short threads:** No scroll-up server fetch when the open chat has **7 or fewer** messages in memory; `onEndReached` disabled until the count exceeds the initial display window. Spinner only during an active fetch when pagination is enabled.
+
+### Fixed (Jun 2026 — chat photo caption UX)
+- **Outbound preview:** After photo edit, chat shows the image at **bubble size** above a **compact composer** (caption field + Send only); empty caption still sends the photo.
+
+### Fixed (Jun 2026 — chat keyboard v3, Android)
+- **Composer behind keyboard:** Removed adjustResize auto-skip (it zeroed manual lift while `absoluteFill` chat did not move). Android uses `adjustNothing` + overlay `bottom: keyboardHeight` from `screenY` overlap; composer bar keeps minimal padding only (no second full-height lift).
+
 ### Fixed (Jun 2026 — chat keyboard double-lift)
 - **Chat composer gap:** Android chat no longer stacks overlay `bottom: keyboardHeight` with another full `keyboardHeight` on the input bar; skips manual shrink when `adjustResize` already resized the window. Photo caption mode uses compact composer (wider field) like typed messages.
 

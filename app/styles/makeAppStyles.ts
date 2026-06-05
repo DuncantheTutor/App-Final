@@ -1503,6 +1503,29 @@ export const makeStyles = (theme: ThemePalette) =>
       borderTopLeftRadius: 12,
       borderTopRightRadius: 12,
     },
+    /** Single bubble wrapping photo/video + caption — thin inset on top/sides, caption full width below. */
+    photoMediaBubble: {
+      paddingHorizontal: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+      overflow: "hidden",
+    },
+    photoMediaBubbleImageInset: {
+      paddingTop: 2,
+      paddingHorizontal: 2,
+    },
+    photoMediaBubbleImage: {
+      borderRadius: 8,
+      overflow: "hidden",
+      backgroundColor: theme.divider,
+    },
+    photoMediaBubbleCaption: {
+      alignSelf: "stretch",
+      width: "100%",
+      paddingHorizontal: 10,
+      paddingTop: 6,
+      paddingBottom: CHAT_XH,
+    },
     reactionTray: {
       position: "absolute",
       right: 8,
@@ -1646,11 +1669,19 @@ export const makeStyles = (theme: ThemePalette) =>
       marginRight: 8,
       fontSize: 12,
     },
-    pendingChatMediaThumb: {
-      width: 44,
-      height: 44,
-      borderRadius: 6,
-      marginRight: 8,
+    pendingChatMediaPreviewShell: {
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      paddingHorizontal: 10,
+      paddingTop: 10,
+      paddingBottom: 8,
+      flexDirection: "row",
+      alignItems: "flex-start",
+      justifyContent: "flex-end",
+    },
+    pendingChatMediaDiscard: {
+      marginLeft: 8,
+      marginTop: 2,
+      padding: 2,
     },
     replyBannerClose: {
       padding: 2,
