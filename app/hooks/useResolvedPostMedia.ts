@@ -117,8 +117,8 @@ async function resolveRefsByIndex(
         uri = cached.trim();
       } else {
         uri = (await resolveTierBMediaToFileUri(ref, { priority })).trim();
+        await yieldToUi();
       }
-      await yieldToUi();
     } catch {
       /* keep best-known uri for this slot */
     }

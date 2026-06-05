@@ -94,7 +94,7 @@
 - Reply to message -> reply banner appears above composer -> sent message shows reply reference.
 - **Composer send completeness:** type `Having fun?` (or any message ending in punctuation) and tap Send immediately — the delivered bubble must include the final character(s), matching what was visible in the composer.
 - **Composer send stability:** in a 1:1 chat, type any text and tap the send (arrow) button — the app must **not** close, white-screen, or drop to a blank recents card with the keyboard still up; the message appears in-thread (or shows **Sending…** / **Not sent** if offline, never a silent no-op from a JS error).
-- **Encrypted on-device cache:** after sign-in, send a chat message and open a Tier B photo/video — force-quit and reopen; data restores from local cache. Sign out → **Settings → reset local data** (or new signup) clears account cache. AsyncStorage values for social keys should begin with `enc1:` (not plaintext JSON) when inspected on a rooted/debug build.
+- **On-device cache (plaintext):** after sign-in, send a chat message and open a Tier B photo/video — force-quit and reopen; data restores from local cache. Sign out → **Settings → reset local data** (or new signup) clears account cache. AsyncStorage social keys are **plaintext JSON** (legacy `enc1:` blobs migrate to plaintext on first read). Tier B media files are **plain files** under app document storage.
 - Reply rendering: replied-to message appears as muted context card; reply appears in normal foreground card.
 - **Press and hold to react (chat):** long-press opens one sheet — emoji row + **Reply**; **Edit** / **Unsend** only on your messages (not on a peer’s).
 - **Add Friend QR toggle:** after **Show QR Code** on **this** phone, flipping to **Read QR** cancels that minted offer; flipping to **Read QR** when you were not presenting shows **Ready to scan.** (not “withdrawn”). After switching to Read QR, scanning must still reach the dual-confirm card on the scanner; switch track is visibly lighter in dark mode.
@@ -120,6 +120,13 @@
 - **Note:** uninstall wipes on-device AsyncStorage; cloud snapshot + key backup are the reinstall source. Data from before the first backup on that account cannot be recovered.
 - **Key restore requires `deviceId`:** `getUserKeyBackup` runs only after `claimDeviceSession` with the same `deviceId` (May 2026 fix). If restore failed on an older APK, the app may have published **new** keys and old server ciphertext becomes unreadable — use the fixed build and sign in once (~1 min) before the next uninstall so a backup exists.
 
+## APK upgrade without uninstall (Jun 2026)
+
+- Install a **new release APK** over the old one (same account, do **not** clear app data).
+- **Expected:** home paints from local cache immediately, then boot sync refreshes chats/feed within ~12 s — **not** an ancient snapshot re-uploaded to cloud or stale incremental cursors blocking new messages/posts.
+- Send a new chat message and publish a feed post after upgrade → force-quit → reopen → both must still appear (local + server).
+- **Requires new APK** with build-id watermark reset and cloud-upload gating.
+
 ## Media and Voice
 
 - Tap mic once to start recording state; tap again stops recording and prepares voice-note preview.
@@ -140,7 +147,7 @@
 - **Feed reaction realtime (Jun 2026):** While you stay on **home → Feed**, a friend’s new emoji on your post must update the reaction pill without leaving the feed. **Requires new APK**; server already uses `encryptedPostReactions`.
 - **Unsent messages:** Tombstone text (“You unsent a message”) uses **neutral theme colours** (background + subtle text), not the green/pink sent-bubble accent.
 - **Offline mode:** When the device has no internet, a **banner** reads “You're offline — showing cached content”. Chats, feed, and profiles remain browsable from cache; sending shows a clear offline message instead of a blank block.
-- **Media cache:** Decrypted Tier B photos/videos reuse the **same on-disk cache** across feed, fullscreen, and profile (no re-decrypt when reopening). Chat media resolver shares the same cache map.
+- **Media cache:** Decrypted Tier B photos/videos reuse the **same on-disk cache** across feed, fullscreen, and profile (no re-download when reopening). Chat media resolver shares the same cache map. **Plain files** persist in app document storage (survive cold start). **Profile grid:** after sign-in, own-profile thumbnails warm in the background; opening My Profile prioritizes grid load ahead of feed work. First view of a never-seen post still downloads from Firebase once, then caches automatically.
 - **Read receipts:** Reader avatars below sent messages must **not** flash a **?** while friend profiles are still loading — use cached profile cards / roster fallback letters instead.
 - **Chat avatars:** Tapping **your own** avatar in a chat thread opens **My profile**.
 - **New-post push:** Friends receive a push when you publish (`New post from {username}`). Requires **Cloud Functions deploy** after this build (`firebase deploy --only functions` from `backend/functions`).
@@ -149,9 +156,9 @@
 - **Notification pre-prompt (first launch):** After **sign-in** (not before account creation), while still signed in, the app shows **Stay in the loop** with **Allow notifications** / **Not now** before the home feed is usable — but only when Android/iOS permission is still **undetermined**. Chats and feed sync continue in the background during this screen. **Allow** → OS permission sheet → home. **Not now** → home without OS prompt; pre-prompt may show again on the **next cold start** if OS permission is still undetermined. If you previously tapped Not now on an older build, update to this build and restart the app to see the prompt again. Users who already **granted or denied** at the OS level skip this screen (denied → enable in System Settings → Notifications). **Requires new release APK.**
 - **Inbound encrypted chat video (responsiveness):** When a friend sends a Tier B encrypted video, the bubble appears immediately with a play icon — **no multi-second UI freeze** while the app decrypts. Tap play → **Preparing video…** spinner while decrypt/download runs (should start within a few seconds, not minutes — high-priority queue), then inline playback as usual.
 - **Chat photos:** tap a photo or GIF — **full-screen** page (not a dimmed popup); close with X or Android back. With the composer keyboard open, tap must **dismiss the keyboard** (or open the viewer above it) so the image is fully visible.
-- **Photo editor (chat photos):** After editing, tap **Done** — chat-sized preview above compact composer; caption (if any) sits in the **same bubble** as the image (2px inset, 8px rounded media corners, full-width text below). **Send** with empty text still sends the photo. Sent photos with captions use the same unified bubble (not a separate text bubble under the image).
+- **Photo editor (chat photos):** After editing, tap **Done** — chat-sized preview above compact composer; caption (if any) sits in the **same bubble** as the image (2px inset on top/sides, inner corners 10px matching the 12px bubble curve, full-width text below). **Send** with empty text still sends the photo. Sent photos with captions use the same unified bubble (not a separate text bubble under the image).
 - **Photo editor (chat video):** Add text on a video or type a caption on the preview step — the keyboard must not cover inputs; **Send** on the preview step still sends video immediately.
-- **Chat scroll-up / spinner:** Top spinner only while a server pagination request is in flight. Threads with **7 or fewer** loaded messages never trigger scroll-up fetch (`onEndReached` off until count exceeds 7).
+- **Chat scroll-up / spinner:** Scroll-up loads older history when more rows are already in memory **or** the server may have older pages (`hasMore` not yet false). Threads with **7 or fewer total messages** stop after one empty server page (`hasMore: false`). Spinner shows while fetching or while expanding the local window.
 - **Chat keyboard (Android):** Composer must sit just above the keyboard — not a double/triple lift gap (overlay shrink + inner padding must not both apply full `keyboardHeight`).
 - **Shared media:** chat ⋮ → **Shared media** lists all photos/videos in the thread (3-column grid); tile tap opens full-screen viewer; back arrow returns to chat.
 - **Post media (in fullscreen post):** tap a photo or video in the post body — dedicated full-screen media viewer (video includes draggable progress slider + play/pause). **Rotate the phone** in full-screen photo or video — media follows **portrait or landscape** (no forced landscape lock).

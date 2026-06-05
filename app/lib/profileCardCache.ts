@@ -3,7 +3,8 @@
  * every profile the user has opened. Lets a returning/offline user still see
  * who someone is — name, bio and picture — even when posts and media cannot be
  * fetched. Keyed by signed-in email so accounts never bleed into each other,
- * encrypted at rest on device, and cleared alongside the rest of the local social cache.
+ * keyed by signed-in email so accounts never bleed into each other,
+ * stored in plaintext AsyncStorage, and cleared alongside the rest of the local social cache.
  */
 import { storageGetItem, storageRemoveItem, storageSetItem } from "./encryptedLocalStorage";
 

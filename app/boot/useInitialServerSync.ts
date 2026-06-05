@@ -206,6 +206,7 @@ export function useInitialServerSync(params: {
             }
           } else {
             await pullEncryptedMessagesIncremental({
+              forceFull: true,
               limit: ENCRYPTED_MESSAGES_BOOT_SYNC_LIMIT,
             });
           }

@@ -17,8 +17,7 @@
  *   key is recomputed locally from `SecureStore` on every boot, so we don't
  *   need to persist that one here.
  *
- * Both blobs are keyed by signed-in email, encrypted at rest on device
- * (`encryptedLocalStorage` — plaintext AsyncStorage wrapper), and cleared via `clearLocalSocialCacheForEmail`
+ * Both blobs are keyed by signed-in email, stored as plaintext AsyncStorage, and cleared via `clearLocalSocialCacheForEmail`
  * on signup, logout, and Settings → reset local data. Re-sign-in with the same
  * email restores cache on purpose for returning users; a **new** signup clears
  * cache first so deleted-server accounts do not resurrect old friends/chats from disk.
@@ -32,7 +31,13 @@ export type PersistedSyncWatermarks = {
   postsLastFullSyncAt: number;
   /** Post ids the user deleted locally; survives cold start so sync cannot resurrect them. */
   deletedPostIds?: string[];
+  /** Bumped when on-disk cache shape changes — mismatch forces a fresh server pull. */
+  cacheSchemaVersion?: number;
+  /** `expo.version` + native build at last watermark write — mismatch resets cursors on APK update. */
+  appBuildId?: string;
 };
+
+export const CLIENT_SYNC_CACHE_SCHEMA_VERSION = 2;
 
 export const ZERO_WATERMARKS: PersistedSyncWatermarks = {
   messagesWatermarkMs: 0,
@@ -40,6 +45,31 @@ export const ZERO_WATERMARKS: PersistedSyncWatermarks = {
   postsWatermarkMs: 0,
   postsLastFullSyncAt: 0,
 };
+
+export function resolveAppBuildId(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Constants = require("expo-constants").default as {
+      expoConfig?: { version?: string };
+      nativeApplicationVersion?: string;
+      nativeBuildVersion?: string;
+    };
+    const version = Constants.expoConfig?.version ?? Constants.nativeApplicationVersion ?? "0";
+    const build = Constants.nativeBuildVersion ?? "0";
+    return `${version}+${build}`;
+  } catch {
+    return "unknown";
+  }
+}
+
+/** True when persisted cursors may belong to an older APK and must not drive incremental sync. */
+export function shouldResetSyncCacheForAppBuild(watermarks: PersistedSyncWatermarks): boolean {
+  const current = resolveAppBuildId();
+  if ((watermarks.cacheSchemaVersion ?? 0) !== CLIENT_SYNC_CACHE_SCHEMA_VERSION) return true;
+  const saved = (watermarks.appBuildId ?? "").trim();
+  if (!saved) return false;
+  return saved !== current;
+}
 
 export function syncWatermarksStorageKey(email: string): string {
   return `mvpplus.syncWatermarks.v1:${email.trim().toLowerCase()}`;
@@ -78,6 +108,10 @@ export async function readSyncWatermarks(email: string): Promise<PersistedSyncWa
         ? Math.max(0, parsed.postsLastFullSyncAt)
         : 0,
       deletedPostIds,
+      cacheSchemaVersion: isFiniteNumber(parsed.cacheSchemaVersion)
+        ? parsed.cacheSchemaVersion
+        : undefined,
+      appBuildId: typeof parsed.appBuildId === "string" ? parsed.appBuildId : undefined,
     };
   } catch {
     return { ...ZERO_WATERMARKS };
@@ -89,7 +123,12 @@ export async function writeSyncWatermarks(
   watermarks: PersistedSyncWatermarks
 ): Promise<void> {
   try {
-    await storageSetItem(syncWatermarksStorageKey(email), JSON.stringify(watermarks));
+    const payload: PersistedSyncWatermarks = {
+      ...watermarks,
+      cacheSchemaVersion: CLIENT_SYNC_CACHE_SCHEMA_VERSION,
+      appBuildId: resolveAppBuildId(),
+    };
+    await storageSetItem(syncWatermarksStorageKey(email), JSON.stringify(payload));
   } catch {
     /* best-effort; the in-memory refs are still authoritative for this session */
   }

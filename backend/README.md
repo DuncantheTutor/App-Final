@@ -6,7 +6,7 @@ This backend enforces four core principles:
 2. NFC handshake flow for friend creation.
 3. Friends-only visibility.
 4. Encrypted-at-application-layer data for profiles, posts, chat, and media.
-5. On-device **AsyncStorage** social cache is **plaintext** (`app/lib/encryptedLocalStorage.ts` wrapper). **Tier B** downloaded media files remain encrypted on disk (`app/lib/tierBMedia/`, legacy `encryptedMediaCache.ts`).
+5. On-device **AsyncStorage** social cache is **plaintext** (`app/lib/encryptedLocalStorage.ts` wrapper). **Tier B** downloaded media is cached as **plain files** under app document storage (`app/lib/encryptedMediaCache.ts` — legacy module name).
 
 ## Folder structure
 

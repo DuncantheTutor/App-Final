@@ -1,5 +1,4 @@
 import * as FileSystem from "expo-file-system/legacy";
-import * as Random from "expo-random";
 import * as SecureStore from "expo-secure-store";
 import nacl from "tweetnacl";
 import { encodeBase64, decodeBase64 } from "tweetnacl-util";
@@ -8,38 +7,75 @@ import { cacheExtensionForContentType } from "./mediaKind";
 import { yieldToUi } from "./yieldToUi";
 import type { EncryptedMediaRef } from "./tierBMedia/types";
 
-const MEDIA_CACHE_KEY_SECURE_STORE = "mvpplus.deviceMediaCacheKey.v1";
+/** Legacy device key — used only to one-time migrate old `.enc` on-disk blobs to plaintext. */
+const LEGACY_MEDIA_CACHE_KEY_SECURE_STORE = "mvpplus.deviceMediaCacheKey.v1";
 
-const ENC_DIR = `${FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? ""}mvpplus-tierb-enc/`;
-const SESSION_PLAIN_DIR = `${FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? ""}mvpplus-tierb-session/`;
+/** Plain Tier B display files (photos/videos/audio) — persistent across restarts. */
+const PERSISTENT_ROOT = FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? "";
+const PLAIN_MEDIA_DIR = `${PERSISTENT_ROOT}mvpplus-tierb-media/`;
+const LEGACY_ENC_DIR = `${PERSISTENT_ROOT}mvpplus-tierb-enc/`;
+const LEGACY_ENC_DIR_CACHE = `${FileSystem.cacheDirectory ?? ""}mvpplus-tierb-enc/`;
+const LEGACY_SESSION_DIR = `${FileSystem.cacheDirectory ?? PERSISTENT_ROOT}mvpplus-tierb-session/`;
 
-let mediaKeyPromise: Promise<Uint8Array> | null = null;
+let legacyEncDirMigrationPromise: Promise<void> | null = null;
 
-async function getMediaCacheKey(): Promise<Uint8Array> {
-  if (!mediaKeyPromise) {
-    mediaKeyPromise = (async () => {
-      const existing = await SecureStore.getItemAsync(MEDIA_CACHE_KEY_SECURE_STORE);
-      if (existing?.trim()) {
-        const decoded = decodeBase64(existing.trim());
-        if (decoded.length === nacl.secretbox.keyLength) return decoded;
+async function migrateLegacyEncDirFromCache(): Promise<void> {
+  if (!legacyEncDirMigrationPromise) {
+    legacyEncDirMigrationPromise = (async () => {
+      if (!FileSystem.cacheDirectory || !FileSystem.documentDirectory) return;
+      if (FileSystem.cacheDirectory === FileSystem.documentDirectory) return;
+      const legacyInfo = await FileSystem.getInfoAsync(LEGACY_ENC_DIR_CACHE);
+      if (!legacyInfo.exists) return;
+      await ensureDir(PLAIN_MEDIA_DIR);
+      let names: string[] = [];
+      try {
+        names = await FileSystem.readDirectoryAsync(LEGACY_ENC_DIR_CACHE);
+      } catch {
+        return;
       }
-      const fresh = await Random.getRandomBytesAsync(nacl.secretbox.keyLength);
-      await SecureStore.setItemAsync(MEDIA_CACHE_KEY_SECURE_STORE, encodeBase64(fresh));
-      return fresh;
+      await ensureDir(LEGACY_ENC_DIR);
+      for (const name of names) {
+        if (!name.endsWith(".enc")) continue;
+        const from = `${LEGACY_ENC_DIR_CACHE}${name}`;
+        const to = `${LEGACY_ENC_DIR}${name}`;
+        const destInfo = await FileSystem.getInfoAsync(to);
+        if (destInfo.exists && (destInfo.size ?? 0) > 0) continue;
+        try {
+          await FileSystem.moveAsync({ from, to });
+        } catch {
+          /* best-effort */
+        }
+        await yieldToUi();
+      }
     })();
   }
-  return mediaKeyPromise;
+  await legacyEncDirMigrationPromise;
+}
+
+let legacyMediaKeyPromise: Promise<Uint8Array | null> | null = null;
+
+async function legacyMediaCacheKey(): Promise<Uint8Array | null> {
+  if (!legacyMediaKeyPromise) {
+    legacyMediaKeyPromise = (async () => {
+      try {
+        const existing = await SecureStore.getItemAsync(LEGACY_MEDIA_CACHE_KEY_SECURE_STORE);
+        if (!existing?.trim()) return null;
+        const decoded = decodeBase64(existing.trim());
+        if (decoded.length === nacl.secretbox.keyLength) return decoded;
+      } catch {
+        /* no legacy key */
+      }
+      return null;
+    })();
+  }
+  return legacyMediaKeyPromise;
 }
 
 function safeObjectSlug(objectPath: string): string {
   return objectPath.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function encryptedCachePath(mediaRef: EncryptedMediaRef): string {
-  return `${ENC_DIR}${safeObjectSlug(mediaRef.objectPath)}.enc`;
-}
-
-function sessionPlainPath(mediaRef: EncryptedMediaRef, plainBytes?: Uint8Array): string {
+function extensionForMediaRef(mediaRef: EncryptedMediaRef, plainBytes?: Uint8Array): string {
   const ct = mediaRef.contentType.toLowerCase();
   let ext = cacheExtensionForContentType(mediaRef.contentType);
   if (ext === "jpg" && plainBytes && plainBytes.length > 8) {
@@ -49,7 +85,16 @@ function sessionPlainPath(mediaRef: EncryptedMediaRef, plainBytes?: Uint8Array):
   if (ext === "jpg" && (ct.includes("audio") || ct.includes("3gp") || ct.includes("amr"))) {
     ext = ct.includes("3gp") || ct.includes("amr") ? "3gp" : "m4a";
   }
-  return `${SESSION_PLAIN_DIR}${safeObjectSlug(mediaRef.objectPath)}.${ext}`;
+  return ext;
+}
+
+function plainCachePath(mediaRef: EncryptedMediaRef, plainBytes?: Uint8Array): string {
+  const ext = extensionForMediaRef(mediaRef, plainBytes);
+  return `${PLAIN_MEDIA_DIR}${safeObjectSlug(mediaRef.objectPath)}.${ext}`;
+}
+
+function legacyEncryptedCachePath(objectPath: string): string {
+  return `${LEGACY_ENC_DIR}${safeObjectSlug(objectPath)}.enc`;
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -60,20 +105,18 @@ async function ensureDir(dir: string): Promise<void> {
   }
 }
 
-async function encryptBytesToFile(path: string, plain: Uint8Array): Promise<void> {
-  const key = await getMediaCacheKey();
-  const nonce = await Random.getRandomBytesAsync(nacl.secretbox.nonceLength);
-  const boxed = nacl.secretbox(plain, nonce, key);
-  const payload = `${encodeBase64(nonce)}.${encodeBase64(boxed)}`;
-  await FileSystem.writeAsStringAsync(path, payload, { encoding: "utf8" });
+async function writePlainBytesToFile(path: string, plain: Uint8Array): Promise<void> {
+  await yieldToUi();
+  await FileSystem.writeAsStringAsync(path, encodeBase64(plain), { encoding: "base64" });
 }
 
-async function decryptFileToBytes(path: string): Promise<Uint8Array | null> {
+async function decryptLegacyEncFile(path: string): Promise<Uint8Array | null> {
   try {
     const raw = await FileSystem.readAsStringAsync(path);
     const dot = raw.indexOf(".");
     if (dot <= 0) return null;
-    const key = await getMediaCacheKey();
+    const key = await legacyMediaCacheKey();
+    if (!key) return null;
     const nonce = decodeBase64(raw.slice(0, dot));
     const boxed = decodeBase64(raw.slice(dot + 1));
     const opened = nacl.secretbox.open(boxed, nonce, key);
@@ -83,65 +126,74 @@ async function decryptFileToBytes(path: string): Promise<Uint8Array | null> {
   }
 }
 
-async function writePlainBytesToSession(path: string, plain: Uint8Array): Promise<void> {
-  await yieldToUi();
-  const base64 = encodeBase64(plain);
-  await FileSystem.writeAsStringAsync(path, base64, { encoding: "base64" });
+/** One-time: decrypt a pre-plaintext-build `.enc` blob into the new plain cache file. */
+async function migrateLegacyEncryptedCacheToPlain(
+  mediaRef: EncryptedMediaRef
+): Promise<string | undefined> {
+  await migrateLegacyEncDirFromCache();
+  const encPath = legacyEncryptedCachePath(mediaRef.objectPath);
+  const encInfo = await FileSystem.getInfoAsync(encPath);
+  if (!encInfo.exists || (encInfo.size ?? 0) <= 0) return undefined;
+
+  const plain = await decryptLegacyEncFile(encPath);
+  if (!plain || plain.length === 0) return undefined;
+
+  await ensureDir(PLAIN_MEDIA_DIR);
+  const plainPath = plainCachePath(mediaRef, plain);
+  await writePlainBytesToFile(plainPath, plain);
+  try {
+    await FileSystem.deleteAsync(encPath, { idempotent: true });
+  } catch {
+    /* best-effort */
+  }
+  return plainPath;
 }
 
-/** Persist decrypted media bytes encrypted at rest (Tier B display cache). */
+/** Persist decrypted Tier B media as a plain file on disk (display cache). */
 export async function writeEncryptedMediaCache(
   mediaRef: EncryptedMediaRef,
   plainBytes: Uint8Array
 ): Promise<void> {
-  await ensureDir(ENC_DIR);
-  await encryptBytesToFile(encryptedCachePath(mediaRef), plainBytes);
+  await ensureDir(PLAIN_MEDIA_DIR);
+  await writePlainBytesToFile(plainCachePath(mediaRef, plainBytes), plainBytes);
 }
 
-/** True when encrypted at-rest cache exists for this object. */
+/** True when a plain on-disk cache file exists for this object. */
 export async function hasEncryptedMediaCache(mediaRef: EncryptedMediaRef): Promise<boolean> {
-  await ensureDir(ENC_DIR);
-  const info = await FileSystem.getInfoAsync(encryptedCachePath(mediaRef));
-  return info.exists && (info.size ?? 0) > 0;
+  await ensureDir(PLAIN_MEDIA_DIR);
+  const plainPath = plainCachePath(mediaRef);
+  const info = await FileSystem.getInfoAsync(plainPath);
+  if (info.exists && (info.size ?? 0) > 0) return true;
+  const migrated = await migrateLegacyEncryptedCacheToPlain(mediaRef);
+  return !!migrated;
 }
 
 /**
- * Returns a `file://` URI for expo-av / Image (decrypted session copy).
- * Encrypted blob remains on disk; session plain is recreated when missing.
+ * Returns a `file://` URI for expo-av / Image. Plain files live in document storage.
  */
 export async function resolveSessionPlainMediaUri(
   mediaRef: EncryptedMediaRef,
   freshlyDecryptedPlain?: Uint8Array
 ): Promise<string> {
-  await ensureDir(SESSION_PLAIN_DIR);
-  const sessionPath = sessionPlainPath(mediaRef, freshlyDecryptedPlain);
-  const sessionInfo = await FileSystem.getInfoAsync(sessionPath);
-  if (sessionInfo.exists && (sessionInfo.size ?? 0) > 0) {
-    return sessionPath;
+  await ensureDir(PLAIN_MEDIA_DIR);
+  const plainPath = plainCachePath(mediaRef, freshlyDecryptedPlain);
+  const plainInfo = await FileSystem.getInfoAsync(plainPath);
+  if (plainInfo.exists && (plainInfo.size ?? 0) > 0) {
+    return plainPath;
   }
 
-  let plain = freshlyDecryptedPlain;
-  if (!plain) {
-    const encPath = encryptedCachePath(mediaRef);
-    const encInfo = await FileSystem.getInfoAsync(encPath);
-    if (!encInfo.exists) {
-      throw new Error("Encrypted media cache missing.");
-    }
-    plain = (await decryptFileToBytes(encPath)) ?? undefined;
-  }
-  if (!plain || plain.length === 0) {
-    throw new Error("Could not decrypt cached media.");
+  if (freshlyDecryptedPlain && freshlyDecryptedPlain.length > 0) {
+    await writePlainBytesToFile(plainPath, freshlyDecryptedPlain);
+    return plainPath;
   }
 
-  if (freshlyDecryptedPlain) {
-    await writeEncryptedMediaCache(mediaRef, freshlyDecryptedPlain);
-  }
+  const migrated = await migrateLegacyEncryptedCacheToPlain(mediaRef);
+  if (migrated) return migrated;
 
-  await writePlainBytesToSession(sessionPath, plain);
-  return sessionPath;
+  throw new Error("Tier B media cache missing.");
 }
 
-/** Remove decrypted session copies (e.g. sign-out); encrypted cache optional. */
+/** Remove on-disk Tier B display cache (e.g. sign-out / reset local data). */
 export async function clearEncryptedMediaCaches(options?: {
   includeEncryptedAtRest?: boolean;
 }): Promise<void> {
@@ -156,11 +208,12 @@ export async function clearEncryptedMediaCaches(options?: {
       /* best-effort */
     }
   };
-  await wipe(SESSION_PLAIN_DIR);
   if (options?.includeEncryptedAtRest) {
-    await wipe(ENC_DIR);
-    /** Pre–at-rest-encryption builds stored plaintext under this folder. */
-    const legacyPlainDir = `${FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? ""}mvpplus-tierb-media/`;
-    await wipe(legacyPlainDir);
+    await wipe(PLAIN_MEDIA_DIR);
+    await wipe(LEGACY_ENC_DIR);
+    await wipe(LEGACY_ENC_DIR_CACHE);
+    await wipe(LEGACY_SESSION_DIR);
+  } else {
+    await wipe(LEGACY_SESSION_DIR);
   }
 }

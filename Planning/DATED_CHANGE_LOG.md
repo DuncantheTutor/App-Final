@@ -10,7 +10,43 @@
 
 ---
 
-## 2026-06-06 00:06 +01:00
+## 2026-06-06 00:38 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:38 +01:00 | Media | Removed Tier B on-disk encryption; plain file cache + one-time legacy `.enc` migration. |
+
+---
+
+## 2026-06-06 00:35 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:35 +01:00 | Media / Profile | Tier B encrypted cache moved to document storage; boot + profile warm for grid thumbnails. |
+
+---
+
+## 2026-06-06 00:32 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:32 +01:00 | Cache / Sync | After APK rebuild, reset sync cursors on build mismatch; skip stale cloud snapshot restore; gate cloud upload until boot sync completes. |
+
+---
+
+## 2026-06-06 00:23 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:23 +01:00 | Chat / Media | Concentric 12px bubble / 10px media corners on captioned photo bubbles (2px inset). |
+
+---
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:20 +01:00 | Chat | Fix scroll-up pagination blocked when only 7 messages were in memory. |
+
+---
 
 | Time | Area | Change |
 |------|------|--------|

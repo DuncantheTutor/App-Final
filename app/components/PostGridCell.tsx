@@ -10,16 +10,29 @@ import {
   useResolvedPostMedia,
 } from "../hooks/useResolvedPostMedia";
 
+import type { TierBResolvePriority } from "../lib/tierBMedia/storage";
+
 export type PostGridCellProps = {
   post: Post;
   width: number;
   height: number;
   styles: Record<string, object>;
   subtleTextColor: string;
+  resolvePriority?: TierBResolvePriority;
 };
 
-function PostGridCellView({ post, width, height, styles, subtleTextColor }: PostGridCellProps) {
-  const resolved = useResolvedPostMedia(post, { resolveVideo: false });
+function PostGridCellView({
+  post,
+  width,
+  height,
+  styles,
+  subtleTextColor,
+  resolvePriority = "normal",
+}: PostGridCellProps) {
+  const resolved = useResolvedPostMedia(post, {
+    resolveVideo: false,
+    resolvePriority,
+  });
   const [videoFrameUri, setVideoFrameUri] = useState<string | undefined>();
 
   const hasMedia = postHasGridMedia(post);

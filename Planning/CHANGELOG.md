@@ -12,8 +12,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed (Jun 2026 — Tier B on-disk cache plaintext)
+- **Media file cache:** Tier B display cache no longer encrypts files on device — plain files in document storage (faster profile/feed reload). Legacy `.enc` blobs decrypt once on first access then are removed.
+
+### Fixed (Jun 2026 — profile grid media slow on cold start)
+- **Tier B cache persistence:** Encrypted media blobs now live under app document storage (not Android cache/) so they survive restarts. Legacy cache files migrate on first access. Own-profile grid thumbnails warm on boot and when opening My Profile.
+
+### Fixed (Jun 2026 — cache stale after APK rebuild)
+- **Rebuild sync:** Sync watermarks now record `appBuildId` + schema version; mismatch after install resets cursors so incremental pulls cannot skip new server data. Cloud social snapshot restore is skipped when local cache is newer; snapshot watermarks no longer pretend boot sync finished. Cloud backup uploads wait until initial server sync completes.
+
+### Fixed (Jun 2026 — chat pagination regression)
+- **Scroll-up history:** Long threads with only 7 messages in memory can paginate again (`onEndReached` enabled when `hasMore !== false` or more rows exist locally). Removed incorrect guard that blocked fetch when loaded count ≤ 7.
+
 ### Fixed (Jun 2026 — captioned photo bubble layout)
-- **Edge-to-edge media + caption:** Captioned photos/videos at the sender’s crop aspect with a **2px bubble-coloured inset** and **8px rounded** media corners (no grey divider). Caption spans full bubble width below. Narrow crops use min bubble width with bubble-coloured side fill.
+- **Edge-to-edge media + caption:** Captioned photos/videos at crop aspect with **2px bubble-coloured inset** (top + sides). Outer bubble radius **12px**, inner media clip **10px** so the surround and image corners align concentrically. Caption spans full bubble width below.
 
 ### Fixed (Jun 2026 — notification pre-prompt)
 - **Notification pre-prompt:** Shows whenever OS permission is still **undetermined** (ignores old permanent “Not now” flag). **Not now** dismisses until next cold start only; **Allow** opens the OS sheet. Re-checks on app foreground.
@@ -25,7 +37,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Unified media bubble:** Photos/videos with caption (or reply/unsent text) render in **one bubble** — 2px inset, 8px rounded media, caption full width below. Pending send preview matches as you type.
 
 ### Fixed (Jun 2026 — chat pagination spinner)
-- **Short threads:** No scroll-up server fetch when the open chat has **7 or fewer** messages in memory; `onEndReached` disabled until the count exceeds the initial display window. Spinner only during an active fetch when pagination is enabled.
+- **Short threads:** After server confirms no older pages (`hasMore: false`), scroll-up stops. *(Jun 6 regression fix: threads with exactly 7 in-memory rows can paginate again when more history exists on the server.)*
 
 ### Fixed (Jun 2026 — chat photo caption UX)
 - **Outbound preview:** After photo edit, chat shows the image at **bubble size** above a **compact composer** (caption field + Send only); empty caption still sends the photo.

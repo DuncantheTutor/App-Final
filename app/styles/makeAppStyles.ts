@@ -1,6 +1,11 @@
 import { Platform, StyleSheet } from "react-native";
 import type { ThemePalette } from "../domain/types";
 import {
+  CHAT_CAPTIONED_MEDIA_IMAGE_INSET,
+  CHAT_CAPTIONED_MEDIA_INNER_CORNER_RADIUS,
+  CHAT_MESSAGE_BUBBLE_RADIUS,
+} from "../lib/chatMediaLayout";
+import {
   CHAT_BUBBLE_BODY_SIZE,
   CHAT_HEADER_SIDE_RAIL_WIDTH,
   CHAT_XH,
@@ -1508,20 +1513,27 @@ export const makeStyles = (theme: ThemePalette) =>
       paddingHorizontal: 0,
       paddingTop: 0,
       paddingBottom: 0,
+      borderRadius: CHAT_MESSAGE_BUBBLE_RADIUS,
       overflow: "hidden",
     },
     photoMediaBubbleImageInset: {
-      paddingTop: 2,
-      paddingHorizontal: 2,
+      paddingTop: CHAT_CAPTIONED_MEDIA_IMAGE_INSET,
+      paddingHorizontal: CHAT_CAPTIONED_MEDIA_IMAGE_INSET,
       width: "100%",
       alignItems: "center",
     },
-    photoMediaBubbleImage: {
-      borderRadius: 8,
+    photoMediaBubbleImageClip: {
       overflow: "hidden",
+      borderTopLeftRadius: CHAT_CAPTIONED_MEDIA_INNER_CORNER_RADIUS,
+      borderTopRightRadius: CHAT_CAPTIONED_MEDIA_INNER_CORNER_RADIUS,
+    },
+    photoMediaBubbleImage: {
+      width: "100%",
+      height: "100%",
     },
     photoMediaBubbleVideo: {
-      borderRadius: 8,
+      borderTopLeftRadius: CHAT_CAPTIONED_MEDIA_INNER_CORNER_RADIUS,
+      borderTopRightRadius: CHAT_CAPTIONED_MEDIA_INNER_CORNER_RADIUS,
       overflow: "hidden",
       alignSelf: "center",
     },

@@ -258,6 +258,7 @@ import {
   pruneGhostEmptyChats,
   sanitizePersistedFriendsFromStorage,
 } from "./lib/viewPersistence";
+import { warmPostGridMediaCache } from "./lib/warmPostMediaCache";
 import {
   collectDirectChatIdsToLockForFriend,
   isChatIdentityLocked,
@@ -412,6 +413,7 @@ import {
 import {
   readFriendKeyBundleCache,
   readSyncWatermarks,
+  shouldResetSyncCacheForAppBuild,
   writeFriendKeyBundleCache,
   writeSyncWatermarks,
 } from "./lib/clientSyncCache";
@@ -734,6 +736,8 @@ function MainAppInner() {
   const postsLastFullSyncAtRef = useRef(0);
   /** Survives cold start via sync watermarks so deleted posts are not resurrected from disk or server. */
   const deletedPostIdsRef = useRef<Set<string>>(new Set());
+  /** Last local social blob write — skip older cloud snapshot restore on cold start. */
+  const localSocialCacheSavedAtMsRef = useRef(0);
   /**
    * Snapshot the current sync watermarks to AsyncStorage so the next cold
    * start can do an incremental `sinceMs` pull instead of replaying the full
@@ -1104,6 +1108,7 @@ function MainAppInner() {
       void storageSetItem(
         socialMessagingStorageKeyForEmail(email),
         JSON.stringify({
+          savedAtMs: Date.now(),
           chats,
           messages,
           hiddenChatIds,
@@ -1126,6 +1131,7 @@ function MainAppInner() {
     void storageSetItem(
       socialMessagingStorageKeyForEmail(email),
       JSON.stringify({
+        savedAtMs: Date.now(),
         chats: chatsRef.current,
         messages: messagesRef.current,
         hiddenChatIds: hiddenChatIdsRef.current,
@@ -1526,7 +1532,7 @@ function MainAppInner() {
   const socialSnapshotUploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleSocialSnapshotCloudBackup = useCallback(() => {
-    if (DEMO_OFFLINE_MODE) return;
+    if (DEMO_OFFLINE_MODE || !initialServerSyncDone) return;
     const session = getBackendSession();
     if (!session) return;
     if (socialSnapshotUploadTimerRef.current) {
@@ -1542,7 +1548,26 @@ function MainAppInner() {
         postsWatermarkMs: postsWatermarkMsRef.current,
       }).catch(() => undefined);
     }, 8_000);
-  }, [DEMO_OFFLINE_MODE, getBackendSession, postsVisibleForCache]);
+  }, [DEMO_OFFLINE_MODE, getBackendSession, postsVisibleForCache, initialServerSyncDone]);
+
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE || !backendSessionReady || !initialServerSyncDone) return;
+    scheduleSocialSnapshotCloudBackup();
+  }, [chats, messages, posts, signedIn, backendSessionReady, initialServerSyncDone, scheduleSocialSnapshotCloudBackup]);
+
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE || !initialServerSyncDone) return;
+    if (appLifecycleState !== "background" && appLifecycleState !== "inactive") return;
+    const session = getBackendSession();
+    if (!session) return;
+    void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
+      chats: chatsRef.current,
+      messages: messagesRef.current,
+      posts: postsVisibleForCache(postsRef.current),
+      messagesWatermarkMs: messagesWatermarkMsRef.current,
+      postsWatermarkMs: postsWatermarkMsRef.current,
+    }).catch(() => undefined);
+  }, [appLifecycleState, signedIn, initialServerSyncDone, getBackendSession, postsVisibleForCache]);
 
   useEffect(() => {
     backendUidToFriendIdRef.current = backendUidToFriendId;
@@ -1672,25 +1697,6 @@ function MainAppInner() {
       }
     })();
   };
-
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE || !backendSessionReady) return;
-    scheduleSocialSnapshotCloudBackup();
-  }, [chats, messages, posts, signedIn, backendSessionReady, scheduleSocialSnapshotCloudBackup]);
-
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE) return;
-    if (appLifecycleState !== "background" && appLifecycleState !== "inactive") return;
-    const session = getBackendSession();
-    if (!session) return;
-    void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
-      chats: chatsRef.current,
-      messages: messagesRef.current,
-      posts: postsVisibleForCache(postsRef.current),
-      messagesWatermarkMs: messagesWatermarkMsRef.current,
-      postsWatermarkMs: postsWatermarkMsRef.current,
-    }).catch(() => undefined);
-  }, [appLifecycleState, signedIn, getBackendSession, postsVisibleForCache]);
 
   useEffect(() => {
     if (!DEMO_OFFLINE_MODE) return;
@@ -2701,6 +2707,21 @@ function MainAppInner() {
     return { cols, gap, cell };
   }, [windowWidth]);
 
+  /** After cold start, pre-decrypt own profile grid thumbs from on-disk cache. */
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE || !initialServerSyncDone) return;
+    if (myProfileMediaPosts.length === 0) return;
+    void warmPostGridMediaCache(myProfileMediaPosts, { maxPosts: 36, priority: "normal" });
+  }, [signedIn, initialServerSyncDone, myProfileMediaPosts]);
+
+  /** Opening My Profile: jump thumbnail warm ahead of feed decrypt work. */
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE) return;
+    if (view.screen !== "myProfile") return;
+    if (myProfileMediaPosts.length === 0) return;
+    void warmPostGridMediaCache(myProfileMediaPosts, { maxPosts: 36, priority: "high" });
+  }, [signedIn, view.screen, myProfileMediaPosts]);
+
   const joinCutoffForViewer = useCallback(
     (chat: Chat | null | undefined) => {
       const session = getBackendSession();
@@ -3067,6 +3088,18 @@ function MainAppInner() {
     [invertedChatMessages, chatListDisplayLimit]
   );
 
+  const chatListCanExpandLocally = invertedChatMessages.length > chatListDisplayLimit;
+
+  const activeChatIdForPagination =
+    view.screen === "chat" && "chatId" in view ? view.chatId : null;
+
+  /** Enable scroll-up when more rows are in memory or the server may have older history. */
+  const chatPaginationEnabled = Boolean(
+    activeChatIdForPagination &&
+      (chatListCanExpandLocally ||
+        chatHasMoreOlder[activeChatIdForPagination] !== false)
+  );
+
   /** FlatList extraData — avoid passing the global `messages` array (re-renders every row on any chat update). */
   const activeChatListRenderKey = useMemo(() => {
     const last = activeChatMessages[activeChatMessages.length - 1];
@@ -3110,7 +3143,6 @@ function MainAppInner() {
     if (view.screen !== "chat" || !("chatId" in view) || chatLoadingOlder) return;
     const chatId = view.chatId;
     if (chatHasMoreOlder[chatId] === false) return;
-    if (activeChatMessages.length <= CHAT_UI_INITIAL_DISPLAY_COUNT) return;
     const session = getBackendSession();
     if (!session || DEMO_OFFLINE_MODE) return;
     const oldest = activeChatMessages[0];
@@ -3305,7 +3337,6 @@ function MainAppInner() {
       setChatListDisplayLimit((current) => current + CHAT_UI_DISPLAY_PAGE_SIZE);
       return;
     }
-    if (invertedChatMessages.length <= CHAT_UI_INITIAL_DISPLAY_COUNT) return;
     if (chatHasMoreOlder[chatId] === false) return;
     if (chatEndReachedBusyRef.current || chatLoadingOlder) return;
     chatEndReachedBusyRef.current = true;
@@ -3320,9 +3351,6 @@ function MainAppInner() {
     chatLoadingOlder,
     loadOlderChatMessages,
   ]);
-
-  const chatPaginationEnabled =
-    invertedChatMessages.length > CHAT_UI_INITIAL_DISPLAY_COUNT;
 
   const loadMoreProfileFeedPosts = useCallback(() => {
     setProfileFeedPostLimit((current) => current + PROFILE_FEED_POSTS_PAGE_SIZE);
@@ -3625,7 +3653,11 @@ function MainAppInner() {
     void (async () => {
       try {
         const cloudSnapshot = await restoreSocialSnapshotFromCloud(uid, deviceId);
-        if (cloudSnapshot) {
+        const localSavedAtMs = localSocialCacheSavedAtMsRef.current;
+        if (
+          cloudSnapshot &&
+          (localSavedAtMs <= 0 || cloudSnapshot.savedAtMs >= localSavedAtMs)
+        ) {
           const cloudPostsVisible = cloudSnapshot.posts.filter(
             (p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)
           );
@@ -3645,12 +3677,16 @@ function MainAppInner() {
               suppressedPostIds: deletedPostIdsRef.current,
             })
           );
-          messagesWatermarkMsRef.current = cloudSnapshot.messagesWatermarkMs;
-          postsWatermarkMsRef.current = cloudSnapshot.postsWatermarkMs;
-          messagesLastFullSyncAtRef.current = Date.now();
-          // Force the boot posts pull to replace the catalog against Firestore
-          // (cloud snapshot may still contain posts already deleted on server).
+          // Snapshot watermarks are hints only — boot sync re-pulls from server.
+          messagesWatermarkMsRef.current = 0;
+          postsWatermarkMsRef.current = 0;
+          messagesLastFullSyncAtRef.current = 0;
           postsLastFullSyncAtRef.current = 0;
+        } else if (cloudSnapshot && localSavedAtMs > 0) {
+          logAppEvent("cache.cloud_snapshot.skipped_stale", {
+            cloudSavedAtMs: cloudSnapshot.savedAtMs,
+            localSavedAtMs,
+          });
         }
 
         const firebaseAuthUid = firebaseAuth.currentUser?.uid;
@@ -3837,12 +3873,19 @@ function MainAppInner() {
          * Seed the in-memory sync refs from disk so the boot-time
          * `listEncryptedMessages` / `listEncryptedPosts` calls can ask for
          * `sinceMs = watermark - 5_000` instead of replaying the full backlog.
-         * `initializeBackendSessionForAccount` no longer zeros these.
+         * After an APK update, reset cursors so stale blobs cannot block fresh pulls.
          */
-        messagesWatermarkMsRef.current = persistedWatermarks.messagesWatermarkMs;
-        messagesLastFullSyncAtRef.current = persistedWatermarks.messagesLastFullSyncAt;
-        postsWatermarkMsRef.current = persistedWatermarks.postsWatermarkMs;
-        postsLastFullSyncAtRef.current = persistedWatermarks.postsLastFullSyncAt;
+        if (shouldResetSyncCacheForAppBuild(persistedWatermarks)) {
+          messagesWatermarkMsRef.current = 0;
+          messagesLastFullSyncAtRef.current = 0;
+          postsWatermarkMsRef.current = 0;
+          postsLastFullSyncAtRef.current = 0;
+        } else {
+          messagesWatermarkMsRef.current = persistedWatermarks.messagesWatermarkMs;
+          messagesLastFullSyncAtRef.current = persistedWatermarks.messagesLastFullSyncAt;
+          postsWatermarkMsRef.current = persistedWatermarks.postsWatermarkMs;
+          postsLastFullSyncAtRef.current = persistedWatermarks.postsLastFullSyncAt;
+        }
         deletedPostIdsRef.current = new Set(persistedWatermarks.deletedPostIds ?? []);
         /**
          * Seed the friend public-key cache from disk so the first outbound
@@ -3853,6 +3896,7 @@ function MainAppInner() {
         if (!hasSeedGraph && !demoGraph && rawSocial) {
           try {
             const parsedSocial = JSON.parse(rawSocial) as {
+              savedAtMs?: unknown;
               chats?: unknown;
               messages?: unknown;
               hiddenChatIds?: unknown;
@@ -3860,6 +3904,10 @@ function MainAppInner() {
               unfriendedIds?: unknown;
               identityLockedChatIds?: unknown;
             };
+            localSocialCacheSavedAtMsRef.current = Math.max(
+              0,
+              Number(parsedSocial.savedAtMs ?? 0) || 0
+            );
             if (Array.isArray(parsedSocial.chats)) {
               nextChats = parsedSocial.chats as Chat[];
             }
@@ -8841,6 +8889,7 @@ function MainAppInner() {
       height={postGridLayout.cell}
       styles={styles}
       subtleTextColor={theme.subtleText}
+      resolvePriority="normal"
     />
   );
 
@@ -10648,7 +10697,7 @@ function MainAppInner() {
             onEndReached={chatPaginationEnabled ? handleChatListEndReached : undefined}
             onEndReachedThreshold={chatPaginationEnabled ? 0.25 : 0}
             ListFooterComponent={
-              chatLoadingOlder ? (
+              chatLoadingOlder || chatListCanExpandLocally ? (
                 <ActivityIndicator color={theme.accent} style={{ marginVertical: 8 }} />
               ) : null
             }
@@ -10900,29 +10949,33 @@ function MainAppInner() {
                           {hasPhotoBubbleContent && captionedPhotoLayout ? (
                             <>
                               <View style={styles.photoMediaBubbleImageInset}>
-                                <Image
-                                  source={{ uri: resolvedUri }}
+                                <View
                                   style={[
-                                    styles.photoMediaBubbleImage,
+                                    styles.photoMediaBubbleImageClip,
                                     {
                                       width: captionedPhotoLayout.imageWidth,
                                       height: captionedPhotoLayout.imageHeight,
                                     },
                                   ]}
-                                  resizeMode="cover"
-                                  onLoad={(event) => {
-                                    if (item.mediaWidth && item.mediaHeight) return;
-                                    const src = event.nativeEvent.source;
-                                    const w = Number(src?.width ?? 0);
-                                    const h = Number(src?.height ?? 0);
-                                    if (!w || !h) return;
-                                    setMeasuredChatMediaByMessageId((prev) => {
-                                      const cur = prev[item.id];
-                                      if (cur?.width === w && cur?.height === h) return prev;
-                                      return { ...prev, [item.id]: { width: w, height: h } };
-                                    });
-                                  }}
-                                />
+                                >
+                                  <Image
+                                    source={{ uri: resolvedUri }}
+                                    style={styles.photoMediaBubbleImage}
+                                    resizeMode="cover"
+                                    onLoad={(event) => {
+                                      if (item.mediaWidth && item.mediaHeight) return;
+                                      const src = event.nativeEvent.source;
+                                      const w = Number(src?.width ?? 0);
+                                      const h = Number(src?.height ?? 0);
+                                      if (!w || !h) return;
+                                      setMeasuredChatMediaByMessageId((prev) => {
+                                        const cur = prev[item.id];
+                                        if (cur?.width === w && cur?.height === h) return prev;
+                                        return { ...prev, [item.id]: { width: w, height: h } };
+                                      });
+                                    }}
+                                  />
+                                </View>
                               </View>
                               <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
                             </>
@@ -11544,18 +11597,22 @@ function MainAppInner() {
                       ]}
                     >
                       <View style={styles.photoMediaBubbleImageInset}>
-                        <Image
-                          source={{ uri: pendingChatMediaAttachment.uri }}
+                        <View
                           style={[
-                            styles.photoMediaBubbleImage,
+                            styles.photoMediaBubbleImageClip,
                             {
                               width: pendingChatMediaLayout.imageWidth,
                               height: pendingChatMediaLayout.imageHeight,
                             },
                           ]}
-                          resizeMode="cover"
-                          accessibilityIgnoresInvertColors
-                        />
+                        >
+                          <Image
+                            source={{ uri: pendingChatMediaAttachment.uri }}
+                            style={styles.photoMediaBubbleImage}
+                            resizeMode="cover"
+                            accessibilityIgnoresInvertColors
+                          />
+                        </View>
                       </View>
                       {chatInput.trim() ? (
                         <View style={styles.photoMediaBubbleCaption}>

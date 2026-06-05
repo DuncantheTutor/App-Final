@@ -29,6 +29,13 @@ export function chatPhotoMessageSize(
 /** Thin inset around media inside a captioned bubble (matches bubble colour, not grey). */
 export const CHAT_CAPTIONED_MEDIA_IMAGE_INSET = 2;
 
+/** Matches `messageCard.borderRadius` in makeAppStyles — keep in sync. */
+export const CHAT_MESSAGE_BUBBLE_RADIUS = 12;
+
+/** Inner media corner radius so the 2px surround tracks the bubble curve. */
+export const CHAT_CAPTIONED_MEDIA_INNER_CORNER_RADIUS =
+  CHAT_MESSAGE_BUBBLE_RADIUS - CHAT_CAPTIONED_MEDIA_IMAGE_INSET;
+
 /** Minimum captioned bubble width — narrower crops center inside bubble-coloured frame. */
 export const CHAT_CAPTIONED_MEDIA_MIN_BUBBLE_WIDTH = 120;
 
