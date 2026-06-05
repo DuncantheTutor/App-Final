@@ -46,6 +46,7 @@ export const FirebaseCallables = {
   createEncryptedPost: "createEncryptedPost",
   deleteEncryptedPost: "deleteEncryptedPost",
   listEncryptedPosts: "listEncryptedPosts",
+  listMyOwnedEncryptedPosts: "listMyOwnedEncryptedPosts",
   setEncryptedPostReaction: "setEncryptedPostReaction",
   updateEncryptedPost: "updateEncryptedPost",
   createPrivatePostThreadMessage: "createPrivatePostThreadMessage",

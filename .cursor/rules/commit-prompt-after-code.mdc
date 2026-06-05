@@ -1,0 +1,30 @@
+---
+description: After any code change, ask whether the user wants a git commit (never commit without yes)
+alwaysApply: true
+---
+
+# Commit prompt after code changes
+
+## When this applies
+
+After you **finish a batch of file changes** under a `(code)` message (see `code-permission-gate.mdc`), and before ending the turn:
+
+1. **Ask explicitly:** “Do you want me to create a git commit for these changes?”
+2. **Wait** for a clear yes/no (or “commit with message X”) before running `git add` / `git commit`.
+3. **Never** commit by default, amend, or push unless the user clearly requests it in that thread.
+
+## What counts as “code changes”
+
+- Any edits under the repo (app, backend, `android/`, scripts, `.cursor/rules/`, `Planning/` when updating docs as part of the same task).
+
+## If the user says no
+
+- Summarize what changed and remind them the work is **uncommitted** local only.
+
+## If the user says yes
+
+- Follow the user’s **committing-changes-with-git** rule: `git status`, `git diff`, draft message, commit, verify — no push unless asked.
+
+## Docs-only changes
+
+- Still ask about commit after updating `Planning/` or changelog files if those were part of the same `(code)` task.

@@ -1,7 +1,9 @@
 import { useMemo } from "react";
 
 import { joinCutoffMsForViewer } from "../lib/chatMemberJoinedAt";
+import { isBroadcastMessageVisibleToViewer } from "../lib/broadcastMessaging";
 import { localChatIdsForDirectThread } from "../lib/directChatId";
+import { messageDisplayText } from "../lib/messageDisplayText";
 import type { Chat, Friend, Message } from "../domain/types";
 import type { ViewState } from "../domain/types";
 
@@ -29,7 +31,9 @@ export function useActiveChatMessages(params: {
   } = params;
 
   return useMemo(() => {
-    if (view.screen !== "chat" || !("chatId" in view)) return [];
+    const onChatThread =
+      view.screen === "chat" || view.screen === "chatSharedMedia";
+    if (!onChatThread || !("chatId" in view)) return [];
     const chatId = view.chatId;
     const chatIdsForThread =
       sessionUid && !demoOfflineMode
@@ -49,6 +53,12 @@ export function useActiveChatMessages(params: {
       .filter((message) => chatIdsForThread.has(message.chatId))
       .filter((message) => !message.hiddenFromOwner)
       .filter((message) => {
+        if (chat && (chat.kind ?? "standard") === "broadcast") {
+          return isBroadcastMessageVisibleToViewer(message, chat, currentUserId);
+        }
+        return true;
+      })
+      .filter((message) => {
         if (message.senderId !== currentUserId) return true;
         return (
           message.createdAt >= cutoff ||
@@ -60,9 +70,10 @@ export function useActiveChatMessages(params: {
         if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
         return a.id.localeCompare(b.id);
       });
+    if (view.screen === "chatSharedMedia") return all;
     const query = chatSearch.trim().toLowerCase();
     if (!query) return all;
-    return all.filter((message) => message.text.toLowerCase().includes(query));
+    return all.filter((message) => messageDisplayText(message).toLowerCase().includes(query));
   }, [
     chatSearch,
     chats,

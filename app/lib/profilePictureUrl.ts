@@ -7,7 +7,7 @@ export function normalizeHttpsProfilePictureUrl(value: unknown): string {
 
 export function mergeProfilePictureUrl(
   incoming: unknown,
-  existing: string | undefined
+  existing: string | undefined | null
 ): string {
   const next = normalizeHttpsProfilePictureUrl(incoming);
   if (next) return next;

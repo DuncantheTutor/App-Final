@@ -34,7 +34,8 @@ const r = spawnSync(gradle, [task], {
   shell: process.platform === "win32",
   env: {
     ...process.env,
-    EXPO_PUBLIC_APP_VARIANT: task === "assembleDebug" ? "demo" : "release",
+    // Main app (MainApp) unless the build explicitly requests demo QA (`apk:debug demo`).
+    EXPO_PUBLIC_APP_VARIANT: copyDemoNamedApk ? "demo" : "release",
   },
 });
 if ((r.status ?? 1) !== 0) process.exit(r.status ?? 1);

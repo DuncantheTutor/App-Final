@@ -139,8 +139,9 @@ const styles = StyleSheet.create({
   pill: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
-    maxWidth: 220,
+    flexWrap: "nowrap",
+    alignSelf: "flex-start",
+    maxWidth: 280,
     gap: 1,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,

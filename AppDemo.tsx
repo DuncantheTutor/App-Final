@@ -18,6 +18,7 @@ import {
   Animated,
   Image,
   InputAccessoryView,
+  BackHandler,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -44,6 +45,15 @@ import {
   type PhotoEditorResult,
   type VideoTextOverlayData,
 } from "./PhotoEditorModal";
+import { chatPhotoMessageSize } from "./app/lib/chatMediaLayout";
+import {
+  pruneExpiredFeedMutes,
+  readFeedMutesForEmail,
+  writeFeedMutesForEmail,
+} from "./app/lib/feedMutePersistence";
+import { keyboardScrollPadding, scrollScrollViewToContentY } from "./app/lib/keyboardInputScroll";
+import { FullscreenMediaViewer } from "./app/components/FullscreenMediaViewer";
+import { HomeTopNavBar } from "./app/components/HomeTopNavBar";
 import LottieView from "lottie-react-native";
 
 import {
@@ -70,7 +80,12 @@ import {
   readAddFriendNdefPayload,
   writeAddFriendNdefPayload,
 } from "./addFriend/nfc/handshake";
-import { encodeNfcPinPairNdefPayload, parsePinFromNfcPairPlaintext } from "./addFriend/nfcPinTransport/pinPairProtocol";
+import {
+  encodeNfcPairOfferNdefPayload,
+  encodeQrPairOfferPayload,
+  parseNfcPairOfferPlaintext,
+  parseQrPairOfferPlaintext,
+} from "./addFriend/nfcPinTransport/pairOfferProtocol";
 
 type Friend = {
   id: string;
@@ -240,8 +255,8 @@ type ViewState =
 
 /** Cold start: hide auth/main UI until Firebase initial auth resolves and this minimum elapses. */
 const APP_BOOT_SPLASH_MIN_MS = 500;
-/** Shown on the boot splash under the tBH mark until you wire a real product name. */
-const PLACEHOLDER_APP_PRODUCT_NAME = "Your network name";
+/** Product name shown on the boot splash under the wordmark. */
+const PLACEHOLDER_APP_PRODUCT_NAME = "Erdos";
 
 function lastViewStorageKey(email: string): string {
   return `app:lastView:v1:${email.trim().toLowerCase()}`;
@@ -341,7 +356,7 @@ function parseStoredViewState(raw: string, chatIds: Set<string>): ViewState | nu
 
 const CURRENT_USER_ID = "me";
 const DEMO_OFFLINE_MODE = true;
-const DEMO_USER_A_QR_PIN = "4242";
+const DEMO_USER_A_QR_PIN = "42424242424242424242424242424242";
 /** Primary UI accent — blue-teal. */
 const ACCENT_GREEN = "#0C8579";
 /** Hot pink accent (paired with same light/dark structure as green). */
@@ -1471,7 +1486,6 @@ async function readLedgerSessionToken(email: string, canonicalMine: string): Pro
 const FEED_MUTE_CHOICES = [
   { label: "24 hours", durationMs: 24 * 60 * 60 * 1000 },
   { label: "1 week", durationMs: 7 * 24 * 60 * 60 * 1000 },
-  { label: "1 month", durationMs: 30 * 24 * 60 * 60 * 1000 },
 ] as const;
 
 type MockAuthAccount = {
@@ -1643,6 +1657,8 @@ function AddFriendScreen(props: {
   safeTop: number;
   bottomInset: number;
   navHighlight: {
+    createPost: boolean;
+    settings: boolean;
     chats: boolean;
     feed: boolean;
     myProfile: boolean;
@@ -1650,6 +1666,7 @@ function AddFriendScreen(props: {
     addFriend: boolean;
   };
   styles: Record<string, object>;
+  onOpenCreatePost: () => void;
   onOpenSettings: () => void;
   onOpenMyProfile: () => void;
   onOpenFriendsList: () => void;
@@ -1677,6 +1694,7 @@ function AddFriendScreen(props: {
     bottomInset,
     navHighlight,
     styles,
+    onOpenCreatePost,
     onOpenSettings,
     onOpenMyProfile,
     onOpenFriendsList,
@@ -1691,16 +1709,18 @@ function AddFriendScreen(props: {
     onEnsurePairingLocationPermission,
     onPairingCancelPinOffer,
   } = props;
-  const onAccentLabel = isDarkMode ? "rgba(0,0,0,0.90)" : "rgba(255,255,255,0.96)";
-  const onAccentMuted = isDarkMode ? "rgba(0,0,0,0.58)" : "rgba(255,255,255,0.72)";
-  const onAccentActivePill = isDarkMode ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.22)";
-  const switchTrackOff = isDarkMode
-    ? multiplyHexColor(theme.accent, 0.42)
-    : blendAccentTowardWhite(theme.accent, 0.38);
-  const switchTrackOn = isDarkMode
-    ? multiplyHexColor(theme.accent, 0.58)
-    : blendAccentTowardWhite(theme.accent, 0.52);
-  const switchThumbSolid = isDarkMode ? "#111111" : "#FFFFFF";
+  const iconColor = theme.accent;
+  const textColor = theme.text;
+  const mutedColor = theme.subtleText;
+  const navPillActiveStyle = useMemo(
+    () => ({ backgroundColor: `${theme.accent}1F` }),
+    [theme.accent]
+  );
+  const switchTrackMutedHex = isDarkMode ? "rgba(255,255,255,0.32)" : `${theme.accent}1F`;
+  const switchTrackMuted = useMemo(
+    () => ({ false: switchTrackMutedHex, true: switchTrackMutedHex }),
+    [switchTrackMutedHex]
+  );
   const { height: windowHeight, width: screenWidth } = useWindowDimensions();
   type Phase = "idle" | "handshake" | "awaitPairing" | "confirmFriend" | "profileOverlay" | "profileSolo";
   const [phase, setPhase] = useState<Phase>("idle");
@@ -1777,14 +1797,12 @@ function AddFriendScreen(props: {
   );
 
   const buttonSize = Math.min(screenWidth - 20, screenWidth * 0.94);
-  const addFriendButtonFill = multiplyHexColor(theme.accent, 0.8);
-  const addFriendButtonBorder = isDarkMode ? multiplyHexColor(theme.accent, 0.62) : "rgba(255,255,255,0.95)";
-  const addFriendButtonChrome = {
-    backgroundColor: addFriendButtonFill,
-    borderWidth: 2,
-    borderColor: addFriendButtonBorder,
-  };
-  const addFriendButtonLabelColor = isDarkMode ? "#111111" : "rgba(255,255,255,0.96)";
+  const outlineButtonStyle = {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.divider,
+    backgroundColor: theme.background,
+  } as const;
 
   const stopHoldLoop = useCallback(() => {
     if (rafRef.current != null) {
@@ -1860,12 +1878,8 @@ function AddFriendScreen(props: {
     }
   }, []);
 
-  const parseQrPayloadPin = useCallback((raw: string): string | null => {
-    const t = raw.trim();
-    if (!t) return null;
-    if (/^\d{4}$/.test(t)) return t;
-    const m = t.match(/^AFQR1\|(\d{4})$/i);
-    return m?.[1] ?? null;
+  const parseQrPayloadOffer = useCallback((raw: string): string | null => {
+    return parseQrPairOfferPlaintext(raw);
   }, []);
 
   const qrPayloadFingerprint = useCallback((raw: string): string => {
@@ -1876,6 +1890,15 @@ function AddFriendScreen(props: {
     return `${t.length}:${checksum}`;
   }, []);
 
+  const buildQrDisplayPayload = useCallback((offerCode: string): string => {
+    const encoded = encodeQrPairOfferPayload(offerCode);
+    if (encoded) return encoded;
+    const t = offerCode.trim().replace(/\s+/g, "").toLowerCase();
+    if (/^\d{4}$/.test(t)) return `AFQR1|${t}`;
+    if (/^[0-9a-f]{32}$/i.test(t)) return `AFQR2|${t}`;
+    return "";
+  }, []);
+
   const beginPresenterQrOffer = useCallback(async () => {
     pairingHandshakeCancelledRef.current = false;
     if (!pairingBackendReady) {
@@ -1883,26 +1906,34 @@ function AddFriendScreen(props: {
       return;
     }
 
-    setPairingStatusLabel("QR: preparing…");
-    setPhase("awaitPairing");
+    const sessionId = Date.now();
+    hostAwaitSessionRef.current = sessionId;
     const stale = hostActivePinRef.current;
     hostActivePinRef.current = null;
     if (stale) await onPairingCancelPinOffer(stale).catch(() => {});
     clearQrHideTimer();
+    setActiveQrPayload(null);
 
+    setPairingStatusLabel("QR: preparing…");
     const pin = await onPairingRegisterPinWithRetry();
+    if (hostAwaitSessionRef.current !== sessionId) {
+      setPairingStatusLabel("QR: cancelled.");
+      return;
+    }
     if (!pin) {
-      setPhase("idle");
       setPairingStatusLabel("QR: could not reserve a code. Check network and try again.");
       return;
     }
 
-    const sessionId = Date.now();
-    hostAwaitSessionRef.current = sessionId;
+    const qrPayload = buildQrDisplayPayload(pin);
+    if (!qrPayload) {
+      setPairingStatusLabel("QR: invalid pairing code from server. Deploy latest Cloud Functions and try again.");
+      return;
+    }
+
     hostActivePinRef.current = pin;
-    setActiveQrPayload(`AFQR1|${pin}`);
+    setActiveQrPayload(qrPayload);
     setPairingStatusLabel("QR visible. Ask your friend to scan now.");
-    setPhase("idle");
     qrHideTimerRef.current = setTimeout(() => {
       setActiveQrPayload(null);
       setPairingStatusLabel("QR hidden. Tap Show QR Code to mint a new one.");
@@ -1911,8 +1942,8 @@ function AddFriendScreen(props: {
 
     const friend = await onPairingAwaitPinRedeem(pin);
     if (hostAwaitSessionRef.current !== sessionId) return;
-    hostActivePinRef.current = null;
     if (friend) {
+      hostActivePinRef.current = null;
       setActiveQrPayload(null);
       clearQrHideTimer();
       setPendingVerifiedFriend(friend);
@@ -1922,13 +1953,14 @@ function AddFriendScreen(props: {
       setPhase("confirmFriend");
       return;
     }
-    setPairingStatusLabel("Pairing: no one confirmed before this offer expired. Tap Show QR Code to try again.");
+    setPairingStatusLabel("Still waiting for a scan, or tap Show QR Code again.");
   }, [
     pairingBackendReady,
     onPairingCancelPinOffer,
     clearQrHideTimer,
     onPairingRegisterPinWithRetry,
     onPairingAwaitPinRedeem,
+    buildQrDisplayPayload,
   ]);
 
   const onPressShowQrCode = useCallback(() => {
@@ -1967,7 +1999,7 @@ function AddFriendScreen(props: {
       qrScanAttemptSeqRef.current += 1;
       const scanAttemptId = `scan-${Date.now()}-${qrScanAttemptSeqRef.current}`;
       logAppEvent("pairing.qr.scan.lock_acquired", { scanAttemptId, payloadFingerprint });
-      const pin = parseQrPayloadPin(result.data ?? "");
+      const pin = parseQrPayloadOffer(result.data ?? "");
       if (!pin) {
         logAppEvent("pairing.qr.scan.ignored", { reason: "invalid_payload", scanAttemptId, payloadFingerprint });
         setPairingStatusLabel("QR scan: invalid code. Ask your friend to tap Show QR Code and try again.");
@@ -2015,7 +2047,7 @@ function AddFriendScreen(props: {
       inPersonPairingRole,
       scannerBusy,
       phase,
-      parseQrPayloadPin,
+      parseQrPayloadOffer,
       qrPayloadFingerprint,
       onPairingConfirmPinRead,
       summarizeHandshakeError,
@@ -2116,7 +2148,7 @@ function AddFriendScreen(props: {
           setPairingStatusLabel(
             "Ask your friend to choose Join and hold their phone. Then hold both phones together while this phone sends the pairing signal."
           );
-          const ndefPayload = encodeNfcPinPairNdefPayload(pin);
+          const ndefPayload = encodeNfcPairOfferNdefPayload(pin);
           logAppEvent("pairing.nfc.pin.write.start", {
             nfcAttemptId,
             payloadLen: ndefPayload.length,
@@ -2209,7 +2241,7 @@ function AddFriendScreen(props: {
           setPhase("idle");
           return;
         }
-        const pin = plain ? parsePinFromNfcPairPlaintext(plain) : null;
+        const pin = plain ? parseNfcPairOfferPlaintext(plain) : null;
         if (!pin) {
           setPairingStatusLabel("Pairing: could not read a valid 4-digit code. Try Join again, Receive side first.");
           setDisplayedProfileId(ADD_FRIEND_HANDSHAKE_FAILURE_ID);
@@ -2369,88 +2401,23 @@ function AddFriendScreen(props: {
     <View
       style={[
         styles.addFriendRoot as object,
-        { paddingTop: safeTop, paddingBottom: bottomInset + 12, backgroundColor: theme.accent },
+        { paddingTop: safeTop, paddingBottom: bottomInset + 12, backgroundColor: theme.background },
       ]}
     >
-      <View style={[styles.homeTopBar as object, { marginBottom: 10 }]}>
-        <View style={styles.homeTopLeftIcons as object}>
-          <Pressable onPress={onOpenSettings} style={styles.iconButton as object} accessibilityLabel="Settings">
-            <Ionicons name="settings-outline" size={22} color={onAccentLabel} />
-          </Pressable>
-          <Pressable
-            onPress={onOpenMyProfile}
-            style={[
-              styles.iconButton as object,
-              navHighlight.myProfile ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="My profile"
-          >
-            <Ionicons
-              name={navHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-              size={24}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenFriendsList}
-            style={[
-              styles.iconButton as object,
-              navHighlight.friendsList ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Friends list"
-          >
-            <Ionicons
-              name={navHighlight.friendsList ? "people" : "people-outline"}
-              size={22}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenHomeChats}
-            style={[
-              styles.iconButton as object,
-              navHighlight.chats ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Open chats"
-          >
-            <Ionicons
-              name={navHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-              size={21}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenHomeFeed}
-            style={[
-              styles.iconButton as object,
-              navHighlight.feed ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Open feed"
-          >
-            <Ionicons
-              name={navHighlight.feed ? "newspaper" : "newspaper-outline"}
-              size={21}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenAddFriend}
-            style={[
-              styles.iconButton as object,
-              navHighlight.addFriend ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Add friend"
-          >
-            <Ionicons
-              name={navHighlight.addFriend ? "person-add" : "person-add-outline"}
-              size={22}
-              color={onAccentLabel}
-            />
-          </Pressable>
-        </View>
-        <Pressable onPress={onLogout} style={styles.iconButton as object} accessibilityLabel="Logout">
-          <Ionicons name="log-out-outline" size={22} color={onAccentLabel} />
-        </Pressable>
+      <View style={{ marginBottom: 10 }}>
+        <HomeTopNavBar
+          theme={theme}
+          styles={styles}
+          highlight={navHighlight}
+          onOpenCreatePost={onOpenCreatePost}
+          onOpenSettings={onOpenSettings}
+          onOpenMyProfile={onOpenMyProfile}
+          onOpenFriendsList={onOpenFriendsList}
+          onOpenHomeChats={onOpenHomeChats}
+          onOpenHomeFeed={onOpenHomeFeed}
+          onOpenAddFriend={onOpenAddFriend}
+          onLogout={onLogout}
+        />
       </View>
 
       <View
@@ -2474,11 +2441,11 @@ function AddFriendScreen(props: {
           <Ionicons
             name="qr-code-outline"
             size={20}
-            color={inPersonPairingRole === "share" ? onAccentLabel : onAccentMuted}
+            color={inPersonPairingRole === "share" ? iconColor : mutedColor}
           />
           <Text
             style={{
-              color: inPersonPairingRole === "share" ? onAccentLabel : onAccentMuted,
+              color: inPersonPairingRole === "share" ? textColor : mutedColor,
               fontSize: 14,
               fontWeight: "600",
             }}
@@ -2489,11 +2456,23 @@ function AddFriendScreen(props: {
         <Switch
           accessibilityLabel="Add Friend: show QR or read QR"
           value={inPersonPairingRole === "join"}
-          onValueChange={(v) => setInPersonPairingRole(v ? "join" : "share")}
+          onValueChange={(v) => {
+            if (phase !== "idle") return;
+            void (async () => {
+              hostAwaitSessionRef.current = 0;
+              clearQrHideTimer();
+              setActiveQrPayload(null);
+              const pin = hostActivePinRef.current;
+              hostActivePinRef.current = null;
+              if (pin) await onPairingCancelPinOffer(pin).catch(() => {});
+              setInPersonPairingRole(v ? "join" : "share");
+              if (v) setPairingStatusLabel("Host QR offer withdrawn. Ready to scan.");
+            })();
+          }}
           disabled={phase !== "idle"}
-          trackColor={{ false: switchTrackOff, true: switchTrackOn }}
-          thumbColor={switchThumbSolid}
-          ios_backgroundColor={switchTrackOff}
+          trackColor={switchTrackMuted}
+          thumbColor={iconColor}
+          ios_backgroundColor={switchTrackMutedHex}
         />
         <View
           style={{
@@ -2505,11 +2484,11 @@ function AddFriendScreen(props: {
           <Ionicons
             name="scan-outline"
             size={20}
-            color={inPersonPairingRole === "join" ? onAccentLabel : onAccentMuted}
+            color={inPersonPairingRole === "join" ? iconColor : mutedColor}
           />
           <Text
             style={{
-              color: inPersonPairingRole === "join" ? onAccentLabel : onAccentMuted,
+              color: inPersonPairingRole === "join" ? textColor : mutedColor,
               fontSize: 14,
               fontWeight: "600",
             }}
@@ -2606,7 +2585,7 @@ function AddFriendScreen(props: {
                           style={[
                             styles.addFriendProfileSoloName as object,
                             styles.addFriendCelebrationNameOnAccent as object,
-                            { color: onAccentLabel },
+                            { color: textColor },
                           ]}
                           numberOfLines={3}
                         >
@@ -2658,7 +2637,7 @@ function AddFriendScreen(props: {
                             style={[
                               styles.addFriendNowFriendsTitle as object,
                               {
-                                color: profileFriend ? onAccentLabel : isDarkMode ? "rgba(0,0,0,0.88)" : "#7A1515",
+                                color: profileFriend ? textColor : isDarkMode ? "rgba(0,0,0,0.88)" : "#7A1515",
                                 opacity: friendAddedOpacity,
                               },
                             ]}
@@ -2684,11 +2663,11 @@ function AddFriendScreen(props: {
               paddingHorizontal: 24,
             }}
           >
-            <ActivityIndicator size="large" color={onAccentLabel} />
+            <ActivityIndicator size="large" color={textColor} />
             <Text
               style={{
                 marginTop: 18,
-                color: onAccentLabel,
+                color: textColor,
                 fontSize: 18,
                 fontWeight: "600",
                 textAlign: "center",
@@ -2699,7 +2678,7 @@ function AddFriendScreen(props: {
             <Text
               style={{
                 marginTop: 10,
-                color: onAccentMuted,
+                color: mutedColor,
                 fontSize: 13,
                 textAlign: "center",
                 lineHeight: 19,
@@ -2710,7 +2689,7 @@ function AddFriendScreen(props: {
             <Text
               style={{
                 marginTop: 10,
-                color: onAccentMuted,
+                color: mutedColor,
                 fontSize: 12,
                 textAlign: "center",
               }}
@@ -2725,13 +2704,13 @@ function AddFriendScreen(props: {
                 paddingHorizontal: 22,
                 borderRadius: 12,
                 borderWidth: StyleSheet.hairlineWidth,
-                borderColor: onAccentMuted,
+                borderColor: mutedColor,
                 backgroundColor: isDarkMode ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.2)",
               }}
               accessibilityRole="button"
               accessibilityLabel="Cancel pairing"
             >
-              <Text style={{ color: onAccentLabel, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
+              <Text style={{ color: textColor, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
             </Pressable>
           </View>
         ) : null}
@@ -2765,43 +2744,28 @@ function AddFriendScreen(props: {
                 />
               ) : (
                 <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                  <Ionicons name="person-circle-outline" size={96} color={onAccentMuted} />
+                  <Ionicons name="person-circle-outline" size={96} color={mutedColor} />
                 </View>
               )}
             </View>
-            <Text style={{ color: onAccentLabel, fontSize: 22, fontWeight: "700", textAlign: "center" }}>
+            <Text style={{ color: textColor, fontSize: 22, fontWeight: "700", textAlign: "center" }}>
               {pendingVerifiedFriend?.displayName ?? "Friend"}
             </Text>
-            <Text style={{ color: onAccentMuted, fontSize: 14, textAlign: "center" }}>
-              Do you still want to add this person as a friend?
+            <Text style={{ color: mutedColor, fontSize: 14, textAlign: "center" }}>
+              {`Confirm adding ${pendingVerifiedFriend?.displayName?.trim() || "this person"} as friend?`}
             </Text>
             <View style={{ width: "100%", maxWidth: 420, flexDirection: "row", gap: 10 }}>
               <Pressable
                 onPress={cancelVerifiedFriend}
-                style={{
-                  flex: 1,
-                  borderRadius: 12,
-                  borderWidth: 1.5,
-                  borderColor: addFriendButtonBorder,
-                  paddingVertical: 12,
-                  alignItems: "center",
-                }}
+                style={[outlineButtonStyle, { flex: 1, paddingVertical: 12, alignItems: "center" }]}
               >
-                <Text style={{ color: onAccentLabel, fontSize: 16, fontWeight: "600" }}>Cancel</Text>
+                <Text style={{ color: textColor, fontSize: 16, fontWeight: "600" }}>Cancel</Text>
               </Pressable>
               <Pressable
                 onPress={() => void confirmVerifiedFriend()}
-                style={{
-                  flex: 1,
-                  borderRadius: 12,
-                  borderWidth: 1.5,
-                  borderColor: addFriendButtonBorder,
-                  backgroundColor: addFriendButtonFill,
-                  paddingVertical: 12,
-                  alignItems: "center",
-                }}
+                style={[styles.primaryButton as object, { flex: 1 }]}
               >
-                <Text style={{ color: addFriendButtonLabelColor, fontSize: 16, fontWeight: "700" }}>Confirm</Text>
+                <Text style={styles.primaryButtonText as object}>Confirm</Text>
               </Pressable>
             </View>
           </View>
@@ -2837,21 +2801,16 @@ function AddFriendScreen(props: {
             <Pressable
               onPress={onPressShowQrCode}
               disabled={pairingHoldCooldown || phase !== "idle"}
-              style={{
-                width: "100%",
-                maxWidth: 420,
-                borderRadius: 12,
-                borderWidth: 1.5,
-                borderColor: addFriendButtonBorder,
-                backgroundColor: addFriendButtonFill,
-                paddingVertical: 13,
-                alignItems: "center",
-                opacity: pairingHoldCooldown || phase !== "idle" ? 0.45 : 1,
-              }}
+              style={[
+                styles.primaryButton as object,
+                {
+                  width: "100%",
+                  maxWidth: 420,
+                  opacity: pairingHoldCooldown || phase !== "idle" ? 0.45 : 1,
+                },
+              ]}
             >
-              <Text style={{ color: addFriendButtonLabelColor, fontSize: 16, fontWeight: "700" }}>
-                Show QR Code
-              </Text>
+              <Text style={styles.primaryButtonText as object}>Show QR Code</Text>
             </Pressable>
           </View>
         ) : null}
@@ -2869,14 +2828,14 @@ function AddFriendScreen(props: {
                   alignItems: "center",
                 }}
               >
-                <Ionicons name="camera-outline" size={34} color={onAccentLabel} />
-                <Text style={{ marginTop: 10, color: onAccentLabel, fontSize: 16, fontWeight: "600" }}>
+                <Ionicons name="camera-outline" size={34} color={textColor} />
+                <Text style={{ marginTop: 10, color: textColor, fontSize: 16, fontWeight: "600" }}>
                   Camera access needed
                 </Text>
                 <Text
                   style={{
                     marginTop: 8,
-                    color: onAccentMuted,
+                    color: mutedColor,
                     textAlign: "center",
                     fontSize: 13,
                     lineHeight: 18,
@@ -2886,16 +2845,9 @@ function AddFriendScreen(props: {
                 </Text>
                 <Pressable
                   onPress={() => void requestCameraPermission()}
-                  style={{
-                    marginTop: 14,
-                    paddingHorizontal: 14,
-                    paddingVertical: 10,
-                    borderRadius: 12,
-                    borderWidth: StyleSheet.hairlineWidth,
-                    borderColor: onAccentMuted,
-                  }}
+                  style={[styles.primaryButton as object, { marginTop: 14 }]}
                 >
-                  <Text style={{ color: onAccentLabel, fontSize: 15, fontWeight: "600" }}>Allow camera</Text>
+                  <Text style={styles.primaryButtonText as object}>Allow camera</Text>
                 </Pressable>
               </View>
             ) : (
@@ -2907,8 +2859,8 @@ function AddFriendScreen(props: {
                   borderRadius: 22,
                   overflow: "hidden",
                   borderWidth: 2,
-                  borderColor: addFriendButtonBorder,
-                  backgroundColor: isDarkMode ? "#0B0B0B" : "#111111",
+                  borderColor: theme.divider,
+                  backgroundColor: "#000000",
                 }}
               >
                 <CameraView
@@ -2965,7 +2917,7 @@ function AddFriendScreen(props: {
             <Text
               style={{
                 marginTop: 8,
-                color: onAccentMuted,
+                color: mutedColor,
                 fontSize: 12,
                 textAlign: "center",
                 paddingHorizontal: 12,
@@ -3061,10 +3013,7 @@ export default function App() {
   const [createTitleDraft, setCreateTitleDraft] = useState("");
   const [createGroupPictureUri, setCreateGroupPictureUri] = useState<string | null>(null);
   const [pendingStandardGroupCreateAfterTitle, setPendingStandardGroupCreateAfterTitle] = useState(false);
-  const [savedBroadcastGroups, setSavedBroadcastGroups] = useState<SavedBroadcastGroup[]>([
-    { id: "bg-1", name: "Family Core", memberIds: ["f2", "f3", "f5", "f6"] },
-    { id: "bg-2", name: "Project Leads", memberIds: ["f16", "f17", "f18"] },
-  ]);
+  const [savedBroadcastGroups, setSavedBroadcastGroups] = useState<SavedBroadcastGroup[]>([]);
   const [selectedBroadcastGroupId, setSelectedBroadcastGroupId] = useState<string | null>(null);
   const [broadcastGroupDropdownOpen, setBroadcastGroupDropdownOpen] = useState(false);
   const [saveBroadcastGroupPromptOpen, setSaveBroadcastGroupPromptOpen] = useState(false);
@@ -3082,8 +3031,8 @@ export default function App() {
   const [addMemberModalOpen, setAddMemberModalOpen] = useState(false);
   const [addMemberSearch, setAddMemberSearch] = useState("");
   const [mediaModalOpen, setMediaModalOpen] = useState(false);
-  const [messageActionsOpen, setMessageActionsOpen] = useState(false);
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+  const [reactionTargetMessageId, setReactionTargetMessageId] = useState<string | null>(null);
   const [messageActionTargetId, setMessageActionTargetId] = useState<string | null>(null);
   const [replyTargetMessageId, setReplyTargetMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -3095,6 +3044,8 @@ export default function App() {
     null
   );
   const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
+  const [photoEditorInCrop, setPhotoEditorInCrop] = useState(false);
+  const [photoEditorCropExitTick, setPhotoEditorCropExitTick] = useState(0);
   const [photoEditorMediaType, setPhotoEditorMediaType] = useState<"photo" | "video">("photo");
   const [photoEditorTarget, setPhotoEditorTarget] = useState<"chat" | "post" | "profile">("chat");
   const [photoEditorAsset, setPhotoEditorAsset] = useState<{
@@ -3120,6 +3071,11 @@ export default function App() {
   /** When your bio has text, show read-only styling until long-press to edit (empty bio stays in the editor). */
   const [myBioTextEntryOpen, setMyBioTextEntryOpen] = useState(true);
   const bioInputRef = useRef<TextInput | null>(null);
+  const myProfileScrollRef = useRef<ScrollView | null>(null);
+  const bioFieldYInScrollRef = useRef(0);
+  const scrollBioFieldAboveKeyboard = useCallback(() => {
+    scrollScrollViewToContentY(myProfileScrollRef, bioFieldYInScrollRef.current, 16);
+  }, []);
   const [fullScreenPost, setFullScreenPost] = useState<Post | null>(null);
   const [postFullscreenThreadReplyKey, setPostFullscreenThreadReplyKey] = useState<string | null>(null);
   const [shouldFocusPostCommentInput, setShouldFocusPostCommentInput] = useState(false);
@@ -3192,16 +3148,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const addFriend = view.screen === "addFriend";
-    const rootBg = addFriend ? theme.accent : theme.background;
+    const rootBg = theme.background;
     void SystemUI.setBackgroundColorAsync(rootBg);
     if (Platform.OS === "android") {
       void NavigationBar.setBackgroundColorAsync(rootBg);
-      void NavigationBar.setButtonStyleAsync(
-        addFriend ? (isDarkMode ? "dark" : "light") : isDarkMode ? "light" : "dark"
-      );
+      void NavigationBar.setButtonStyleAsync(isDarkMode ? "light" : "dark");
     }
-  }, [view.screen, theme.accent, theme.background, isDarkMode]);
+  }, [theme.background, isDarkMode]);
 
   /** Android edge-to-edge can report `insets.top` as 0; combine with status bar height. */
   const safeTop = Math.max(
@@ -3209,18 +3162,38 @@ export default function App() {
     Platform.OS === "android" ? RNStatusBar.currentHeight ?? 0 : 0
   );
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
     const show = Keyboard.addListener(
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
-      () => setKeyboardVisible(true)
+      (e) => {
+        setKeyboardVisible(true);
+        setKeyboardHeight(e.endCoordinates.height);
+      }
     );
     /** `keyboardDidHide` avoids leftover padding from KeyboardAvoidingView (bar stuck too high). */
-    const hide = Keyboard.addListener("keyboardDidHide", () => setKeyboardVisible(false));
+    const hide = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardVisible(false);
+      setKeyboardHeight(0);
+    });
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (view.screen !== "myProfile" || !keyboardVisible) return;
+    if (myBio.trim().length > 0 && !myBioTextEntryOpen) return;
+    scrollBioFieldAboveKeyboard();
+  }, [
+    view.screen,
+    keyboardVisible,
+    keyboardHeight,
+    myBioTextEntryOpen,
+    myBio,
+    scrollBioFieldAboveKeyboard,
+  ]);
 
   useEffect(() => {
     if (!fullScreenPost || !shouldFocusPostCommentInput) return;
@@ -3239,6 +3212,29 @@ export default function App() {
     setShouldFocusPostCommentInput(false);
     Keyboard.dismiss();
   }, []);
+
+  const [fullscreenMedia, setFullscreenMedia] = useState<{
+    uri: string;
+    kind: "photo" | "gif" | "video";
+    galleryUris?: string[];
+    galleryIndex?: number;
+  } | null>(null);
+
+  const openFullscreenMedia = useCallback(
+    (
+      uri: string,
+      kind: "photo" | "gif" | "video",
+      options?: { galleryUris?: string[]; galleryIndex?: number }
+    ) => {
+      setFullscreenMedia({
+        uri,
+        kind,
+        galleryUris: options?.galleryUris,
+        galleryIndex: options?.galleryIndex,
+      });
+    },
+    []
+  );
 
   const openPostViewerFromFeed = useCallback((post: Post) => {
     setFullScreenPost(post);
@@ -3337,21 +3333,25 @@ export default function App() {
   useEffect(() => {
     const timer = setInterval(() => {
       setFeedMutedUntilByFriendId((current) => {
-        const now = Date.now();
-        let changed = false;
-        const next: Record<string, number | null> = {};
-        for (const [friendId, until] of Object.entries(current)) {
-          if (until === null || until > now) {
-            next[friendId] = until;
-          } else {
-            changed = true;
-          }
-        }
-        return changed ? next : current;
+        const next = pruneExpiredFeedMutes(current);
+        const keys = Object.keys(current);
+        const prunedKeys = Object.keys(next);
+        const unchanged =
+          keys.length === prunedKeys.length && keys.every((id) => next[id] === current[id]);
+        return unchanged ? current : next;
       });
     }, 60_000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!signedIn) return;
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) return;
+    void writeFeedMutesForEmail(email, feedMutedUntilByFriendId).catch(() => {
+      logAppError("feedMutes.persist", new Error("write failed"), { email });
+    });
+  }, [feedMutedUntilByFriendId, signedIn]);
 
   const allFriends = useMemo(
     () => [...FRIENDS, ...addedFriendsFromRitual],
@@ -3726,13 +3726,15 @@ export default function App() {
     const screen = view.screen;
     const onHome = screen === "home";
     return {
+      createPost: screen === "publishPost",
+      settings: settingsOpen,
       chats: onHome && homeTab === "chats",
       feed: onHome && homeTab === "feed",
       myProfile: screen === "myProfile",
       friendsList: screen === "friendsList",
       addFriend: screen === "addFriend",
     };
-  }, [view.screen, homeTab]);
+  }, [view.screen, homeTab, settingsOpen]);
 
   const isFriendFeedMuted = useCallback(
     (friendId: string) => {
@@ -4037,7 +4039,6 @@ export default function App() {
     setUnfriendedIds(allSeedIds);
     setFriendLinksState(cloneFriendLinks(FRIEND_LINKS));
     setAddedFriendsFromRitual([]);
-    setFeedMutedUntilByFriendId({});
     setMyBio("");
     setMyBioTextEntryOpen(true);
     setMyProfilePictureUrl(null);
@@ -4170,13 +4171,16 @@ export default function App() {
           : hasSeedGraph
             ? INITIAL_POSTS
             : [];
+      let nextFeedMutes: Record<string, number | null> = {};
       try {
-        const [rawView, rawTab, rawPosts, rawSocial] = await Promise.all([
+        const [rawView, rawTab, rawPosts, rawSocial, persistedFeedMutes] = await Promise.all([
           AsyncStorage.getItem(lastViewStorageKey(emailKey)),
           AsyncStorage.getItem(lastHomeTabStorageKey(emailKey)),
           AsyncStorage.getItem(postsStorageKeyForEmail(emailKey)),
           AsyncStorage.getItem(socialMessagingStorageKeyForEmail(emailKey)),
+          readFeedMutesForEmail(emailKey),
         ]);
+        nextFeedMutes = persistedFeedMutes;
         if (!hasSeedGraph && !demoGraph && rawSocial) {
           try {
             const parsedSocial = JSON.parse(rawSocial) as { chats?: unknown; messages?: unknown };
@@ -4219,7 +4223,7 @@ export default function App() {
       setUnfriendedIds(nextUnfriendedIds);
       setFriendLinksState(cloneFriendLinks(FRIEND_LINKS));
       setAddedFriendsFromRitual([]);
-      setFeedMutedUntilByFriendId({});
+      setFeedMutedUntilByFriendId(nextFeedMutes);
       setMyBio(account.bio);
       setMyBioTextEntryOpen(!account.bio.trim());
       setMyProfilePictureUrl(account.profilePictureUrl);
@@ -5117,39 +5121,37 @@ export default function App() {
     if (DEMO_OFFLINE_MODE) {
       const email = (sessionEmailRef.current ?? "").trim().toLowerCase();
       if (email === "usera@demo.local") return DEMO_USER_A_QR_PIN;
-      return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+      let demoToken = "";
+      for (let i = 0; i < 32; i++) demoToken += Math.floor(Math.random() * 16).toString(16);
+      return demoToken;
     }
     const session = getBackendSession();
     if (!session) return null;
     logAppEvent("pairing.session.create", {});
     const proximityEvidence = await collectPairingProximityEvidence();
-    const maxAttempts = 48;
-    for (let i = 0; i < maxAttempts; i++) {
-      const pin = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
-      try {
-        await callEmulatorFunction<{ ok?: boolean }>("registerNfcPinPairOffer", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          pin,
-          proximityEvidence,
-        });
-        return pin;
-      } catch (e: unknown) {
-        const raw = e instanceof Error ? e.message : String(e ?? "");
-        const lower = raw.toLowerCase();
-        if (lower.includes("pin unavailable") || lower.includes("failed-precondition")) {
-          continue;
-        }
-        logAppError("pairing.session.create", e, {});
-        if (lower.includes("404") || lower.includes("not found") || lower.includes("failed to fetch")) {
-          throw new Error(
-            "Could not reach pairing service. Deploy latest Cloud Functions (registerNfcPinPairOffer and related) or check network."
-          );
-        }
-        throw e instanceof Error ? e : new Error(String(e));
+    try {
+      const res = await callEmulatorFunction<{
+        ok?: boolean;
+        pin?: string;
+        pairingToken?: string;
+      }>("registerNfcPinPairOffer", {
+        uid: session.uid,
+        deviceId: session.deviceId,
+        proximityEvidence,
+      });
+      const token = String(res.pairingToken ?? res.pin ?? "").trim().toLowerCase();
+      return token.length > 0 ? token : null;
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e ?? "");
+      const lower = raw.toLowerCase();
+      logAppError("pairing.session.create", e, {});
+      if (lower.includes("404") || lower.includes("not found") || lower.includes("failed to fetch")) {
+        throw new Error(
+          "Could not reach pairing service. Deploy latest Cloud Functions (registerNfcPinPairOffer and related) or check network."
+        );
       }
+      throw e instanceof Error ? e : new Error(String(e));
     }
-    return null;
   }, [getBackendSession, collectPairingProximityEvidence]);
 
   const pairingAwaitPinRedeemParent = useCallback(
@@ -5303,10 +5305,14 @@ export default function App() {
     const currentlyMuted = isFriendFeedMuted(friend.id);
     const cancelButton = { text: "Cancel", style: "cancel" as const };
     const actionButtons = [
-      ...FEED_MUTE_CHOICES.map((choice) => ({
-        text: `Mute for ${choice.label}`,
-        onPress: () => setFeedMuteForFriend(friend.id, choice.durationMs),
-      })),
+      {
+        text: "Mute for 24 hours",
+        onPress: () => setFeedMuteForFriend(friend.id, FEED_MUTE_CHOICES[0].durationMs),
+      },
+      {
+        text: "Mute for 1 week",
+        onPress: () => setFeedMuteForFriend(friend.id, FEED_MUTE_CHOICES[1].durationMs),
+      },
       { text: "Mute until unmuted", onPress: () => setFeedMuteForFriend(friend.id, null) },
       ...(currentlyMuted
         ? [{ text: "Unmute feed", onPress: () => clearFeedMuteForFriend(friend.id) }]
@@ -5337,18 +5343,20 @@ export default function App() {
   };
 
   const handleFriendsListFriendLongPress = (friend: Friend) => {
+    if (isFriendFeedMuted(friend.id)) {
+      Alert.alert(
+        friend.displayName,
+        "Unmute this friend in your feed?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Unmute feed", onPress: () => clearFeedMuteForFriend(friend.id) },
+        ]
+      );
+      return;
+    }
     Alert.alert(friend.displayName, undefined, [
       { text: "Start chat", onPress: () => findOrCreateChatWithFriend(friend.id) },
-      {
-        text: isFriendFeedMuted(friend.id) ? "Unmute feed" : "Mute feed",
-        onPress: () => {
-          if (isFriendFeedMuted(friend.id)) {
-            clearFeedMuteForFriend(friend.id);
-            return;
-          }
-          openFeedMutePicker(friend);
-        },
-      },
+      { text: "Mute feed", onPress: () => openFeedMutePicker(friend) },
       {
         text: "Unfriend",
         style: "destructive",
@@ -6054,6 +6062,72 @@ export default function App() {
     setQueuedPostPhotoAssets([]);
   };
 
+  const handleAndroidHardwareBackRef = useRef<() => boolean>(() => false);
+  const handleAndroidHardwareBack = useCallback(() => {
+    if (photoEditorOpen) {
+      if (photoEditorInCrop) {
+        setPhotoEditorCropExitTick((t) => t + 1);
+        return true;
+      }
+      cancelPhotoEditor();
+      return true;
+    }
+    if (fullScreenPost) {
+      closeFullscreenPost();
+      return true;
+    }
+    if (reactionDetailPost) {
+      setReactionDetailPost(null);
+      return true;
+    }
+    if (reactionPickerOpen) {
+      setReactionPickerOpen(false);
+      return true;
+    }
+    if (postFullscreenThreadReplyKey) {
+      setPostFullscreenThreadReplyKey(null);
+      Keyboard.dismiss();
+      return true;
+    }
+    if (view.screen === "addFriend") {
+      setView({ screen: "home" });
+      return true;
+    }
+    if (view.screen === "chat") {
+      setView({ screen: "home" });
+      return true;
+    }
+    if (view.screen === "publishPost") {
+      closePublishPostScreen();
+      return true;
+    }
+    if (view.screen === "friendsList" || view.screen === "myProfile") {
+      setView({ screen: "home" });
+      return true;
+    }
+    return false;
+  }, [
+    photoEditorOpen,
+    photoEditorInCrop,
+    fullScreenPost,
+    reactionDetailPost,
+    reactionPickerOpen,
+    postFullscreenThreadReplyKey,
+    view.screen,
+    closeFullscreenPost,
+    closePublishPostScreen,
+  ]);
+
+  handleAndroidHardwareBackRef.current = handleAndroidHardwareBack;
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () =>
+      handleAndroidHardwareBackRef.current()
+    );
+    return () => sub.remove();
+  }, []);
+
   const toggleVoiceNote = () => {
     const startRecording = async () => {
       const permission = await Audio.requestPermissionsAsync();
@@ -6199,7 +6273,7 @@ export default function App() {
     setReplyTargetMessageId(null);
     setEditingMessageId(null);
     setMessageActionTargetId(null);
-    setMessageActionsOpen(false);
+    setReactionTargetMessageId(null);
     setReactionPickerOpen(false);
     setSelectedBroadcastThreadFriendId(null);
     setPhotoEditorOpen(false);
@@ -6396,16 +6470,18 @@ export default function App() {
     leaveChatToHome();
   };
 
-  const openMessageActions = (message: Message) => {
-    setMessageActionTargetId(message.id);
-    setMessageActionsOpen(true);
-  };
+  const openReactionPickerForMessage = useCallback((messageId: string) => {
+    setReactionTargetMessageId(messageId);
+    setMessageActionTargetId(messageId);
+    setReactionPickerOpen(true);
+  }, []);
 
   const applyReaction = (emoji: string) => {
-    if (!messageActionTargetId) return;
+    const messageId = reactionTargetMessageId ?? messageActionTargetId;
+    if (!messageId) return;
     setMessages((current) =>
       current.map((message) =>
-        message.id === messageActionTargetId
+        message.id === messageId
           ? {
               ...message,
               reactions: {
@@ -6417,7 +6493,7 @@ export default function App() {
       )
     );
     setReactionPickerOpen(false);
-    setMessageActionsOpen(false);
+    setReactionTargetMessageId(null);
   };
 
   const unsendTargetMessage = () => {
@@ -6438,14 +6514,14 @@ export default function App() {
           : message
       )
     );
-    setMessageActionsOpen(false);
+    setReactionTargetMessageId(null);
   };
 
   const startEditMessage = () => {
     if (!messageActionTarget || messageActionTarget.senderId !== CURRENT_USER_ID) return;
     setEditingMessageId(messageActionTarget.id);
     setChatInput(messageActionTarget.text);
-    setMessageActionsOpen(false);
+    setReactionTargetMessageId(null);
   };
 
   const startReplyToMessage = () => {
@@ -6456,7 +6532,8 @@ export default function App() {
     } else {
       setSelectedBroadcastThreadFriendId(null);
     }
-    setMessageActionsOpen(false);
+    setReactionPickerOpen(false);
+    setReactionTargetMessageId(null);
   };
 
   const saveChatTitle = () => {
@@ -6483,16 +6560,8 @@ export default function App() {
     setEditChatPictureOpen(false);
   };
 
-  const getPhotoMessageSize = (message: Message) => {
-    const maxWidth = 220;
-    const fallback = { width: 180, height: 180 };
-    if (!message.mediaWidth || !message.mediaHeight || message.mediaWidth <= 0 || message.mediaHeight <= 0) {
-      return fallback;
-    }
-    const width = Math.min(maxWidth, message.mediaWidth);
-    const height = Math.max(110, Math.round((width * message.mediaHeight) / message.mediaWidth));
-    return { width, height };
-  };
+  const getPhotoMessageSize = (message: Message) =>
+    chatPhotoMessageSize(windowWidth, message.mediaWidth, message.mediaHeight);
 
   const getReactionEntries = (message: Message) => {
     const counts = Object.values(message.reactions ?? {}).reduce<Record<string, number>>(
@@ -6820,6 +6889,7 @@ export default function App() {
     inFullscreenModal,
     hideComposers,
     onOpenViewer,
+    onOpenMedia,
     onOpenCommentComposer,
     onOpenThreadReply,
   }: {
@@ -6827,6 +6897,11 @@ export default function App() {
     inFullscreenModal?: boolean;
     hideComposers?: boolean;
     onOpenViewer?: () => void;
+    onOpenMedia?: (
+      uri: string,
+      kind: "photo" | "video",
+      options?: { galleryUris?: string[]; galleryIndex?: number }
+    ) => void;
     onOpenCommentComposer?: () => void;
     onOpenThreadReply?: (anchorCommentId: string) => void;
   }) => {
@@ -6969,10 +7044,29 @@ export default function App() {
             >
               {mediaUris.map((uri) => {
                 return (
-                  <View key={uri} style={{ width: windowWidth, height: mediaTallestHeight }}>
+                  <Pressable
+                    key={uri}
+                    style={{
+                      width: windowWidth,
+                      height: mediaTallestHeight,
+                      borderRadius: 0,
+                      backgroundColor: "#000000",
+                    }}
+                    onPress={() =>
+                      onOpenMedia?.(uri, "photo", {
+                        galleryUris: mediaUris,
+                        galleryIndex: mediaUris.indexOf(uri),
+                      })
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel="View photo full screen"
+                  >
                     <Image
                       source={{ uri }}
-                      style={[styles.postFeedImageFullWidth, { height: mediaTallestHeight }]}
+                      style={[
+                        styles.postFeedImageFullWidth,
+                        { height: mediaTallestHeight, borderRadius: 0 },
+                      ]}
                       resizeMode="contain"
                       onLoad={({ nativeEvent }) => {
                         const w = nativeEvent.source?.width ?? 0;
@@ -6984,7 +7078,7 @@ export default function App() {
                         );
                       }}
                     />
-                  </View>
+                  </Pressable>
                 );
               })}
             </ScrollViewUntilScroll>
@@ -7224,13 +7318,13 @@ export default function App() {
         >
           <Text
             style={{
-              fontSize: 44,
+              fontSize: 64,
               fontWeight: "900",
               letterSpacing: 0.5,
               color: theme.accent,
             }}
           >
-            tBH
+            E
           </Text>
           <Text
             style={{
@@ -7527,6 +7621,7 @@ export default function App() {
                   post={fullScreenPost}
                   inFullscreenModal
                   hideComposers
+                  onOpenMedia={(uri, kind, options) => openFullscreenMedia(uri, kind, options)}
                   onOpenThreadReply={(cid) => {
                     setPostFullscreenThreadReplyKey(`${fullScreenPost.id}:${cid}`);
                     requestAnimationFrame(() => postCommentInputRef.current?.focus());
@@ -7689,91 +7784,19 @@ export default function App() {
 
       {showHome ? (
         <View style={[styles.homeColumn, { paddingTop: safeTop }]}>
-          <View style={styles.homeTopBar}>
-            <View style={styles.homeTopLeftIcons}>
-              <Pressable
-                onPress={() => setSettingsOpen(true)}
-                style={styles.iconButton}
-                accessibilityLabel="Settings"
-              >
-                <Ionicons name="settings-outline" size={22} color={theme.accent} />
-              </Pressable>
-              <Pressable
-                onPress={openMyProfile}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.myProfile ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="My profile"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-                  size={24}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={openFriendsListFromHome}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.friendsList ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Friends list"
-                accessibilityHint="Opens your friends list. You can also swipe right on the chat list."
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.friendsList ? "people" : "people-outline"}
-                  size={22}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={() => setHomeTab("chats")}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.chats ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Open chats"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-                  size={21}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={() => setHomeTab("feed")}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.feed ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Open feed"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.feed ? "newspaper" : "newspaper-outline"}
-                  size={21}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={openAddFriendFromHome}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.addFriend ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Add friend"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.addFriend ? "person-add" : "person-add-outline"}
-                  size={22}
-                  color={theme.accent}
-                />
-              </Pressable>
-            </View>
-            <Pressable onPress={logout} style={styles.iconButton} accessibilityLabel="Logout">
-              <Ionicons name="log-out-outline" size={22} color={theme.accent} />
-            </Pressable>
-          </View>
+          <HomeTopNavBar
+            theme={theme}
+            styles={styles}
+            highlight={homeNavIconHighlight}
+            onOpenCreatePost={openPostComposer}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenMyProfile={openMyProfile}
+            onOpenFriendsList={openFriendsListFromHome}
+            onOpenHomeChats={() => setHomeTab("chats")}
+            onOpenHomeFeed={() => setHomeTab("feed")}
+            onOpenAddFriend={openAddFriendFromHome}
+            onLogout={logout}
+          />
 
           {homeTab === "chats" ? (
             <View style={styles.homeMainSwipeLayer} {...homeSwipeOpenFriendsPan.panHandlers}>
@@ -7945,7 +7968,7 @@ export default function App() {
                 keyExtractor={(item) => item.id}
                 contentContainerStyle={[
                   styles.feedList,
-                  { paddingBottom: Math.max(insets.bottom, 0) + 84 },
+                  { paddingBottom: Math.max(insets.bottom, 0) + 24 },
                 ]}
                 ItemSeparatorComponent={() => <View style={styles.feedSeparator} />}
                 ListEmptyComponent={<Text style={styles.feedEmpty}>No posts from friends yet.</Text>}
@@ -7953,18 +7976,12 @@ export default function App() {
                   <FeedPostCard
                     post={item}
                     onOpenViewer={() => openPostViewerFromFeed(item)}
+                    onOpenMedia={(uri, kind, options) => openFullscreenMedia(uri, kind, options)}
                     onOpenCommentComposer={() => openPostCommentComposerFromFeed(item)}
                     onOpenThreadReply={(cid) => openPostThreadReplyFromFeed(item, cid)}
                   />
                 )}
               />
-              <Pressable
-                style={[styles.feedFabButton, { bottom: Math.max(insets.bottom, 0) + 10 }]}
-                onPress={openPostComposer}
-              >
-                <Ionicons name="create-outline" size={22} color="#FFFFFF" />
-                <Text style={styles.startChatButtonText}>New post</Text>
-              </Pressable>
             </>
           )}
         </View>
@@ -8065,6 +8082,7 @@ export default function App() {
                     key={`friend-post-${post.id}`}
                     post={post}
                     onOpenViewer={() => openPostViewerFromFeed(post)}
+                    onOpenMedia={(uri, kind, options) => openFullscreenMedia(uri, kind, options)}
                     onOpenCommentComposer={() => openPostCommentComposerFromFeed(post)}
                     onOpenThreadReply={(cid) => openPostThreadReplyFromFeed(post, cid)}
                   />
@@ -8088,7 +8106,8 @@ export default function App() {
       {view.screen === "myProfile" ? (
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 20 }]}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
+          enabled={keyboardVisible}
           keyboardVerticalOffset={safeTop}
         >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
@@ -8183,9 +8202,13 @@ export default function App() {
               </Pressable>
             </View>
             <ScrollViewUntilScroll
+              ref={myProfileScrollRef}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
-              contentContainerStyle={styles.friendProfileScroll}
+              contentContainerStyle={[
+                styles.friendProfileScroll,
+                keyboardHeight > 0 ? { paddingBottom: keyboardScrollPadding(keyboardHeight) } : null,
+              ]}
             >
               <Pressable onPress={pickProfileImage}>
                 {myProfilePictureUrl ? (
@@ -8209,6 +8232,7 @@ export default function App() {
                     setMyBioTextEntryOpen(true);
                     setTimeout(() => {
                       bioInputRef.current?.focus();
+                      scrollBioFieldAboveKeyboard();
                     }, 80);
                   }}
                   delayLongPress={450}
@@ -8217,26 +8241,33 @@ export default function App() {
                   <Text style={styles.friendHeroBio}>{myBio}</Text>
                 </Pressable>
               ) : (
-                <TextInput
-                  ref={bioInputRef}
-                  value={myBio}
-                  onChangeText={(t) => setMyBio(t)}
-                  placeholder="Say something about yourself..."
-                  placeholderTextColor={theme.subtleText}
-                  style={[styles.searchInput, styles.bioInput]}
-                  multiline
-                  inputAccessoryViewID={Platform.OS === "ios" ? "bioInputAccessory" : undefined}
-                  returnKeyType={Platform.OS === "android" ? "done" : "default"}
-                  blurOnSubmit={false}
-                  onSubmitEditing={() => {
-                    if (Platform.OS === "android") Keyboard.dismiss();
+                <View
+                  onLayout={(e) => {
+                    bioFieldYInScrollRef.current = e.nativeEvent.layout.y;
                   }}
-                  onBlur={() => {
-                    if (myBio.trim().length > 0) {
-                      setMyBioTextEntryOpen(false);
-                    }
-                  }}
-                />
+                >
+                  <TextInput
+                    ref={bioInputRef}
+                    value={myBio}
+                    onChangeText={(t) => setMyBio(t)}
+                    placeholder="Say something about yourself..."
+                    placeholderTextColor={theme.subtleText}
+                    style={[styles.searchInput, styles.bioInput]}
+                    multiline
+                    inputAccessoryViewID={Platform.OS === "ios" ? "bioInputAccessory" : undefined}
+                    returnKeyType={Platform.OS === "android" ? "done" : "default"}
+                    blurOnSubmit={false}
+                    onFocus={scrollBioFieldAboveKeyboard}
+                    onSubmitEditing={() => {
+                      if (Platform.OS === "android") Keyboard.dismiss();
+                    }}
+                    onBlur={() => {
+                      if (myBio.trim().length > 0) {
+                        setMyBioTextEntryOpen(false);
+                      }
+                    }}
+                  />
+                </View>
               )}
               {myProfileMediaPosts.length > 0 ? (
                 <View style={styles.profilePostsSection}>
@@ -8268,6 +8299,7 @@ export default function App() {
                     key={`my-post-${post.id}`}
                     post={post}
                     onOpenViewer={() => openPostViewerFromFeed(post)}
+                    onOpenMedia={(uri, kind, options) => openFullscreenMedia(uri, kind, options)}
                     onOpenCommentComposer={() => openPostCommentComposerFromFeed(post)}
                     onOpenThreadReply={(cid) => openPostThreadReplyFromFeed(post, cid)}
                   />
@@ -8280,7 +8312,7 @@ export default function App() {
 
       {view.screen === "addFriend" ? (
         <View
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.accent, zIndex: 26 }]}
+          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 26 }]}
         >
           <AddFriendScreen
             theme={theme}
@@ -8289,6 +8321,7 @@ export default function App() {
             bottomInset={insets.bottom}
             navHighlight={homeNavIconHighlight}
             styles={styles}
+            onOpenCreatePost={openPostComposer}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenMyProfile={openMyProfile}
             onOpenFriendsList={openFriendsListFromHome}
@@ -8319,14 +8352,25 @@ export default function App() {
           keyboardVerticalOffset={safeTop}
         >
           <View style={{ flex: 1, paddingTop: safeTop, paddingHorizontal: 16, minHeight: 0 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 14 }}>
-              <Pressable onPress={closePublishPostScreen} style={styles.iconButton} accessibilityLabel="Back">
-                <Ionicons name="arrow-back" size={22} color={theme.text} />
-              </Pressable>
-              <Text style={[styles.chatScreenTitle, { flex: 1, textAlign: "center", marginRight: 38 }]}>
-                New post
-              </Text>
-            </View>
+            <HomeTopNavBar
+              theme={theme}
+              styles={styles}
+              highlight={homeNavIconHighlight}
+              onOpenCreatePost={openPostComposer}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenMyProfile={openMyProfile}
+              onOpenFriendsList={openFriendsListFromHome}
+              onOpenHomeChats={() => {
+                setHomeTab("chats");
+                setView({ screen: "home" });
+              }}
+              onOpenHomeFeed={() => {
+                setHomeTab("feed");
+                setView({ screen: "home" });
+              }}
+              onOpenAddFriend={openAddFriendFromHome}
+              onLogout={logout}
+            />
 
             <Pressable
               onPress={() => void pickPostPhotos()}
@@ -8516,12 +8560,19 @@ export default function App() {
                     style={styles.friendsListRow}
                     onPress={() => openFriendProfileFromFriendsList(item.id)}
                     onLongPress={() => handleFriendsListFriendLongPress(item)}
-                    accessibilityLabel={`${item.displayName}. Long press for more options.`}
+                    accessibilityLabel={
+                      mutedInFeed
+                        ? `${item.displayName}. Feed muted. Long press to unmute.`
+                        : `${item.displayName}. Long press for more options.`
+                    }
                   >
                     <View style={styles.friendsListAvatarWrap}>
                       {renderAvatar(item.profilePictureUrl, item.displayName.slice(0, 1), 44)}
                       {mutedInFeed ? (
-                        <View style={styles.feedMuteBadge}>
+                        <View
+                          style={styles.feedMuteBadge}
+                          accessibilityLabel="Feed muted"
+                        >
                           <Ionicons name="volume-mute" size={12} color="#FFFFFF" />
                         </View>
                       ) : null}
@@ -8861,7 +8912,7 @@ export default function App() {
                       ) : null}
                       <Pressable
                         style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
-                        onLongPress={() => openMessageActions(item)}
+                        onLongPress={() => openReactionPickerForMessage(item.id)}
                         onPress={() => {
                           if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
                             setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
@@ -8870,7 +8921,11 @@ export default function App() {
                       >
                         <Image
                           source={{ uri: item.mediaUri }}
-                          style={[styles.photoMessageImageDetached, getPhotoMessageSize(item)]}
+                          style={[
+                            styles.photoMessageImageDetached,
+                            isMine ? styles.photoMessageImageDetachedMine : null,
+                            getPhotoMessageSize(item),
+                          ]}
                         />
                         {hasPhotoBubbleContent ? (
                           <View
@@ -8918,7 +8973,7 @@ export default function App() {
                       ) : null}
                       <Pressable
                         style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
-                        onLongPress={() => openMessageActions(item)}
+                        onLongPress={() => openReactionPickerForMessage(item.id)}
                         onPress={() => {
                           if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
                             setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
@@ -9006,7 +9061,7 @@ export default function App() {
                         styles.messageCard,
                         isMine ? styles.myMessageCard : styles.otherMessageCard,
                       ]}
-                      onLongPress={() => openMessageActions(item)}
+                      onLongPress={() => openReactionPickerForMessage(item.id)}
                       onPress={() => {
                         if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
                           setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
@@ -9728,50 +9783,21 @@ export default function App() {
       </Modal>
 
       <Modal
-        visible={messageActionsOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setMessageActionsOpen(false)}
-      >
-        <Pressable style={styles.settingsOverlay} onPress={() => setMessageActionsOpen(false)}>
-          <Pressable style={styles.menuCard} onPress={() => {}}>
-            <Pressable style={styles.menuRow} onPress={startReplyToMessage}>
-              <Feather name="corner-up-left" size={18} color={theme.text} />
-              <Text style={styles.menuRowText}>Reply</Text>
-            </Pressable>
-            <Pressable
-              style={styles.menuRow}
-              onPress={() => {
-                setReactionPickerOpen(true);
-                setMessageActionsOpen(false);
-              }}
-            >
-              <Feather name="smile" size={18} color={theme.text} />
-              <Text style={styles.menuRowText}>React</Text>
-            </Pressable>
-            {messageActionTarget?.senderId === CURRENT_USER_ID && !messageActionTarget.unsentAt ? (
-              <>
-                <Pressable style={styles.menuRow} onPress={startEditMessage}>
-                  <Feather name="edit-2" size={18} color={theme.text} />
-                  <Text style={styles.menuRowText}>Edit</Text>
-                </Pressable>
-                <Pressable style={styles.menuRow} onPress={unsendTargetMessage}>
-                  <Feather name="trash-2" size={18} color={theme.danger} />
-                  <Text style={[styles.menuRowText, { color: theme.danger }]}>Unsend</Text>
-                </Pressable>
-              </>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal
         visible={reactionPickerOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setReactionPickerOpen(false)}
+        onRequestClose={() => {
+          setReactionPickerOpen(false);
+          setReactionTargetMessageId(null);
+        }}
       >
-        <Pressable style={styles.settingsOverlay} onPress={() => setReactionPickerOpen(false)}>
+        <Pressable
+          style={styles.settingsOverlay}
+          onPress={() => {
+            setReactionPickerOpen(false);
+            setReactionTargetMessageId(null);
+          }}
+        >
           <Pressable style={styles.settingsCard} onPress={() => {}}>
             <Text style={styles.chatScreenTitle}>React</Text>
             <View style={styles.reactionPickerRow}>
@@ -9781,6 +9807,44 @@ export default function App() {
                 </Pressable>
               ))}
             </View>
+            {messageActionTarget ? (
+              <>
+                <Pressable
+                  style={[styles.menuRow, { marginTop: 12 }]}
+                  onPress={() => {
+                    setReactionPickerOpen(false);
+                    startReplyToMessage();
+                  }}
+                >
+                  <Feather name="corner-up-left" size={18} color={theme.text} />
+                  <Text style={styles.menuRowText}>Reply</Text>
+                </Pressable>
+                {messageActionTarget.senderId === CURRENT_USER_ID && !messageActionTarget.unsentAt ? (
+                  <>
+                    <Pressable
+                      style={styles.menuRow}
+                      onPress={() => {
+                        setReactionPickerOpen(false);
+                        startEditMessage();
+                      }}
+                    >
+                      <Feather name="edit-2" size={18} color={theme.text} />
+                      <Text style={styles.menuRowText}>Edit</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.menuRow}
+                      onPress={() => {
+                        setReactionPickerOpen(false);
+                        unsendTargetMessage();
+                      }}
+                    >
+                      <Feather name="trash-2" size={18} color={theme.danger} />
+                      <Text style={[styles.menuRowText, { color: theme.danger }]}>Unsend</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+              </>
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
@@ -10081,10 +10145,18 @@ export default function App() {
         </View>
       </Modal>
 
+      <FullscreenMediaViewer
+        item={fullscreenMedia}
+        backgroundColor="#000000"
+        onClose={() => setFullscreenMedia(null)}
+      />
+
       {photoEditorOpen ? (
         <PhotoEditorModal
           visible={photoEditorOpen}
           onClose={cancelPhotoEditor}
+          onCropModeChange={setPhotoEditorInCrop}
+          cropExitTick={photoEditorCropExitTick}
           onComplete={completePhotoEditor}
           assetUri={photoEditorAsset?.uri ?? null}
           assetWidth={photoEditorAsset?.width ?? 0}
@@ -10319,13 +10391,17 @@ const makeStyles = (theme: ThemePalette) =>
       marginBottom: 8,
       backgroundColor: "#000000",
       position: "relative",
+      borderRadius: 0,
+      overflow: "visible",
     },
     postFeedImageStrip: {
       width: "100%",
+      borderRadius: 0,
     },
     postFeedImageFullWidth: {
       width: "100%",
       backgroundColor: "#000000",
+      borderRadius: 0,
     },
     postFeedVideo: {
       width: "100%" as const,
@@ -10590,7 +10666,7 @@ const makeStyles = (theme: ThemePalette) =>
       alignItems: "flex-start",
     },
     postGridCell: {
-      borderRadius: 4,
+      borderRadius: 0,
       overflow: "hidden",
       backgroundColor: theme.divider,
       position: "relative",
@@ -11352,20 +11428,25 @@ const makeStyles = (theme: ThemePalette) =>
       maxWidth: "100%",
     },
     photoMessageImageDetached: {
-      borderRadius: 12,
-      backgroundColor: theme.divider,
+      borderRadius: 0,
       alignSelf: "flex-start",
       marginBottom: 0,
     },
+    photoMessageImageDetachedMine: {
+      alignSelf: "flex-end",
+    },
     videoMessageWrap: {
       position: "relative",
-      borderRadius: 12,
+      borderRadius: 0,
       overflow: "hidden",
       alignSelf: "flex-start",
-      backgroundColor: theme.divider,
+      backgroundColor: "#000000",
+    },
+    videoMessageWrapMine: {
+      alignSelf: "flex-end",
     },
     videoMessageVideo: {
-      borderRadius: 12,
+      borderRadius: 0,
     },
     videoOverlayText: {
       position: "absolute",

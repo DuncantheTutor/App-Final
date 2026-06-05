@@ -17,19 +17,21 @@
  *   key is recomputed locally from `SecureStore` on every boot, so we don't
  *   need to persist that one here.
  *
- * Both blobs are keyed by signed-in email and cleared via
- * `clearLocalSocialCacheForEmail` on signup, logout, and Settings → reset
- * local data. Re-sign-in with the same email restores cache on purpose for
- * returning users; a **new** signup clears cache first so deleted-server
- * accounts do not resurrect old friends/chats from disk.
+ * Both blobs are keyed by signed-in email, encrypted at rest on device
+ * (`encryptedLocalStorage` — plaintext AsyncStorage wrapper), and cleared via `clearLocalSocialCacheForEmail`
+ * on signup, logout, and Settings → reset local data. Re-sign-in with the same
+ * email restores cache on purpose for returning users; a **new** signup clears
+ * cache first so deleted-server accounts do not resurrect old friends/chats from disk.
  */
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { storageGetItem, storageRemoveItem, storageSetItem } from "./encryptedLocalStorage";
 
 export type PersistedSyncWatermarks = {
   messagesWatermarkMs: number;
   messagesLastFullSyncAt: number;
   postsWatermarkMs: number;
   postsLastFullSyncAt: number;
+  /** Post ids the user deleted locally; survives cold start so sync cannot resurrect them. */
+  deletedPostIds?: string[];
 };
 
 export const ZERO_WATERMARKS: PersistedSyncWatermarks = {
@@ -53,10 +55,15 @@ function isFiniteNumber(value: unknown): value is number {
 
 export async function readSyncWatermarks(email: string): Promise<PersistedSyncWatermarks> {
   try {
-    const raw = await AsyncStorage.getItem(syncWatermarksStorageKey(email));
+    const raw = await storageGetItem(syncWatermarksStorageKey(email));
     if (!raw) return { ...ZERO_WATERMARKS };
     const parsed = JSON.parse(raw) as Partial<PersistedSyncWatermarks> | null;
     if (!parsed || typeof parsed !== "object") return { ...ZERO_WATERMARKS };
+    const deletedPostIds = Array.isArray(parsed.deletedPostIds)
+      ? parsed.deletedPostIds
+          .map((id) => (typeof id === "string" ? id.trim() : ""))
+          .filter((id) => id.length > 0)
+      : [];
     return {
       messagesWatermarkMs: isFiniteNumber(parsed.messagesWatermarkMs)
         ? Math.max(0, parsed.messagesWatermarkMs)
@@ -70,6 +77,7 @@ export async function readSyncWatermarks(email: string): Promise<PersistedSyncWa
       postsLastFullSyncAt: isFiniteNumber(parsed.postsLastFullSyncAt)
         ? Math.max(0, parsed.postsLastFullSyncAt)
         : 0,
+      deletedPostIds,
     };
   } catch {
     return { ...ZERO_WATERMARKS };
@@ -81,7 +89,7 @@ export async function writeSyncWatermarks(
   watermarks: PersistedSyncWatermarks
 ): Promise<void> {
   try {
-    await AsyncStorage.setItem(syncWatermarksStorageKey(email), JSON.stringify(watermarks));
+    await storageSetItem(syncWatermarksStorageKey(email), JSON.stringify(watermarks));
   } catch {
     /* best-effort; the in-memory refs are still authoritative for this session */
   }
@@ -89,7 +97,7 @@ export async function writeSyncWatermarks(
 
 export async function readFriendKeyBundleCache(email: string): Promise<Record<string, string>> {
   try {
-    const raw = await AsyncStorage.getItem(friendKeyBundleStorageKey(email));
+    const raw = await storageGetItem(friendKeyBundleStorageKey(email));
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, unknown> | null;
     if (!parsed || typeof parsed !== "object") return {};
@@ -110,7 +118,7 @@ export async function writeFriendKeyBundleCache(
   cache: Record<string, string>
 ): Promise<void> {
   try {
-    await AsyncStorage.setItem(friendKeyBundleStorageKey(email), JSON.stringify(cache));
+    await storageSetItem(friendKeyBundleStorageKey(email), JSON.stringify(cache));
   } catch {
     /* best-effort */
   }
@@ -119,8 +127,8 @@ export async function writeFriendKeyBundleCache(
 export async function clearSyncCacheForEmail(email: string): Promise<void> {
   try {
     await Promise.all([
-      AsyncStorage.removeItem(syncWatermarksStorageKey(email)),
-      AsyncStorage.removeItem(friendKeyBundleStorageKey(email)),
+      storageRemoveItem(syncWatermarksStorageKey(email)),
+      storageRemoveItem(friendKeyBundleStorageKey(email)),
     ]);
   } catch {
     /* ignore */

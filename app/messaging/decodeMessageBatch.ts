@@ -1,4 +1,5 @@
 import { rosterFriendBackendUidsFromMap } from "../lib/messageIngestPolicy";
+import { yieldToUi } from "../lib/yieldToUi";
 import { decodeIncomingEncryptedMessage, logDecodeIncomingError } from "./decodeIncoming";
 import { mergeMissingChatsIntoState, mergeMessagesIntoState } from "./applyMessageBatch";
 import type { Chat, Friend, Message } from "../domain/types";
@@ -22,12 +23,33 @@ export function messageSyncCursorMs(message: Pick<Message, "createdAt" | "edited
   return Math.max(message.createdAt, typeof edited === "number" && Number.isFinite(edited) ? edited : 0);
 }
 
+/**
+ * Compute the next sync watermark without ever advancing past a message that
+ * failed to decode. Advancing to the newest *successful* cursor when an older
+ * message in the same batch threw would permanently skip that message (the next
+ * pull starts after it), causing silent message loss. When a failure exists we
+ * cap the watermark just below the earliest failed message so the next pull
+ * re-fetches and retries it.
+ */
+export function nextSafeWatermarkMs(params: {
+  prior: number;
+  successCursorMs: number;
+  earliestFailureMs: number | null;
+}): number {
+  const { prior, successCursorMs, earliestFailureMs } = params;
+  let candidate = successCursorMs;
+  if (earliestFailureMs != null && Number.isFinite(earliestFailureMs)) {
+    candidate = Math.min(candidate, earliestFailureMs - 1);
+  }
+  return Math.max(prior, candidate);
+}
+
 export async function decodeEncryptedMessagePullItems(params: {
   sessionUid: string;
   items: EncryptedMessagePullItem[];
   refs: MessagingSyncRefs;
   allFriends?: Friend[];
-}): Promise<{ batch: DecodedIncomingBatch; decodeFailures: number }> {
+}): Promise<{ batch: DecodedIncomingBatch; decodeFailures: number; earliestFailureMs: number | null }> {
   const { sessionUid, items, refs, allFriends } = params;
   const knownChatIds = new Set(refs.chatsRef.current?.map((chat) => chat.id) ?? []);
   const hiddenChatIdSet = new Set(refs.hiddenChatIdsRef.current ?? []);
@@ -36,6 +58,8 @@ export async function decodeEncryptedMessagePullItems(params: {
   const rosterFriendBackendUids = rosterFriendBackendUidsFromMap(refs.friendMapRef.current);
   const batch: DecodedIncomingBatch = { decoded: [], missingChats: [] };
   let decodeFailures = 0;
+  let earliestFailureMs: number | null = null;
+  let decodedSinceYield = 0;
 
   for (const item of items) {
     try {
@@ -69,25 +93,43 @@ export async function decodeEncryptedMessagePullItems(params: {
       if (!result) continue;
       batch.decoded.push(result.message);
       if (result.missingChat) batch.missingChats.push(result.missingChat);
+      decodedSinceYield += 1;
+      if (decodedSinceYield >= 8) {
+        decodedSinceYield = 0;
+        await yieldToUi();
+      }
     } catch (err) {
       decodeFailures += 1;
+      const failMs = item.createdAtMs ?? 0;
+      if (failMs > 0 && (earliestFailureMs == null || failMs < earliestFailureMs)) {
+        earliestFailureMs = failMs;
+      }
       logDecodeIncomingError("messages.pull.decode", err, { conversationId: item.conversationId });
     }
   }
 
-  return { batch, decodeFailures };
+  return { batch, decodeFailures, earliestFailureMs };
 }
 
 export function applyDecodedBatchToState(params: {
   batch: DecodedIncomingBatch;
   decodeFailures: number;
+  earliestFailureMs?: number | null;
   incremental: boolean;
   refs: MessagingSyncRefs;
   persistWatermarksNow: () => void;
   setChats: (updater: (current: Chat[]) => Chat[]) => void;
   setMessages: (updater: (current: Message[]) => Message[]) => void;
 }): void {
-  const { batch, decodeFailures, incremental, refs, persistWatermarksNow, setChats, setMessages } = params;
+  const {
+    batch,
+    earliestFailureMs = null,
+    incremental,
+    refs,
+    persistWatermarksNow,
+    setChats,
+    setMessages,
+  } = params;
   if (batch.missingChats.length > 0) {
     setChats((current) => mergeMissingChatsIntoState(current, batch.missingChats));
   }
@@ -95,11 +137,9 @@ export function applyDecodedBatchToState(params: {
     setMessages((current) => mergeMessagesIntoState(current, batch.decoded, incremental));
     const successCursor = Math.max(...batch.decoded.map((m) => messageSyncCursorMs(m)));
     const prior = refs.messagesWatermarkMsRef.current ?? 0;
-    if (decodeFailures === 0) {
-      refs.messagesWatermarkMsRef.current = Math.max(prior, successCursor);
-      persistWatermarksNow();
-    } else if (successCursor > prior) {
-      refs.messagesWatermarkMsRef.current = Math.max(prior, successCursor);
+    const next = nextSafeWatermarkMs({ prior, successCursorMs: successCursor, earliestFailureMs });
+    if (next > prior) {
+      refs.messagesWatermarkMsRef.current = next;
       persistWatermarksNow();
     }
   }

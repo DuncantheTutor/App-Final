@@ -1,243 +1,253 @@
-import { useCallback, useRef } from "react";
-
-import { logAppError } from "../../telemetry";
-import { promotePendingChatToRow } from "./promotePendingChat";
-import {
-  alertOutgoingDeliveryFailure,
-  deliverOutgoingMessages,
-  migrateDirectChatToCanonical,
-} from "./send";
-import type { Dispatch, SetStateAction } from "react";
-import type { Chat, Friend, Message, ViewState } from "../domain/types";
-import type { BackendSession } from "./types";
-
-export type UseOutgoingMessagesOptions = {
-  demoOfflineMode: boolean;
-  getBackendSession: () => BackendSession | null;
-  friendMap: Record<string, Friend>;
-  friendIdToBackendUid: Record<string, string>;
-  friendMapRef: { current: Record<string, Friend> };
-  friendIdToBackendUidRef: { current: Record<string, string> };
-  recipientKeyCacheRef: { current: Record<string, string> };
-  persistFriendKeyCacheNow: () => void;
-  resolveConversationId: (chat: Chat) => string;
-  pullEncryptedMessagesIncremental: () => Promise<void>;
-  setChats: (updater: (current: Chat[]) => Chat[]) => void;
-  setMessages: (updater: (current: Message[]) => Message[]) => void;
-  setHiddenChatIds: (updater: (current: string[]) => string[]) => void;
-  setView: Dispatch<SetStateAction<ViewState>>;
-  addAutoReplies: (chat: Chat, messages: Message[]) => void;
-};
-
-export function useOutgoingMessages(options: UseOutgoingMessagesOptions) {
-  const {
-    demoOfflineMode,
-    getBackendSession,
-    friendMap,
-    friendIdToBackendUid,
-    friendMapRef,
-    friendIdToBackendUidRef,
-    recipientKeyCacheRef,
-    persistFriendKeyCacheNow,
-    resolveConversationId,
-    pullEncryptedMessagesIncremental,
-    setChats,
-    setMessages,
-    setHiddenChatIds,
-    setView,
-    addAutoReplies,
-  } = options;
-
-  const outboundByChatRef = useRef<Record<string, Promise<void>>>({});
-
-  const commitOutgoingMessages = useCallback(
-    (chat: Chat, outgoingMessages: Message[]) => {
-      if (outgoingMessages.length === 0) return;
-
-      const session = getBackendSession();
-      let chatForSend = chat;
-      let migratedFromId: string | undefined;
-
-      if (session) {
-        const migrated = migrateDirectChatToCanonical({
-          chat,
-          session,
-          friendMap,
-          friendIdToBackendUid,
-        });
-        chatForSend = migrated.chatForSend;
-        migratedFromId = migrated.migratedFromId;
-
-        if (migratedFromId) {
-          setChats((current) => {
-            const legacy = current.find((c) => c.id === migratedFromId);
-            const existing = current.find((c) => c.id === chatForSend.id);
-            const merged: Chat = {
-              ...(existing ?? legacy ?? chat),
-              id: chatForSend.id,
-              memberIds: chat.memberIds,
-              isDraft: (existing ?? legacy ?? chat).isDraft,
-              visibleToRecipients: (existing ?? legacy ?? chat).visibleToRecipients,
-              memberJoinedAt: (existing ?? legacy ?? chat).memberJoinedAt ?? chat.memberJoinedAt,
-            };
-            return [
-              merged,
-              ...current.filter((c) => c.id !== migratedFromId && c.id !== chatForSend.id),
-            ];
-          });
-          setMessages((current) =>
-            current.map((m) => (m.chatId === migratedFromId ? { ...m, chatId: chatForSend.id } : m))
-          );
-          setHiddenChatIds((current) =>
-            current.map((id) => (id === migratedFromId ? chatForSend.id : id))
-          );
-          setView((current) => {
-            if (current.screen === "chat" && "chatId" in current && current.chatId === migratedFromId) {
-              return { screen: "chat", chatId: chatForSend.id };
-            }
-            return current;
-          });
-        }
-      }
-
-      const outgoingForState = outgoingMessages.map((m) => ({
-        ...m,
-        chatId: chatForSend.id,
-      }));
-      const now = Date.now();
-
-      setChats((current) => {
-        const exists = current.some((c) => c.id === chatForSend.id);
-        const promoted = {
-          ...chatForSend,
-          isDraft: false,
-          visibleToRecipients: true,
-          updatedAt: now,
-          draftComposerText: undefined,
-        };
-        if (!exists) {
-          return [
-            promoted,
-            ...current.filter(
-              (c) => c.id !== chat.id && c.id !== chatForSend.id && c.id !== migratedFromId
-            ),
-          ];
-        }
-        return current.map((c) => (c.id === chatForSend.id ? { ...c, ...promoted } : c));
-      });
-
-      setMessages((current) => [
-        ...current.map((m) =>
-          m.chatId === chat.id && chatForSend.id !== chat.id
-            ? { ...m, chatId: chatForSend.id }
-            : m
-        ),
-        ...outgoingForState.map((m) => ({
-          ...m,
-          deliveryStatus: demoOfflineMode ? ("sent" as const) : ("sending" as const),
-        })),
-      ]);
-
-      addAutoReplies(chatForSend, outgoingForState);
-      if (demoOfflineMode) return;
-
-      const outgoingIds = new Set(outgoingForState.map((m) => m.id));
-      const chatQueueKey = chatForSend.id;
-
-      const runDelivery = async () => {
-        let sendingTimeoutId: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const activeSession = getBackendSession();
-          if (!activeSession) {
-            throw new Error("Account session is not ready. Please wait a moment and try again.");
-          }
-          sendingTimeoutId = setTimeout(() => {
-            setMessages((current) =>
-              current.map((message) =>
-                outgoingIds.has(message.id) && message.deliveryStatus === "sending"
-                  ? { ...message, deliveryStatus: "failed" as const }
-                  : message
-              )
-            );
-          }, 90_000);
-
-          await deliverOutgoingMessages({
-            session: activeSession,
-            chatForSend,
-            outgoingForState,
-            friendIdToBackendUid,
-            friendMapRef,
-            friendIdToBackendUidRef,
-            recipientKeyCacheRef,
-            persistFriendKeyCacheNow,
-            resolveConversationId,
-            setChats,
-            setMessages,
-            onDelivered: () => {
-              if (sendingTimeoutId) clearTimeout(sendingTimeoutId);
-              void pullEncryptedMessagesIncremental().catch((pullErr) => {
-                logAppError("send.post_pull", pullErr, { chatId: chatForSend.id });
-              });
-            },
-            onFailed: (failedIds) => {
-              if (sendingTimeoutId) clearTimeout(sendingTimeoutId);
-              setMessages((current) =>
-                current.map((message) =>
-                  failedIds.has(message.id)
-                    ? { ...message, deliveryStatus: "failed" as const }
-                    : message
-                )
-              );
-            },
-          });
-        } catch (err) {
-          const failedIds = new Set(outgoingForState.map((m) => m.id));
-          alertOutgoingDeliveryFailure(err, (ids) => {
-            setMessages((current) =>
-              current.map((message) =>
-                ids.has(message.id)
-                  ? {
-                      ...message,
-                      unsentAt: message.unsentAt ?? Date.now(),
-                      deliveryStatus: "failed" as const,
-                    }
-                  : message
-              )
-            );
-          }, failedIds);
-        } finally {
-          if (sendingTimeoutId) clearTimeout(sendingTimeoutId);
-        }
-      };
-
-      const prior = outboundByChatRef.current[chatQueueKey] ?? Promise.resolve();
-      const chained = prior.then(runDelivery).catch(() => undefined);
-      outboundByChatRef.current[chatQueueKey] = chained;
-      void chained.finally(() => {
-        if (outboundByChatRef.current[chatQueueKey] === chained) {
-          delete outboundByChatRef.current[chatQueueKey];
-        }
-      });
-    },
-    [
-      addAutoReplies,
-      demoOfflineMode,
-      friendIdToBackendUid,
-      friendIdToBackendUidRef,
-      friendMap,
-      friendMapRef,
-      getBackendSession,
-      persistFriendKeyCacheNow,
-      pullEncryptedMessagesIncremental,
-      recipientKeyCacheRef,
-      resolveConversationId,
-      setChats,
-      setHiddenChatIds,
-      setMessages,
-      setView,
-    ]
-  );
-
-  return { commitOutgoingMessages };
-}
-
+import { useCallback, useRef } from "react";
+import { InteractionManager } from "react-native";
+
+import { logAppError } from "../../telemetry";
+import { yieldToUi } from "../lib/yieldToUi";
+import { promotePendingChatToRow } from "./promotePendingChat";
+import {
+  alertOutgoingDeliveryFailure,
+  deliverOutgoingMessages,
+  migrateDirectChatToCanonical,
+} from "./send";
+import type { Dispatch, SetStateAction } from "react";
+import type { Chat, Friend, Message, ViewState } from "../domain/types";
+import type { BackendSession } from "./types";
+
+export type UseOutgoingMessagesOptions = {
+  demoOfflineMode: boolean;
+  getBackendSession: () => BackendSession | null;
+  friendMap: Record<string, Friend>;
+  friendIdToBackendUid: Record<string, string>;
+  friendMapRef: { current: Record<string, Friend> };
+  friendIdToBackendUidRef: { current: Record<string, string> };
+  recipientKeyCacheRef: { current: Record<string, string> };
+  persistFriendKeyCacheNow: () => void;
+  resolveConversationId: (chat: Chat) => string;
+  getSenderDisplayName: () => string;
+  pullEncryptedMessagesIncremental: () => Promise<void>;
+  setChats: (updater: (current: Chat[]) => Chat[]) => void;
+  setMessages: (updater: (current: Message[]) => Message[]) => void;
+  setHiddenChatIds: (updater: (current: string[]) => string[]) => void;
+  setView: Dispatch<SetStateAction<ViewState>>;
+  addAutoReplies: (chat: Chat, messages: Message[]) => void;
+};
+
+export function useOutgoingMessages(options: UseOutgoingMessagesOptions) {
+  const {
+    demoOfflineMode,
+    getBackendSession,
+    friendMap,
+    friendIdToBackendUid,
+    friendMapRef,
+    friendIdToBackendUidRef,
+    recipientKeyCacheRef,
+    persistFriendKeyCacheNow,
+    resolveConversationId,
+    getSenderDisplayName,
+    pullEncryptedMessagesIncremental,
+    setChats,
+    setMessages,
+    setHiddenChatIds,
+    setView,
+    addAutoReplies,
+  } = options;
+
+  const outboundByChatRef = useRef<Record<string, Promise<void>>>({});
+
+  const commitOutgoingMessages = useCallback(
+    (chat: Chat, outgoingMessages: Message[]) => {
+      if (outgoingMessages.length === 0) return;
+
+      const session = getBackendSession();
+      let chatForSend = chat;
+      let migratedFromId: string | undefined;
+
+      if (session) {
+        const migrated = migrateDirectChatToCanonical({
+          chat,
+          session,
+          friendMap,
+          friendIdToBackendUid,
+        });
+        chatForSend = migrated.chatForSend;
+        migratedFromId = migrated.migratedFromId;
+      }
+
+      const outgoingForState = outgoingMessages.map((m) => ({
+        ...m,
+        chatId: chatForSend.id,
+      }));
+      const now = Date.now();
+      const outgoingIds = new Set(outgoingForState.map((m) => m.id));
+      const chatQueueKey = chatForSend.id;
+
+      const applyStateUpdates = () => {
+        if (migratedFromId) {
+          setView((current) => {
+            if (current.screen === "chat" && "chatId" in current && current.chatId === migratedFromId) {
+              return { screen: "chat", chatId: chatForSend.id };
+            }
+            return current;
+          });
+          setChats((current) => {
+            const legacy = current.find((c) => c.id === migratedFromId);
+            const existing = current.find((c) => c.id === chatForSend.id);
+            const merged: Chat = {
+              ...(existing ?? legacy ?? chat),
+              id: chatForSend.id,
+              memberIds: chat.memberIds,
+              isDraft: (existing ?? legacy ?? chat).isDraft,
+              visibleToRecipients: (existing ?? legacy ?? chat).visibleToRecipients,
+              memberJoinedAt: (existing ?? legacy ?? chat).memberJoinedAt ?? chat.memberJoinedAt,
+            };
+            return [
+              merged,
+              ...current.filter((c) => c.id !== migratedFromId && c.id !== chatForSend.id),
+            ];
+          });
+          setMessages((current) =>
+            current.map((m) => (m.chatId === migratedFromId ? { ...m, chatId: chatForSend.id } : m))
+          );
+          setHiddenChatIds((current) =>
+            current.map((id) => (id === migratedFromId ? chatForSend.id : id))
+          );
+        }
+
+        setChats((current) => {
+          const exists = current.some((c) => c.id === chatForSend.id);
+          const promoted = {
+            ...chatForSend,
+            isDraft: false,
+            visibleToRecipients: true,
+            updatedAt: now,
+            draftComposerText: undefined,
+          };
+          if (!exists) {
+            return [
+              promoted,
+              ...current.filter(
+                (c) => c.id !== chat.id && c.id !== chatForSend.id && c.id !== migratedFromId
+              ),
+            ];
+          }
+          return current.map((c) => (c.id === chatForSend.id ? { ...c, ...promoted } : c));
+        });
+
+        setMessages((current) => [
+          ...current.map((m) =>
+            m.chatId === chat.id && chatForSend.id !== chat.id
+              ? { ...m, chatId: chatForSend.id }
+              : m
+          ),
+          ...outgoingForState.map((m) => ({
+            ...m,
+            deliveryStatus: demoOfflineMode ? ("sent" as const) : ("sending" as const),
+          })),
+        ]);
+
+        addAutoReplies(chatForSend, outgoingForState);
+      };
+
+      const startDelivery = () => {
+        if (demoOfflineMode) return;
+
+        const runDelivery = async () => {
+          let sendingTimeoutId: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await yieldToUi();
+            const activeSession = getBackendSession();
+            if (!activeSession) {
+              throw new Error("Account session is not ready. Please wait a moment and try again.");
+            }
+            sendingTimeoutId = setTimeout(() => {
+              setMessages((current) =>
+                current.map((message) =>
+                  outgoingIds.has(message.id) && message.deliveryStatus === "sending"
+                    ? { ...message, deliveryStatus: "failed" as const }
+                    : message
+                )
+              );
+            }, 90_000);
+
+            await deliverOutgoingMessages({
+              session: activeSession,
+              chatForSend,
+              outgoingForState,
+              friendIdToBackendUid,
+              friendMapRef,
+              friendIdToBackendUidRef,
+              recipientKeyCacheRef,
+              persistFriendKeyCacheNow,
+              resolveConversationId,
+              getSenderDisplayName,
+              setChats,
+              setMessages,
+              onDelivered: () => {
+                if (sendingTimeoutId) clearTimeout(sendingTimeoutId);
+                void pullEncryptedMessagesIncremental().catch((pullErr) => {
+                  logAppError("send.post_pull", pullErr, { chatId: chatForSend.id });
+                });
+              },
+              onFailed: (failedIds) => {
+                if (sendingTimeoutId) clearTimeout(sendingTimeoutId);
+                setMessages((current) =>
+                  current.map((message) =>
+                    failedIds.has(message.id)
+                      ? { ...message, deliveryStatus: "failed" as const }
+                      : message
+                  )
+                );
+              },
+            });
+          } catch (err) {
+            alertOutgoingDeliveryFailure(err, (ids) => {
+              setMessages((current) =>
+                current.map((message) =>
+                  ids.has(message.id)
+                    ? { ...message, deliveryStatus: "failed" as const }
+                    : message
+                )
+              );
+            }, outgoingIds);
+          } finally {
+            if (sendingTimeoutId) clearTimeout(sendingTimeoutId);
+          }
+        };
+
+        const prior = outboundByChatRef.current[chatQueueKey] ?? Promise.resolve();
+        const chained = prior.then(runDelivery).catch(() => undefined);
+        outboundByChatRef.current[chatQueueKey] = chained;
+        void chained.finally(() => {
+          if (outboundByChatRef.current[chatQueueKey] === chained) {
+            delete outboundByChatRef.current[chatQueueKey];
+          }
+        });
+      };
+
+      InteractionManager.runAfterInteractions(() => {
+        applyStateUpdates();
+        startDelivery();
+      });
+    },
+    [
+      addAutoReplies,
+      demoOfflineMode,
+      friendIdToBackendUid,
+      friendIdToBackendUidRef,
+      friendMap,
+      friendMapRef,
+      getBackendSession,
+      getSenderDisplayName,
+      persistFriendKeyCacheNow,
+      pullEncryptedMessagesIncremental,
+      recipientKeyCacheRef,
+      resolveConversationId,
+      setChats,
+      setHiddenChatIds,
+      setMessages,
+      setView,
+    ]
+  );
+
+  return { commitOutgoingMessages };
+}

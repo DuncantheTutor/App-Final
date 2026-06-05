@@ -5,6 +5,7 @@ import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
 import { friendDisplayNameFromProfile } from "../lib/friendDisplayName";
 import { dedupeFriendsByBackendUid } from "../lib/mergeFriendsCatalog";
 import { resolveParticipantToAppUid } from "../lib/resolveParticipantAppUid";
+import { mergeProfileBio } from "../lib/mergeProfileBio";
 import { mergeProfilePictureUrl } from "../lib/profilePictureUrl";
 import type { Friend } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
@@ -31,6 +32,8 @@ export function attachFriendRosterListener(params: {
     a: string,
     b: string
   ) => Record<string, string[]>;
+  /** Local unfriend intent — roster must not re-accept until server drops the edge. */
+  stickyUnfriendedFriendIdsRef?: { current: Set<string> };
 }): () => void {
   const {
     session,
@@ -42,6 +45,7 @@ export function attachFriendRosterListener(params: {
     setFriendLinksState,
     addUndirectedEdge,
     removeUndirectedEdge,
+    stickyUnfriendedFriendIdsRef,
   } = params;
 
   const firebaseAuthUid = firebaseAuth.currentUser?.uid;
@@ -71,12 +75,14 @@ export function attachFriendRosterListener(params: {
       };
 
       if (snap.docs.length === 0) {
-        publishServerFriendUids(new Set());
-        // Do not wipe the local roster on an empty snapshot — that happens when
-        // `participantAuthUids` is not backfilled yet, rules deny reads, or the
-        // listener races boot `listMyFriends`. Edge removals are handled when
-        // docs disappear from a non-empty snapshot.
+        // Do not publish an empty uid set on cache/startup races — that forces every
+        // chat title to "User" until the next non-empty snapshot. Only clear when
+        // we previously had live friendship docs and the server snapshot is empty.
         if (snap.metadata.fromCache) return;
+        if (liveFriendBackendUidsRef.current.size > 0) {
+          publishServerFriendUids(new Set());
+          liveFriendBackendUidsRef.current = new Set();
+        }
         return;
       }
 
@@ -116,11 +122,17 @@ export function attachFriendRosterListener(params: {
 
       setUnfriendedIds((cur) => {
         const reacceptedFriendIds = [...liveBackendUids].map((uid) => backendUidForFriendId(uid));
-        const next = cur.filter((id) => !reacceptedFriendIds.includes(id));
+        const next = cur.filter((id) => {
+          if (stickyUnfriendedFriendIdsRef?.current.has(id)) return true;
+          return !reacceptedFriendIds.includes(id);
+        });
         return next.length === cur.length ? cur : next;
       });
 
       if (removedBackendUids.length > 0) {
+        for (const uid of removedBackendUids) {
+          stickyUnfriendedFriendIdsRef?.current.delete(backendUidForFriendId(uid));
+        }
         setUnfriendedIds((cur) => {
           const next = new Set(cur);
           let changed = false;
@@ -203,17 +215,23 @@ export function attachFriendRosterListener(params: {
             profile?.profilePictureUrl,
             prior?.profilePictureUrl
           ),
-          bio: profile?.bio || prior?.bio || "",
+          bio: mergeProfileBio(profile?.bio, prior?.bio),
           messageCount: prior?.messageCount ?? 0,
         });
       }
 
       setAddedFriendsFromRitual((current) => {
-        const next = dedupeFriendsByBackendUid(nextFriends);
-        if (next.length === current.length && next.every((f, i) => f === current[i])) {
+        const merged = dedupeFriendsByBackendUid([
+          ...nextFriends,
+          ...current.filter((f) => {
+            const bu = f.backendUid?.trim();
+            return bu?.startsWith("u_") && !liveBackendUids.has(bu);
+          }),
+        ]);
+        if (merged.length === current.length && merged.every((f, i) => f === current[i])) {
           return current;
         }
-        return next;
+        return merged;
       });
 
       setFriendLinksState((current) => {

@@ -26,9 +26,20 @@ export type EncryptedPlainPayload = {
   createdAt: number;
   kind?: "text" | "photo" | "video" | "voice" | "gif";
   mediaUri?: string | null;
+  mediaTier?: number | null;
+  mediaObjectPath?: string | null;
+  mediaKeyB64?: string | null;
+  mediaNonceB64?: string | null;
+  mediaContentType?: string | null;
   durationSec?: number | null;
+  mediaWidth?: number | null;
+  mediaHeight?: number | null;
   replyToMessageId?: string | null;
   broadcastThreadFriendId?: string | null;
+  /** True when the sender delivered this as a Broadcast (recipients see a dedicated card). */
+  isBroadcast?: boolean | null;
+  /** Sender-chosen broadcast title, used to name the recipient's broadcast card. */
+  broadcastTitle?: string | null;
 };
 
 export type DecodedIncomingBatch = {

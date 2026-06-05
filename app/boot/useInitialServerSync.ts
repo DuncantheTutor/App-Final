@@ -1,7 +1,16 @@
 import { useEffect } from "react";
 
 import { logAppError } from "../../telemetry";
-import { INITIAL_SERVER_SYNC_TIMEOUT_MS } from "../theme/preludeConstants";
+import { retainedMessageChatIds } from "../lib/messageRetentionChatIds";
+import { trimInMemoryMessages } from "../lib/trimInMemoryMessages";
+import { yieldToUi } from "../lib/yieldToUi";
+import {
+  BOOT_VISIBLE_CHATS_MESSAGE_PULL_MAX,
+  CHAT_INITIAL_MESSAGE_LIMIT,
+  ENCRYPTED_MESSAGES_BOOT_SYNC_LIMIT,
+  ENCRYPTED_POSTS_HOME_FEED_LIMIT,
+  INITIAL_SERVER_SYNC_TIMEOUT_MS,
+} from "../theme/preludeConstants";
 import { fetchFriendsOnBoot } from "./fetchFriendsOnBoot";
 import { reconcileSocialStateWithServerFriends } from "./reconcileSocialWithServer";
 import type { Chat, Friend, Message, Post } from "../domain/types";
@@ -15,8 +24,16 @@ export function useInitialServerSync(params: {
   setInitialServerSyncDone: (done: boolean) => void;
   getBackendSession: () => BackendSession | null;
   refreshHiddenConversationIdsFromServer: () => Promise<void>;
-  pullEncryptedMessagesIncremental: (options?: { forceFull?: boolean }) => Promise<void>;
-  pullEncryptedPostsIncremental: (options?: { forceFull?: boolean }) => Promise<void>;
+  pullEncryptedMessagesIncremental: (options?: {
+    forceFull?: boolean;
+    limit?: number;
+  }) => Promise<void>;
+  pullEncryptedMessagesForConversation: (conversationId: string) => Promise<void>;
+  resolveConversationId: (chatOrLocalId: Chat | string) => string;
+  pullEncryptedPostsIncremental: (options?: {
+    forceFull?: boolean;
+    limit?: number;
+  }) => Promise<void>;
   setAddedFriendsFromRitual: (friends: Friend[]) => void;
   setFriendLinksState: (
     updater: (current: Record<string, string[]>) => Record<string, string[]>
@@ -26,6 +43,7 @@ export function useInitialServerSync(params: {
   chatsRef: { current: Chat[] };
   messagesRef: { current: Message[] };
   postsRef: { current: Post[] };
+  addedFriendsFromRitualRef: { current: Friend[] };
   acceptedFriendBackendUidsRef: { current: Set<string> };
   onServerFriendBackendUidsChanged?: (uids: Set<string>) => void;
   addUndirectedEdge: (
@@ -34,6 +52,8 @@ export function useInitialServerSync(params: {
     b: string
   ) => Record<string, string[]>;
   currentUserLocalId: string;
+  currentUserId: string;
+  unfriendedIdsRef: { current: string[] };
 }): void {
   const {
     demoOfflineMode,
@@ -44,6 +64,8 @@ export function useInitialServerSync(params: {
     getBackendSession,
     refreshHiddenConversationIdsFromServer,
     pullEncryptedMessagesIncremental,
+    pullEncryptedMessagesForConversation,
+    resolveConversationId,
     pullEncryptedPostsIncremental,
     setAddedFriendsFromRitual,
     setFriendLinksState,
@@ -52,10 +74,13 @@ export function useInitialServerSync(params: {
     chatsRef,
     messagesRef,
     postsRef,
+    addedFriendsFromRitualRef,
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged,
     addUndirectedEdge,
     currentUserLocalId,
+    currentUserId,
+    unfriendedIdsRef,
   } = params;
 
   useEffect(() => {
@@ -73,20 +98,51 @@ export function useInitialServerSync(params: {
     };
     const safetyTimer = setTimeout(finish, INITIAL_SERVER_SYNC_TIMEOUT_MS);
 
+    const trimMessagesInState = (
+      friendMap: Record<string, Friend>,
+      friendIdToBackendUid: Record<string, string>
+    ) => {
+      setMessages((current) =>
+        trimInMemoryMessages(
+          current,
+          retainedMessageChatIds({
+            chats: chatsRef.current,
+            messages: current,
+            sessionAppUid: session.uid,
+            friendMap,
+            friendIdToBackendUid,
+            currentUserId,
+            currentUserLocalId: currentUserLocalId,
+            unfriendedIds: unfriendedIdsRef.current,
+          }),
+          CHAT_INITIAL_MESSAGE_LIMIT
+        )
+      );
+    };
+
     void (async () => {
       try {
         await refreshHiddenConversationIdsFromServer();
 
         let friendsFetchSucceeded = false;
+        let friendMap: Record<string, Friend> = {};
+        let friendIdToBackendUid: Record<string, string> = {};
         try {
-          const mapped = await fetchFriendsOnBoot(session);
+          const mapped = await fetchFriendsOnBoot(session, addedFriendsFromRitualRef.current);
           friendsFetchSucceeded = true;
           if (cancelled) return;
-          const allowedUids = new Set(
-            mapped.map((f) => f.backendUid?.trim()).filter((uid): uid is string => !!uid?.startsWith("u_"))
-          );
+          const bootUids = mapped
+            .map((f) => f.backendUid?.trim())
+            .filter((uid): uid is string => !!uid?.startsWith("u_"));
+          const localUids = addedFriendsFromRitualRef.current
+            .map((f) => f.backendUid?.trim())
+            .filter((uid): uid is string => !!uid?.startsWith("u_"));
+          const allowedUids = new Set([
+            ...acceptedFriendBackendUidsRef.current,
+            ...bootUids,
+            ...localUids,
+          ]);
           acceptedFriendBackendUidsRef.current = allowedUids;
-          onServerFriendBackendUidsChanged?.(allowedUids);
           setAddedFriendsFromRitual(mapped);
           setFriendLinksState((prev) => {
             let next = prev;
@@ -95,13 +151,14 @@ export function useInitialServerSync(params: {
             }
             return next;
           });
-          const friendMap: Record<string, Friend> = {};
+          onServerFriendBackendUidsChanged?.(allowedUids);
+          friendMap = {};
           for (const f of mapped) {
             friendMap[f.id] = f;
             const bu = f.backendUid?.trim();
             if (bu?.startsWith("u_")) friendMap[bu] = f;
           }
-          const friendIdToBackendUid: Record<string, string> = {};
+          friendIdToBackendUid = {};
           for (const f of mapped) {
             const bu = f.backendUid?.trim();
             if (bu?.startsWith("u_")) friendIdToBackendUid[f.id] = bu;
@@ -117,22 +174,49 @@ export function useInitialServerSync(params: {
           });
           setChats(() => reconciled.chats);
           setMessages(() => reconciled.messages);
+          trimMessagesInState(friendMap, friendIdToBackendUid);
         } catch (err) {
           logAppError("boot.friends", err, { uid: session.uid });
         }
 
         if (cancelled) return;
-        const forceFullTimeline =
+        const emptyTimeline =
           (messagesRef.current?.length ?? 0) === 0 &&
           (chatsRef.current?.length ?? 0) === 0 &&
           (postsRef.current?.length ?? 0) === 0;
         try {
-          await Promise.all([
-            pullEncryptedMessagesIncremental(
-              forceFullTimeline ? { forceFull: true } : undefined
-            ),
-            pullEncryptedPostsIncremental(forceFullTimeline ? { forceFull: true } : undefined),
-          ]);
+          const retained = retainedMessageChatIds({
+            chats: chatsRef.current,
+            messages: messagesRef.current,
+            sessionAppUid: session.uid,
+            friendMap,
+            friendIdToBackendUid,
+            currentUserId,
+            currentUserLocalId: currentUserLocalId,
+            unfriendedIds: unfriendedIdsRef.current,
+          });
+          const visiblePullIds = [...retained].slice(0, BOOT_VISIBLE_CHATS_MESSAGE_PULL_MAX);
+
+          if (emptyTimeline && visiblePullIds.length > 0) {
+            for (const localChatId of visiblePullIds) {
+              if (cancelled) return;
+              const conversationId = resolveConversationId(localChatId);
+              await pullEncryptedMessagesForConversation(conversationId);
+              await yieldToUi();
+            }
+          } else {
+            await pullEncryptedMessagesIncremental({
+              limit: ENCRYPTED_MESSAGES_BOOT_SYNC_LIMIT,
+            });
+          }
+
+          if (cancelled) return;
+          trimMessagesInState(friendMap, friendIdToBackendUid);
+          await yieldToUi();
+          await pullEncryptedPostsIncremental({
+            forceFull: true,
+            limit: ENCRYPTED_POSTS_HOME_FEED_LIMIT,
+          });
         } catch (err) {
           logAppError("boot.timeline", err, { uid: session.uid });
         }
@@ -154,6 +238,8 @@ export function useInitialServerSync(params: {
     getBackendSession,
     refreshHiddenConversationIdsFromServer,
     pullEncryptedMessagesIncremental,
+    pullEncryptedMessagesForConversation,
+    resolveConversationId,
     pullEncryptedPostsIncremental,
     setAddedFriendsFromRitual,
     setFriendLinksState,
@@ -166,5 +252,7 @@ export function useInitialServerSync(params: {
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged,
     currentUserLocalId,
+    currentUserId,
+    unfriendedIdsRef,
   ]);
 }

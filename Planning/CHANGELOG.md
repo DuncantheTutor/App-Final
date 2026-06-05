@@ -6,9 +6,353 @@ All notable changes to this project are recorded here. Planning references: `MVP
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions use [Semantic Versioning](https://semver.org/spec/v2.0.0.html) where a published app version exists (`package.json`).
 
+**Timestamped audit trail:** Month/topic headings here are **not** enough for regression bisect. Use **[`Planning/DATED_CHANGE_LOG.md`](./DATED_CHANGE_LOG.md)** for date/time notes and git-vs-WIP reality. Last **git** commit on `main` as of Jun 2026 docs pass: **`f85a5fd` (2026-05-20)**; most Jun 2026 bullets below are **uncommitted** local work until pushed.
+
 ---
 
 ## [Unreleased]
+
+### Fixed (Jun 2026 — testing report 5 Jun)
+- **Chat keyboard:** Re-enabled `KeyboardAvoidingView` on Android for chat; fixed composers use `keyboardComposerBottomPadding` (explicit lift from `keyboardHeight` on edge-to-edge). Same helper on post comment composer, publish footer, and chat/broadcast composer modals.
+- **Post comments live:** Fullscreen post viewer reads from live `posts` state (`fullScreenPostLive`) so new comments appear immediately without leaving the thread.
+- **Reactions horizontal:** Reaction pills use `flexWrap: "nowrap"` and `alignSelf: "flex-start"` so emoji chips stay on one row (posts, comments, chat).
+- **Remove reaction:** Reaction picker shows **Remove reaction (emoji)** when you already reacted; toggle still works by tapping the same emoji again.
+- **Read receipts:** Small read avatars sit at the **screen edge** below sender avatars, not inset to bubble width.
+- **Push notifications:** `POST_NOTIFICATIONS` on Android; FCM device token preferred on Android; pre-prompt waits for backend session before registering token. **Rebuild APK** after pulling these changes if push stopped working.
+
+### Added (2026-06-04 20:02 +01:00 — Cursor workflow)
+- **Agent workflow:** `.cursor/rules/code-permission-gate.mdc` — file edits only when the user starts a message with `(code)` on the first line. `commit-prompt-after-code.mdc` — ask before every git commit. `timestamped-changelog.mdc` — append **`Planning/DATED_CHANGE_LOG.md`** with minute timestamp + brief line on every code change.
+
+### Changed (Jun 2026 — cold-start performance)
+- **Plaintext on-device cache again:** `app/lib/encryptedLocalStorage.ts` now writes **plaintext** AsyncStorage (Firebase Auth uses stock `AsyncStorage` persistence). Legacy `enc1:` blobs from the brief encrypted-cache experiment are **decrypted once on read** and rewritten as plaintext.
+- **Smaller inbox hydrate:** Feed stays **3** posts on first paint. Chat threads load **7** messages (UI mount, server pull, per-thread listener). Boot hydrates **visible inbox chats only** (up to 12 threads × 7 messages); incremental inbox hint pull stays **7**. In-memory `messages` are trimmed to **visible chats + open thread**, **7 newest per chat** (`trimInMemoryMessages`, `messageRetentionChatIds`).
+- **Tier B media on disk (unchanged):** Downloaded chat/feed media remains **NaCl secretbox** under `mvpplus-tierb-enc/` with session decrypt files.
+
+### Known regression (Jun 2026 — chat send crash, **open**)
+- **Send button still crashes on device** after send-path revert; **read-receipt logic now matches `f85a5fd`** (`readReceipts.ts` + `readAvatarsForActiveChat` memo, 2026-06-04 20:21 +01:00). Large WIP remains vs that commit: chat Tier B `ChatMessageMediaResolver` / video-voice bubbles, encrypted AsyncStorage, messaging sync refactors (~71 files). **Verify:** `npm run apk:release`, test text-only send; if still crashing, build pure `f85a5fd` or capture logcat per `Planning/DATED_CHANGE_LOG.md`.
+
+### Fixed (Jun 2026 — chat send crash, attempted)
+- **Send white screen (21:22 +01:00 — 3 Jun read-receipt fallout):** Active chat messages sort by `createdAt` again (not `messageThreadSortKey` on send). Read position updates no longer call `setChats` on every new latest message; skip server read push while own outbound is still `sending`. `activeChatForRead` + Firestore listener use canonical thread row id.
+- **Send white screen (21:04 +01:00):** Outgoing state updates deferred until after keyboard/interactions; `ChatThreadErrorBoundary` on chat thread; Android no longer uses `KeyboardAvoidingView` on chat (iOS only). Prior: `showChatScreen` / migrate / composer sync (20:33–20:45). **Verify on device.**
+- **Send white screen (20:45 +01:00):** Chat overlay stayed gated on `resolvedChat`; send/migrate briefly dropped the row → full chat UI unmounted (white tab + keyboard). Now `showChatScreen = view.screen === "chat"`, thread-aware `resolvedChat`, migrate `setView` before `setChats`. **Verify on device.**
+- **Send crash (20:33 +01:00):** Composer clear uses `setChatInputSynced`; send reads `chatInputTextRef`; chat list `extraData` no longer passes entire `messages` array; read watermark deferred via `InteractionManager`; chat media rows avoid `return null` in `FlatList`. **Verify on device.**
+- **Read receipts (bisect revert, 2026-06-04 20:21 +01:00):** Removed 3 Jun thread-sort / `lastReadMessageId` / outgoing-clamp logic; restored May `createdAt` anchor and `getBackendSession()`-based `readBy` mapping in `MainApp.tsx`. **Status: send crash not confirmed fixed on phone.**
+- **Send button crash (regression revert):** Restored last-known-good send path from commit `f85a5fd`: `sendMessage` → `chatInput.trim()` → `sendPayload` → `setChatInput("")` (no composer ref / `requestAnimationFrame` / deferred clear). Chat `FlatList` `extraData` again includes `messages` and `readAvatarsForActiveChat`. Read-profile avatars use the pre-refactor inline row (text bubbles only), not `renderReadReceiptRow` on every media row. Kept: `removeClippedSubviews={false}`, `messageDisplayText()` for bubbles, try/catch around send. **Status: not confirmed fixed on phone.**
+
+### Fixed (Jun 2026 — Add Friend precise location + camera)
+- **Precise location required:** Add Friend checks Android **fine** / iOS **full** permission (rejects approximate-only), re-prompts with **Try again** (no in-app Open Settings — use system settings manually), collects GPS at **Highest** accuracy (≤50m), and re-checks before Show QR and QR scan.
+- **Camera for Read QR:** Same gate pattern as location — warm-check on Add Friend, alert + **Try again** when switching to **Read QR** or on scan if denied; in-scanner **Try again** card replaces non-working Open Settings button.
+
+### Fixed (Jun 2026 — bug sweep v6 implementations)
+- **Feed reactions realtime (H1):** Home feed subscribes to `encryptedPostReactions/{postId}` for visible posts and maps server uids to local friend ids.
+- **Presence on auth repair (H3):** `registerFirebaseAuthUid` no longer calls `writePresenceWithViewers(..., "active")` — only refreshes viewer maps.
+- **Local cache clear (M1):** `clearLocalSocialCacheForEmail` also removes feed mutes, feed reaction-seen, and posts-shared keys; account reset clears in-memory copies.
+- **Chat UX (M4/M5):** Long-press message sheet lists Reply/Edit/Unsend before emojis; tapping a failed outbound bubble retries send.
+
+### Docs (Jun 2026 — bug sweep v6)
+- **`Planning/BUG_AUDIT_JUN2026_V6.md`:** Static sweep after delete-cache fixes; H1/H3/M1/M4/M5 closed in follow-up pass.
+
+### Fixed (Jun 2026 — chat read receipts) — **reverted 2026-06-04 20:21 +01:00** for send-crash bisect
+- **Read receipt avatars (3 Jun work, temporarily removed):** Had anchored on `lastReadMessageId`, thread sort key, and outgoing-message clamp. Restored May logic in `readReceipts.ts` until send crash is verified fixed on device.
+- **Startup “U” flash:** Hide read-receipt avatars until the friend’s name/avatar is known (tombstone **User** placeholder no longer shown while roster hydrates).
+
+### Fixed (Jun 2026 — deleted posts still returning from cache)
+- **Not Tier B–specific:** Legacy HTTPS and Tier B posts share the same `encryptedPosts/{postId}` delete path; resurrection was stale **local/cloud cache** plus **incremental** sync keeping old rows. Boot now always runs a **full post catalog reconcile**; cloud snapshot restore filters `deletedPostIds` and no longer blocks reconcile; incremental merge purges suppressed ids from the in-memory catalog.
+
+### Fixed (Jun 2026 — deleted posts reappearing after reopen)
+- **Delete post persistence:** Record id in sync watermarks (`deletedPostIds`), remove the post from in-memory feed state and AsyncStorage immediately (not only after the 1.8s debounce), purge feed-reaction/gallery side caches, and suppress deleted ids during server/cloud merges so stale disk cache or snapshots cannot resurrect removed posts.
+- **Appear-then-vanish on feed open:** Cached posts could paint first while incremental sync kept ghosts until a full reconcile; boot now forces a full post catalog pull when `deletedPostIds` is non-empty, and merge filters suppressed/deleted rows on every incremental pass.
+- **Cloud social snapshot:** Stop re-uploading the *pre-merge* snapshot on sign-in (could overwrite a good backup with deleted posts still in it); upload only visible posts in scheduled/background backups; refresh snapshot immediately on delete and again after successful `deleteEncryptedPost`.
+
+### Fixed (Jun 2026 — delete post before session ready)
+- **Delete post:** Waits up to ~10s for `claimDeviceSession` after sign-in instead of failing immediately with "Account session is not ready"; clearer copy when the server connection failed vs session still starting.
+
+### Fixed (Jun 2026 — new friend profile, "User" tombstone, push)
+- **Boot roster no longer wipes recent friends:** `fetchFriendsOnBoot` keeps locally linked friends when `listMyFriends` is empty or slow, merges server + local rows, and boot sync unions server uids with persisted ritual friends (fixes new friends vanishing after cold start).
+- **`listMyFriends` includes all accepted edges:** Stopped requiring a `users/{uid}` doc before returning a friend uid (new accounts could be missing from the roster until profile upsert finished).
+- **"User" tombstone after Add Friend:** `resolveParticipantDisplay` trusts the local undirected friend graph while the server roster catches up; friendships listener merges Firestore snapshot with local-only friends instead of replacing the roster.
+- **Profile + push after pairing:** `hydrateFriendByUid` persists social state, re-registers `registerFirebaseAuthUid` + push token, and refreshes presence so message mirrors and notifications work for the new friend.
+- **Feed reaction detail:** Reaction summary sheet includes your own emoji row (not only friends).
+
+### Fixed (Jun 2026 — Firestore read reduction)
+- **Messages:** Removed foreground callable polling (25s inbox / 12s open-chat). Delivery is Firestore listeners only (inbox listener on **Chats** tab; per-thread listener while a chat is open). Boot still runs one `listEncryptedMessages` pull; push taps still trigger a pull.
+- **Server `listEncryptedMessages`:** Batch-loads conversation docs once per request (fixes N+1 reads). Dropped incremental `editedAt` collection-group query (edits arrive via listener `modified` events).
+- **Server backfills:** Removed opportunistic `recipientAuthUids` / `participantAuthUids` backfill on `listEncryptedPosts`, `listMyFriends`, and `listPrivatePostThreadMessages`.
+- **Presence:** Removed `getFriendPresence` polling loop; online dots use the Firestore `presence` listener. Own heartbeat publish interval **30s** (was 8s).
+- **Post comment listeners:** Fullscreen post viewer listens only to threads that already have comments (plus the thread being replied to), not every friend.
+
+### Fixed (Jun 2026 — manual friendship post visibility)
+- **Post backfill after manual Firebase friendship:** Boot now hydrates the friend roster **before** triggering historical post re-share; backfill includes server-known friend uids even when the local roster is still catching up; failed backfills retry instead of being marked complete.
+- **Server friendship lookup:** `assertAcceptedFriendship` accepts accepted edges found via `participants` query (covers reversed Console doc ids) so `createEncryptedPost` / `updateEncryptedPost` can run when `listMyFriends` already returns the friend.
+- **Push token refresh on foreground:** Re-checks OS notification permission when the app becomes active and re-registers Firebase Auth mapping + push token so chat/post alerts work after the user enables notifications in Settings.
+
+### Fixed (Jun 2026 test round — first-open / cold-start responsiveness)
+- **Boot timeline stagger:** Initial server sync pulls **messages first**, yields to the UI, then pulls feed posts (no longer parallel decrypt storms on first install).
+- **Smaller boot caps:** Home feed server pull + listener capped at **3** posts (was 10). First cold-start inbox pull capped at **30** messages (was 120). Older feed posts still paginate at 30 via scroll.
+- **Feed UI window:** Home feed mounts **3** cards on first paint (`FEED_UI_INITIAL_COUNT`); scroll expands by 5 before requesting the next server page. FlatList uses `initialNumToRender={3}`, `maxToRenderPerBatch={2}`, `windowSize={5}`, `removeClippedSubviews`.
+- **Lazy Tier B media:** Feed cards skip Tier B decrypt until viewable (first 3 seeded on load); post viewer / profile cards still resolve immediately.
+- **Lazy Tier B video:** Feed/post video blobs decrypt **only on tap-to-play** (poster/thumbnail still loads). Profile grid never pre-decrypts video. UI shows play overlay → **Preparing video…** → inline player; scrolling stays responsive.
+- **Early backend session:** `claimDeviceSession` + key bundle marks the session ready immediately; cloud snapshot restore, profile upsert, auth registry, and hidden-chat refresh run in a **background** continuation with UI yields (no longer blocks boot sync).
+- **Skip redundant feed poll:** Poll-on-open for home feed skipped for ~12 s after boot sync (same watermark/page already fetched).
+- **Posts listener scope:** Firestore encrypted-post listener attaches only on **home → Feed** (not Chats tab or other surfaces).
+- **Notification pre-prompt (product flow):** After splash, first signed-in launch shows an in-app **Stay in the loop** screen (Allow / Not now) before home is interactive. Boot sync (friends, messages, posts) continues in the background during this step. **Allow** opens the OS permission sheet, then registers the push token when the backend session is ready. **Not now** skips the OS sheet and does not re-prompt on later cold starts (per email, AsyncStorage `mvpplus.notificationPrePrompt.v1`). Users who already granted or denied at the OS level skip the pre-prompt.
+- **Duplicate post sync removed:** Feed/profile post pull and Firestore post listener wait until **`initialServerSyncDone`** so boot sync is not immediately duplicated.
+- **Feed comment hydration:** Removed bulk 25-post comment hydration on feed open; only **visible** feed cards hydrate (max 3, 500 ms debounce). Profile surfaces still hydrate in small batches with UI yields.
+- **Decrypt yields:** Post and message E2EE decrypt loops, Tier B post media resolution, and Firestore post listener decode **yield to the UI thread** between items.
+- **Debounced persistence:** AsyncStorage writes for posts/messages debounced (~1.8–2.2 s) so boot merges do not sync-stringify the entire timeline on every batch.
+- **Deferred feed layout work:** Carousel aspect-ratio preload runs after interactions settle (reduces first-paint jank).
+
+### Fixed (Jun 2026 test round — start chat / broadcast groups)
+- **Removed demo seed broadcast groups:** Start Chat no longer preloads **Family Core** / **Project Leads** saved recipient groups (empty until the user saves one).
+
+### Fixed (Jun 2026 test round — chat list / send ordering)
+- **In-flight send ordering:** Home chat list sort and timestamps no longer treat a stuck `sending` preview as newer than already-delivered traffic in the same thread (e.g. slow video upload + quick follow-up text). Tie-break prefers confirmed lines over `sending` when `createdAt` matches. In-thread bubbles keep in-flight sends at the bottom when newer lines are already `sent`. Server echo merge preserves the optimistic client `createdAt` so Firestore server timestamps do not reorder mid-upload.
+
+### Fixed (Jun 2026 test round — chat video UX)
+- **Prepare cancel:** Tap-to-play chat video shows a **Preparing video…** overlay with **Cancel** instead of a blocking spinner; cancel aborts decrypt/prepare so you can scroll or leave the chat.
+- **Filmed orientation:** Chat video bubbles use display dimensions from thumbnails / encrypted payload (`mediaWidth`/`mediaHeight`) with portrait-friendly defaults and `contain` framing (no forced landscape crop).
+- **Reply preview thumbnail:** Long-press reply to a photo/video shows a small thumbnail in the composer reply strip (not just the word “Video”).
+- **Full-screen over keyboard:** Opening chat photo/GIF/video full-screen dismisses the composer keyboard so media is not hidden behind it.
+- **Photo editor keyboard isolation:** Chat/post/profile composers no longer shift when the photo editor or crop overlay has focus; caption and on-image text fields scroll above the keyboard inside the editor.
+- **Broadcast unread flash on cold start:** Chat nav badges and unread rows no longer flash while the backend session is still initializing (`readBy` lookup requires a known `myUid`). Unread also respects `lastReadMessageId` when it matches the visible last message.
+- **Broadcast read watermark flush:** Leaving a chat flushes the latest visible read cursor one more time; cloud snapshot restore **merges** messages/posts instead of blunt replace (preserves local read context).
+- **Feed video UX:** Video posts show a centered **play** overlay on the poster/first frame. **First tap** plays inline; **second tap while playing** opens full-screen. After playback ends, the play overlay returns (no native rewind button). Feed no longer auto-plays videos on scroll.
+- **Post viewer video UX:** Same tap-to-play / tap-while-playing-to-fullscreen / replay overlay behaviour in the post detail view (text tap), not only in the feed card.
+- **Video scrubbing:** Chat and post inline/full-screen video controls use a draggable **progress slider** (skip/rewind). Scrubbing must **stay at the chosen position** (not snap back to 0:00). Control chrome is more transparent.
+
+### Fixed (May 2026 test round — orientation, video thumbnail, broadcast unread)
+- **Full-screen media orientation:** Photos and videos in the full-screen viewer follow **device rotation** (portrait or landscape). Removed forced landscape lock for landscape clips; unlocks while full-screen is open and restores portrait when closed.
+- **Video post thumbnail UX:** Publish flow shows a modal with the **first-frame preview** and copy explaining the default. Custom thumbnails are picked without square crop and display **letterboxed on black** in the feed (separate poster layer, not overlaid on the video first frame).
+- **Broadcast unread badges:** Chat list / nav unread state now uses **broadcast-visible** last messages only (other recipients' private threads no longer mark your broadcast unread). Read watermarks merge from local + server + cloud restore instead of being overwritten on cold start.
+
+### Fixed (May 2026 test round — notifications, media send, chat UX, posts)
+- **Multi-image feed carousel:** Restored shared slide height — all photos in a multi-image post use the tallest width-fit height; shorter images are vertically centered with symmetric **black** letterboxing (not per-slide variable heights).
+- **Feed carousel swipe snap-back:** Swiping to slide 2+ no longer jumps back to slide 1 after the animation — carousel index is local on the feed until fullscreen sync; gallery index migrates when optimistic post ids are replaced by server ids; carousel height changes no longer reset scroll offset.
+- **Profile post grid thumbnails:** Grid tiles resolve Tier B encrypted media and show the first image (or video poster / first-frame still) instead of the blank placeholder icon.
+- **Post reaction notifications:** When a friend reacts to your post, the server sends a push (`{username} reacted to your post`, emoji body) and the client shows a feed nav badge until you open the Feed tab.
+- **Chat composer send truncation:** Fixed last character(s) sometimes missing on send (e.g. `Having fun?` → `Having fun`) by reading a synchronous composer ref after input settles instead of stale React state when Send is tapped quickly.
+- **Broadcast recipient privacy:** Recipients cannot send to the whole group — only private replies via long-press **Reply** on a broadcaster message (global or direct reply in their thread). Recipients only see general broadcasts plus the broadcaster's replies to them; **Reply** appears on every such broadcaster message. Private threads stay visible only to the broadcaster and that recipient.
+- **Push notifications:** Chat pushes use title `New message from {sender username}` in 1:1 (not the recipient’s name / “me”) and `New message from {group or broadcast title}` for multi-member threads. Body is a single preview line — message text (120 chars + ellipsis), or `Photo` / `Video` / `Voice note` / `GIF` for media. Server rebuilds 1:1 titles from `users.username` when sending push. New-post pushes: `New post from {username}`.
+- **Push → chat sync latency:** Incoming message pushes now trigger an immediate encrypted pull for that conversation (foreground receive + notification tap) and a resume pull when the app returns to foreground, instead of relying only on Firestore listeners and 45–90s fallback polling. Active-chat fallback poll shortened to 12s; inbox fallback to 25s.
+- **Tier B media send:** Fixed React Native blob upload for encrypted chat media (photos, video, voice) — ciphertext now uploads via temp file + `fetch().blob()` instead of `new Blob([Uint8Array])`, which RN rejects. Local files are read via `FileSystem.readAsStringAsync` (base64) before encrypt; `blob.arrayBuffer()` and missing `EncodingType` fallbacks added for RN.
+- **Shared local-media reader:** New `app/lib/readLocalMediaForUpload.ts` centralizes device URI reads (FileSystem base64 first, fetch/blob fallback) and RN-safe `uploadBytes` Blobs (temp file materialization). Tier B storage and **Tier A profile picture** uploads (`mediaStorageUpload.ts`) both use it — fixes `content://` / missing `cacheDirectory` gaps that could break feed posts or avatar upload with `undefined is not a function`.
+- **Video send responsiveness:** Large video/audio reads skip base64-in-JS (fetch + FileReader instead), base64 encoding runs in yielded chunks, and upload work yields to the UI thread between read/encrypt/upload steps. Outgoing chat videos show a spinner placeholder instead of mounting `expo-av` while `deliveryStatus === 'sending'`. Chat video pickers use slightly lower quality to reduce file size.
+- **Inbound encrypted chat video responsiveness:** Tier B decrypt/download for received chat videos is deferred until the user taps play (bubble shows a play icon immediately). When decrypt runs, download/decrypt/cache writes yield to the UI thread, dedupe in-flight work per Storage object, and queue one resolve at a time app-wide — **user-tapped play uses high priority** in that queue. Inline video bubbles show a **first-frame poster** until play; the native `expo-av` player mounts only while a clip is actively playing. Opening a chat fetches the **most recent 30 messages**; scroll-up paginates +30 at a time. The chat list also caps **mounted rows** (30 initial window, +30 per scroll-up) so hundreds already in memory do not all mount at once. **Full-screen chat/feed media** uses `contain` and follows **device rotation** (portrait + landscape). **Replay:** play overlay returns after inline playback finishes. Leaving chat clears video prepare/play state.
+- **Profile feed pagination:** Media grid tiles still load for **all** posts with media; full feed cards below the grid show **6 initially** with **Load more posts** (+8).
+- **Failed chat send:** Delivery failures mark the bubble **Not sent** with **Try again** / **Delete** — no automatic unsend tombstone.
+- **Unsent message styling:** Unsent tombstones use neutral theme background/subtle text instead of sent-bubble accent colours.
+- **Offline cached browsing:** Red offline banner; cached chats/feed/profiles stay usable without network.
+- **Display media cache:** Shared in-memory + Tier B disk cache so feed → fullscreen → profile reuse decrypted URIs.
+- **Read receipt avatars:** Fallback to cached profile cards while roster syncs (no `?` placeholder flash).
+- **Chat self-avatar:** Tap your avatar in chat → **My profile**.
+- **New-post push:** `createEncryptedPost` now **awaits** push delivery before the Cloud Function returns; posts listener runs globally (not only on feed tab).
+- **Voice note playback (Tier B):** Voice recordings upload with correct audio content-type (including extensionless Android `.3gp` / `.m4a` URIs). Playback prefers Tier B decrypt (ignores stale local `file://` paths), uses Android `overrideFileExtensionAndroid`, and explicit `playAsync()` after load. **Pre-send preview** uses the same speaker routing and AAC `.m4a` recording preset. Chat voice bubbles use a dedicated wider card (`voiceMessageCard`) so the progress bar fits inside the bubble.
+- **Chat list:** Unread accent dot moved to the far right of each row (after timestamp).
+- **Read receipts:** Small reader avatars align to the screen’s right edge below sent messages; multiple readers stack horizontally (text, photo, and video messages).
+- **Photo editor:** Chat flow preview button reads **Send** (not Post).
+- **Historical posts for new friends:** Post backfill only marks a friend “shared” after a full scan succeeds; unfriend clears that marker so refriend re-runs backfill.
+- **Post comments:** Optimistic comments show **Posting…** then **Posted** (or **Could not post** on failure).
+
+### Fixed (Profile picture persistence, May 2026)
+- **Avatars no longer vanish after upload or restart:** The debounced `putEncryptedProfile` sync skips when the in-memory URL is still a local `file://` preview (it normalized to `""` and overwrote `encryptedProfiles` before Firebase Storage upload finished). The encrypted-profile listener no longer clears your own HTTPS avatar on empty ciphertext — it reconciles from `users.profilePictureUrl` via `getUserProfiles` instead. Boot session init merges AsyncStorage + server URLs and omits `profilePictureUrl` from `upsertUserProfile` when empty so sign-in cannot wipe a stored avatar. Friend boot roster + profile-card cache use `mergeProfilePictureUrl` so transient empty server fields do not erase cached HTTPS avatars. Backend `upsertUserProfile` only writes `profilePictureUrl` when the client sends a non-empty HTTPS URL (same contract as `username`). Failed profile uploads restore the last persisted HTTPS URL instead of clearing the UI.
+
+### Added (Dev helper — make friends script, May 2026)
+- **`scripts/make-friends.mjs`** (`npm run make:friends`): writes an accepted `friendships/{minUid_maxUid}` edge for two sign-in emails or `u_*` app uids (Firestore emulator or production). Documented in `backend/README.md`.
+
+### Changed (Branding — app named "Erdos")
+- **App name is now "Erdos"** with a placeholder simple capital-"E" wordmark. Updated everywhere it surfaces in the UI:
+  - **Boot splash** (`app/MainApp.tsx` + `AppDemo.tsx`): the `tBH` mark is now a large **`E`**, and the line beneath it shows **`Erdos`** (`PLACEHOLDER_APP_PRODUCT_NAME` in `app/lib/viewPersistence.ts` / `AppDemo.tsx`).
+  - **Android launcher label** (`strings.xml` `app_name` → `Erdos`; debug variant override in `android/app/build.gradle` → `Erdos Demo`).
+  - **Android launcher icon + native splash logo**: both now use a new vector wordmark `android/app/src/main/res/drawable/erdos_e.xml` (a capital "E"). The adaptive icon foreground (`ic_launcher.xml` / `ic_launcher_round.xml`) and the splash window background (`ic_launcher_background.xml`) reference it; the old `ic_launcher_foreground` / `splashscreen_logo` bitmaps are now unreferenced (left on disk, harmless). API < 26 still falls back to the legacy raster mipmaps.
+  - **Expo `app.json` `name` → `Erdos`.**
+  - **Left unchanged (internal, non-UI):** npm package name + Expo `slug` (`app-v2-build2`) and Gradle `rootProject.name` — changing the slug/package id risks Expo update + install identity churn and is not user-visible.
+- _Placeholder mark:_ the "E" is a vector letterform for now; swap `erdos_e.xml` (and optionally the in-app `Text` mark) for a designed logo later.
+- **Launcher icon colours:** Home-screen adaptive icon and native splash now use **black background** (`iconBackground` / `splashscreen_background` → `#000000`) with the **E** in app accent green **`#0C8579`** (`erdos_accent`, same as `ACCENT_GREEN` in `app/theme/preludeConstants.ts`). `app.json` splash/adaptiveIcon `backgroundColor` aligned for future Expo prebuilds.
+
+### Fixed (May 2026 bug-sweep criticals — build dependency, unfriend revocation, sync watermark)
+- **C1 — Build/dependency blocker:** `package.json` pinned `expo-file-system` to `^55.0.19`, a **nonexistent version** (npm flagged it `invalid`; the package failed to install and `expo-file-system/legacy` was unresolvable). Because `app/lib/tierBMedia/storage.ts` imports it, **all Tier B encrypted chat/feed media** — and the whole bundle — was broken. Pinned to the SDK-54 bundled version **`19.0.21`**. Typecheck now clean. (Sibling `^55.x` pins for camera/location/network/screen-capture do resolve and were left as-is; `expo-file-system` is on a separate version track.)
+- **C2 — Unfriend now revokes server access:** `removeFriendship` previously only deleted the friendship edge, so an ex-friend's client could still read the other's `encryptedProfiles`, `encryptedPosts`, and `presence` via the Firestore `recipientAuthUids` / `viewerAuthUids` mirrors (rules authorise reads on those arrays). Unfriend now also strips each party from the **other's** owned profile, post, and presence mirrors (`revokeFriendDataMirrors` + `revokeOwnedPostRecipients`, both directions, never removing a party from its own docs). The shared 1:1 conversation is intentionally left intact (mutual history both sides already hold; new sends are already blocked by `assertAcceptedFriendship`). Best-effort — never fails the unfriend. **Requires Cloud Functions deploy.**
+- **C3 — Sync watermark no longer skips failed decodes:** the message and post sync watermark advanced to the newest *successfully* decoded item even when an older item in the same batch failed to decrypt, so the next pull started past it and the failed message/post was **lost permanently**. New `nextSafeWatermarkMs` caps the watermark just below the earliest failed item so it is retried (applied to all three message sync sites in `sync.ts`/`decodeMessageBatch.ts` and both post-pull sites in `pullEncryptedPosts.ts` + `MainApp.tsx`). The post path previously refused to advance at all on any failure (re-fetch loop) — now it advances safely up to the first failure.
+
+### Fixed (May 2026 test round — broadcast routing, one-account-per-email, profile cache, add-friend feedback, push, unread badges)
+- **Broadcast routing:** Incoming Broadcast messages now always land in a **dedicated broadcast chat card** instead of being folded into the 1:1 DM with the sender. The inbound resolver (`resolveInboundDirectMessageTarget` / `resolveIncomingDirectChatId`) no longer collapses multi-party `bc_*` (broadcast) and `grp_*` (group) conversation ids into the canonical `dm_*` thread. Outgoing broadcasts now carry `isBroadcast` + `broadcastTitle` in the E2EE payload so the recipient's card shows the sender's title with a 📣 avatar (`decodeIncomingEncryptedMessage`). Starting a 1:1 chat from a profile still opens the existing DM. **Both sides are tagged:** the sender creates the thread with a `bc_*` id + `kind: "broadcast"`, the receiver derives the same tag from the `bc_` prefix (works even for payloads without the flag), the `kind` persists through local cache + sync, and `mergeMissingChatsIntoState` will upgrade an existing row to `broadcast` if one ever pre-existed as standard — so a broadcast can't get stuck rendering as a 1:1.
+- **One account per email:** Client uid derivation now **canonicalizes** the email (`canonicalizeEmail` in `backendBridge.ts` — strips `+tag`, removes Gmail dots) so mailbox aliases map to one account. Backend `claimDeviceSession` additionally writes an authoritative `emailAccounts/{hash}` registry and rejects a second uid claiming the same mailbox with **`already-exists`** (surfaced as an "Account already exists" alert). Prevents the multiple-accounts-per-inbox bug.
+- **Profile card cache:** New per-email `profileCardCache` (name/bio/avatar) persists every opened profile (`app/lib/profileCardCache.ts`), kept in step with the roster and cleared with the rest of the local social cache. Friend profiles render from the cached card when offline; posts/media show **"Not connected to internet"** (new `isOnline` network state via `expo-network`).
+- **Add Friend feedback:** A successful add now reliably plays the happy chime (fixed a stale-closure bug that skipped the sound) and fires a celebratory vibration pattern; audio is set to play in iOS silent mode. Failure paths stay silent.
+- **Push notifications:** Client registers an Android high-importance **`messages`** notification channel and falls back from Expo push token → native device (FCM) token; backend push payloads now target the `messages` channel. **Setup still required** for delivery on standalone APKs — see `RUN_MVP_LOCALLY_AND_ON_PHONE.md` (EAS `projectId` for Expo push, or `google-services.json` + FCM credentials).
+- **Unread badges + row highlight:** The top nav chat icon shows a red count badge of chats with unread messages (`HomeTopNavBar` `badges` prop). Unread is now a single source of truth — `unreadChatIdSet` (chats whose latest visible, non-self message arrived after the viewer's `readBy` watermark; the open chat and muted chats excluded) drives both the badge count and **per-row highlighting** on the home chat list: unread rows show a **bold name + bold/darkened preview** and a small accent **unread dot**. Opening a chat clears both immediately (optimistic local read watermark).
+
+### Added (Tier B Phase 1 — encrypted chat/feed media — May 2026)
+- **Tier B media model:** New chat messages and feed posts upload **ciphertext** to Firebase Storage (`encrypted-media/{authUid}/*.enc`). Per-blob keys (`mediaKeyB64`, `mediaNonceB64`, `mediaObjectPath`, `mediaTier: 2`) live inside the existing E2EE JSON payload — not in plaintext Storage metadata.
+- **Display:** Client decrypts to an app-cache `file://` URI (`resolveTierBMediaToFileUri`) for chat bubbles, shared-media grid, and feed cards. **Legacy Tier A** posts/messages with HTTPS `mediaUri` / `imageUris` still render unchanged.
+- **Out of scope (Phase 1):** Profile pictures and bios remain **Tier A** (`users.profilePictureUrl`, `users.bio`). **Tier B+** (encrypted bio + avatar in `encryptedProfiles`) is planned later.
+- **Dependency:** `expo-file-system` (legacy cache API) for decrypt-to-disk cache.
+
+### Fixed (profile bio persistence — May 2026)
+- **Canonical bio store:** Profile bios now use **`users.bio` only** via `upsertUserProfile` (same as username and profile picture URL). Bio edits no longer go through `putEncryptedProfile`, which was causing sign-in races and empty overwrites.
+- **Self bio:** Hydrated from server + AsyncStorage (`profileBioStorageKey`) on sign-in; debounced `upsertUserProfile` after `backendSessionReady`; multi-device refresh via periodic `getUserProfiles` self pull.
+- **Friend bio:** Boot sync and roster merges keep prior bio when server returns empty (`mergeProfileBio`).
+
+### Fixed (historical feed posts + friend profile cache — May 2026)
+- **New friendship feed gap:** Posts were encrypted only for friends at publish time, so pre-friendship posts never reached a new friend. When the roster detects a new accepted friend, each device now re-encrypts **its own** owned posts for the current friend list (`listMyOwnedEncryptedPosts` + `updateEncryptedPost` with full `recipientUids` / `recipientAuthUids`). The other side picks up shared posts via the existing `encryptedPosts` listener + a full feed pull.
+- **Friend profile tap offline:** Opening a friend profile no longer blocks on a live `getUserProfiles` call when cached name/avatar exist (persisted social blob + roster). Uncached + offline shows an explicit **Profile unavailable** alert instead of a silent no-op.
+
+### Changed (boot splash + feed scope — May 2026)
+- **Splash:** Dismisses after Firebase auth resolves, per-email **AsyncStorage** cache hydrate, and the 500 ms minimum — **`claimDeviceSession` / key publish / profile upsert** run in the **background** after `setSignedIn(true)` (no longer block `applySignedInAccount`). Send/post until `backendSessionReady` may show connection retry UI; cached feed/chats paint immediately.
+- **Home feed:** First page and realtime listener capped at **3** posts; scroll expands the UI window (+5 cards) then loads **30** older posts per server page (`ENCRYPTED_POSTS_PAGE_SIZE`). Profile grids still pull up to **80** on open (with periodic full reconcile). Posts Firestore listener attaches **only on home → Feed** (not Chats tab or profile).
+
+### Changed (Firestore read cost — May 2026)
+- **Messages:** Global collection-group listener capped at **40** recent docs (was 1000); **per-conversation** listener while a chat is open; removed duplicate boot pull on listener attach; foreground callable pull every **90s** (was 12s); active chat uses thread pull every **45s** (was 4s global poll).
+- **Posts:** Home listener **10** docs (feed tab only); home callable pull incremental unless pull-to-refresh; profile open uses up to **80** with 20+ min full reconcile (fixed bug that forced full catalog on every feed visit).
+- **Comments:** Hydrate private threads **once** when feed/profile posts change — removed **6s × 25 posts** polling.
+- **Profiles:** Background `getUserProfiles` refresh every **5 min** (was 30s).
+
+### Fixed (post delete Storage cleanup — May 2026)
+- **`createEncryptedPost`** stores `storageObjectPaths` (`encrypted-media/{authUid}/…`) for each uploaded image/video/poster; **`deleteEncryptedPost`** deletes those Firebase Storage objects after removing the Firestore post (best-effort; legacy posts without paths are unchanged).
+
+### Fixed (refriend DM send blocked — May 2026)
+- **Unfriend → refriend:** Opening the old identity-locked chat from the list no longer lands on **Cannot message this account** when the friendship is live again — `goToChat` routes to the active `dm_*__live` thread (or creates one). **Start chat** from the composer uses the same path. Unfriend only locks canonical history rows, not `__live` threads.
+
+### Fixed (Read QR false “offer withdrawn” — May 2026)
+- **Show QR / Read QR toggle:** Switching to **Read QR** without an active QR on **this** phone no longer runs a full pairing abort or leaves `pairingHandshakeCancelled` set — that flag was discarding a successful phase-1 scan while the host already saw the confirm card. Status copy is **Ready to scan.** (not “Host QR offer withdrawn”). Toggling away from **Show QR** on the **presenter** phone still cancels that device’s minted offer.
+
+### Changed (Read QR authenticate screen — May 2026)
+- **After QR scan:** camera closes immediately; full-screen **Authenticating** (spinner) until the confirm card appears (no frozen camera / “Verifying QR and proximity” copy).
+
+### Fixed (Read QR stuck on “Verifying…” — May 2026)
+- **Scanner confirm UI:** After phase-1 `confirmNfcPinPairOffer` succeeds, return preview/minimal profile immediately so Read QR reaches the confirm card when Show QR does; `getUserProfiles` hydrate is capped (8s) and no longer blocks indefinitely.
+- **Scan cancel paths:** Stale or aborted scans release the camera freeze instead of leaving “Verifying QR and proximity…” forever.
+- **GPS:** `getCurrentPositionAsync` for pairing capped at 12s so proximity collection cannot hang silently.
+
+### Changed (Add Friend dual-confirm copy — May 2026)
+- **Confirm prompt:** **Confirm adding {name} as friend?** (uses the other user’s display name).
+
+### Fixed (Add Friend dual-confirm idle timeout — May 2026)
+- **45s idle on confirm card:** If **neither** phone taps **Confirm** or **Cancel** within **45s** after the dual-confirm screen appears (server still `awaiting_redeemer_confirm`), the offer is cancelled and the UI shows **Add friend timed out**. Does not fire once either side has confirmed (waiting path keeps its own 45s rule).
+
+### Fixed (Add Friend dual-confirm wait copy — May 2026)
+- **Dual-confirm:** After either phone taps **Confirm**, both see **Waiting for your friend to confirm…** on the overlay until friendship is created (Show QR was previously generic “Finishing add friend…”).
+
+### Fixed (Add Friend dual-confirm — May 2026)
+- **Two-sided confirm:** Scanner (Read QR) must call **`confirmRedeemerNfcPinPairOffer`** on Confirm; issuer **`finalizeNfcPinPairOffer`** now requires **`redeemerConfirmed`** — friendship is not created when only the Show QR user confirms.
+- **Read QR confirm UI:** Profile hydration falls back to **`previewNfcPinPairOffer`** when `getUserProfiles` fails so the joiner still reaches the dual-confirm screen after phase-1 scan.
+- **Read QR freeze:** On valid scan the camera **stays on the QR frame**, barcode events stop, and a **Processing scan…** overlay shows (normal QR-reader behavior) while proximity runs; stale duplicate reads are ignored. No full-screen swap away from the camera during verify.
+- **Status poll:** `getNfcPinPairOfferStatus` exposes `awaiting_redeemer_confirm` vs `awaiting_issuer_confirm`; issuer redeem poll accepts both after phase 1.
+- **Deploy:** `firebase deploy --only functions` (new **`confirmRedeemerNfcPinPairOffer`** callable).
+
+### Fixed (opaque token Add Friend regression — May 2026)
+- **Pairing profile preview:** `getUserProfiles` and client hydration now accept **opaque 32-hex** offer ids (not only legacy 4-digit `pairingPin`). Without this, the scanner could not load the issuer profile during dual-confirm and the joiner often never reached a stable **Confirm** screen.
+- **Joiner confirm poll:** session-presence polling runs on the **issuer** only; the joiner no longer gets kicked to idle by a false “session gone” race when the host finalizes first.
+
+### Fixed (Add Friend dual-confirm + tombstone titles + presence — May 2026)
+- **Add Friend:** issuer **Confirm** no longer hidden when **Show QR / Read QR** toggle does not match host role; removed **30s** auto-cancel on the dual-confirm screen (was aborting sessions while the other phone was still confirming).
+- **Chat titles:** list + open chat use **User** whenever `resolveParticipantDisplay` reports `canOpenProfile: false` (ex-friend / identity lock), not only when `identityLockedChatIds` is set locally.
+- **Unfriend:** local tombstone + identity lock apply **before** server `removeFriendship`; roster listener no longer briefly clears `unfriendedIds` while the friendship doc still exists (sticky unfriend).
+- **Presence:** `registerFirebaseAuthUid` again marks the device **active** after auth registration (restores online while still friends when client heartbeat lags).
+
+### Fixed (delete post sync — May 2026)
+- **Feed delete:** opening feed/profile always runs a **full post catalog** pull so friends drop posts removed via **`deleteEncryptedPost`**; delete removes the post locally (not only `deletedAt`) and blocks delete while a `p-*` optimistic id is still publishing.
+
+### Changed (feed mute UX — May 2026)
+- **Mute picker:** **24 hours** first, then **1 week**, then **Mute until unmuted** (removed 1-month). **Friends list:** muted friends keep the **volume-mute** avatar badge; **long-press** a muted friend opens **Unmute feed** only.
+- **Persist feed mutes:** per-email AsyncStorage (`mvpplus.feedMutes.v1`) — survives sign-out and cold start (timed mutes pruned on load).
+
+### Fixed (feed hold-to-react — May 2026)
+- **Feed posts:** long-press on **photos and video** opens the reaction picker (was only wired on caption/header).
+
+### Changed (Add Friend toggle — May 2026)
+- **Show QR / Read QR** switch track uses a lighter muted-accent wash in **dark mode** (`${accent}66`) for green and pink themes; light mode unchanged (`${accent}1F`).
+
+### Added (photo editor undo — May 2026)
+- **Undo** in the photo editor toolbar (draw, text, filters, rotate, crop, clear overlays).
+
+### Changed (photo editor crop + filters — May 2026)
+- **Pick → editor:** photos open `PhotoEditorModal` directly; **Crop** launches `expo-dynamic-image-crop` from the editor toolbar (not before the editor).
+- **Filters:** horizontal strip — white labels on black pills above preview icons, swipe like online friends; tool icons scroll horizontally.
+
+### Changed (opaque pairing token — May 2026)
+- **Add Friend:** server mints **128-bit hex** offer tokens; QR uses `AFQR2|<token>`; NFC uses `PN2|<token>`. Legacy `AFQR1` / `PN1` four-digit codes still parse. Deploy **`registerNfcPinPairOffer`** (and related) Cloud Functions before testing on device.
+
+### Fixed (Add Friend QR toggle + chat long-press — May 2026)
+- **Show QR / Read QR:** switch stays enabled after showing a QR code; toggling aborts the host scan session so you can switch to Read QR while waiting.
+- **Add Friend switch (dark mode):** lighter track (`rgba(255,255,255,0.32)`).
+- **Chat long-press:** one sheet — emoji reactions + **Reply** on any message; **Edit** / **Unsend** only on yours (removed separate actions menu; AppDemo aligned).
+
+### Added (expo-dynamic-image-crop + open source licences — May 2026)
+- **Photo flow (Option B):** `expo-dynamic-image-crop` runs after gallery/camera pick and before `PhotoEditorModal` for profile, post, and chat photos (MIT; `react-native-gesture-handler` in `index.tsx`).
+- **Settings → Open source licences:** attribution screen (`app/lib/openSourceLicenses.ts`, `OPEN_SOURCE_LICENSES.md`).
+
+### Changed (Read QR, chat reactions, nav bar, photo editor — May 2026)
+- **Read QR:** system permission on first open; in-app camera card only when permission is denied.
+- **Chat long-press:** reactions plus **Reply** (and **Edit** / **Unsend** on your messages); Android nav bar theme on picker modals.
+- **Top nav:** evenly spaced icons (`space-evenly`).
+- **Photo editor:** exclusive tools (crop/draw/filters); stable canvas when drawing; vertical filter list; themed tool buttons.
+
+### Fixed (Gallery index sync + keyboard pinning — May 2026)
+- **Photo gallery:** Fullscreen media uses the same **horizontal swipe** pager as feed/post carousels; opening from slide *N* and swiping in fullscreen restores slide *N* when you close.
+- **Keyboard:** Scroll fields pin above the keyboard (`useScrollPinnedInput`); **Android back** dismisses the keyboard before other back actions.
+- **Bugsweep:** Tap-to-fullscreen uses the tapped slide index (not stale carousel state); fullscreen gallery no longer dedupes URIs (index parity); gallery index clamped when post image count shrinks; `onScrollEndDrag` sync on feed + fullscreen pagers; keyboard pin retries after keyboard height is known; `keyboardInputScroll` TypeScript import fix.
+
+### Fixed (Profile bio keyboard + login OTP buttons — May 2026)
+- **My profile bio:** Bio editor scrolls into view above the keyboard (`keyboardInputScroll` helper); profile scroll adds keyboard bottom padding; `KeyboardAvoidingView` enabled while the keyboard is open.
+- **Login OTP:** **Request OTP code** is left (requests OTP); **Verify OTP** is right (validates then signs in). Help text matches that order.
+
+### Fixed (Feed gallery fullscreen + photo editor footer — May 2026)
+- **Feed photo gallery:** tapping a photo in a multi-image post opens **fullscreen photo** (not the post viewer) with **prev/next** chevrons and **1/N** counter; `onOpenMedia` now forwards `galleryUris` / `galleryIndex` from all feed/profile `FeedPostCard` surfaces.
+- **Photo editor:** **Continue** / **Post** footers sit in a **bottom safe-area** region with extra Android lift so buttons clear the gesture/nav bar.
+
+### Changed (Feed new post + top nav — May 2026)
+- **Feed:** removed bottom **New post** bar; compose opens from the **create** (pencil) icon at the **top-left** of the home nav bar.
+- **Publish post:** keeps the shared top nav; **create** icon is highlighted on the create screen.
+- **AppDemo:** same nav + feed FAB removal + fullscreen photo gallery parity as MainApp.
+- **Nav order:** left — New post, profile, friends, chats, feed, add friend; right — **settings** (second from right), **logout** (rightmost). Shared `HomeTopNavBar` on home, settings, profiles, friends list, add friend, and publish post.
+
+### Fixed (Chat "User" title flash + Add Friend switch — May 2026)
+- **Chat names:** Firestore friendship listener no longer publishes an empty server-friend set on startup/cache races (that forced direct chats to show **User** until the next snapshot). Display resolution also trusts local friend links when the server set is briefly empty.
+- **Add Friend switch:** Thumb always **theme accent**; track always **muted accent** (`${accent}1F`). Role toggle locks while QR presenter session / scan / confirm is active.
+
+### Fixed (Add Friend pairing lifecycle + theme — May 2026)
+- **Pairing abort:** `abortPairingSession` invalidates background QR redeem, cancels PIN, and clears confirm state on Android back, screen unmount, Share→Join role switch, and explicit cancel.
+- **Read QR:** scan verification keeps the camera visible (no `awaitPairing` full-screen wait); confirm finalize uses an overlay on the dual-confirm UI.
+- **Confirm UI:** gated by active role vs `pendingVerifiedSource` so the wrong tab cannot show a stale confirm card.
+- **Theme:** primary actions use `theme.accent` (`primaryButton`); active nav pills use muted accent (`${theme.accent}1F`).
+- **Photo editor:** Android hardware back exits crop first (`cropExitTick` / `onCropModeChange`).
+- **AppDemo:** Add Friend screen matches MainApp theme (background + accent buttons/pills); `BackHandler` added for common stacks.
+
+### Fixed (Chat reactions not appearing — May 2026)
+- **`mapServerReactionsToLocal`:** optimistic reactions stored under local `me` were dropped when rendering counts; mapper now treats `me` like the signed-in user so pills appear immediately and toggle-off works.
+
+### Fixed (Show QR, media corners, profile feed — May 2026)
+- **Show QR:** no longer switches to the pairing-wait screen (QR appears as soon as the PIN registers); redeem poll runs in background; button stays tappable after use.
+- **Profile / shared media grids:** rounded tile corners (`borderRadius: 10`).
+- **Profile posts:** full-bleed `FeedPostCard` layout like home feed.
+- **Chat photos/videos:** rounded corners, `cover` fill (no letterbox padding); feed stays square-edged.
+
+### Changed (Add Friend theme + Read QR UI — May 2026)
+- **Add Friend:** white/black background like other screens; nav icons use theme accent; primary buttons match app `primaryButton` style.
+- **Read QR:** removed small status text under the camera preview (processing overlay only).
+
+### Fixed (Chat photo sizing — May 2026)
+- **Chat photos:** inline size follows image aspect (width-led, height capped); no `contain` letterboxing or divider padding; bubble is not forced square.
+
+### Fixed (Feed square media + debug APK variant — May 2026)
+- **Debug APK:** `apk:debug` now bundles **MainApp** (not AppDemo) unless you run `apk:debug:demo`; earlier debug builds ignored feed UI fixes.
+- **Feed corners:** media moved outside the post `Pressable` (no rounded clip); `overflow: visible` on media wrappers; shared `postFeedImageSlide` style with `borderRadius: 0`.
+
+### Fixed (Media UX follow-up — May 2026)
+- **Full-screen media:** `FullscreenMediaViewer` is an absolute black overlay (not an Android centered `Modal` popup).
+- **Chat video replay:** nested `Pressable` no longer swallows taps after finish; `playbackKey` remount + `restartOnPlay`; inline video uses `contain`.
+- **Feed media:** explicit `borderRadius: 0` on feed image/video wrappers; width-fit `contain` heights from aspect ratio.
+- **Photo editor:** crop uses live `Image.getSize` dimensions; preview **Back** / **Send** buttons enlarged; Android nav bar colors synced to theme on all editor steps.
+- **Android back:** hardware back clears post/comment reaction picker targets, dismisses fullscreen post thread reply focus, and chat search.
+
+### Changed (Media UX, voice preview, Android back — May 2026)
+- **Chat video:** inline play → tap again for full-screen; replay after finish; `VideoWithFadeControls` progress bar with auto-fade.
+- **Chat photos / shared media grid:** true full-screen viewer (`FullscreenMediaViewer`); shared media hook includes `chatSharedMedia` screen.
+- **Feed:** tap media inside post viewer for full-screen; square full-bleed feed media.
+- **Voice notes:** record → preview (play / discard / send) before posting.
+- **Photo editor:** full-width canvas, `contain` + letterbox-aware crop, rotation layout fix.
+- **Android:** `BackHandler` mirrors modal close and screen back stack.
 
 ### Fixed (Feed list layout jump / “vibrating” posts, May 2026)
 - **Stable feed rows:** `FeedPostCard` moved to a memoized module component (was redefined inside `MainApp` every render, remounting all posts).

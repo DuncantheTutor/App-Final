@@ -1,5 +1,6 @@
 import { callEmulatorFunction } from "../../backendBridge";
 import { logAppError } from "../../telemetry";
+import { mergeProfileBio } from "../lib/mergeProfileBio";
 import { mergeProfilePictureUrl } from "../lib/profilePictureUrl";
 import { dedupeFriendsByBackendUid } from "../lib/mergeFriendsCatalog";
 import type { Friend } from "../domain/types";
@@ -57,7 +58,7 @@ export async function refreshFriendProfilesFromServer(
         ...prior,
         displayName: rawName || prior.displayName,
         profilePictureUrl: mergeProfilePictureUrl(profile?.profilePictureUrl, prior.profilePictureUrl),
-        bio: profile?.bio?.trim() ? profile.bio : prior.bio,
+        bio: mergeProfileBio(profile?.bio, prior.bio),
       });
     }
 

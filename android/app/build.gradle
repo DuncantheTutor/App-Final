@@ -2,6 +2,14 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// Enable Firebase Cloud Messaging (push notifications) only when the
+// google-services.json credential file is present. This keeps builds working
+// before push is configured: drop the file from the Firebase console into
+// android/app/google-services.json and rebuild to turn push on.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}
+
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 
 /**
@@ -110,7 +118,7 @@ android {
         debug {
             signingConfig signingConfigs.debug
             applicationIdSuffix ".demo"
-            resValue "string", "app_name", "app-v2-build2-demo"
+            resValue "string", "app_name", "Erdos Demo"
         }
         release {
             // Caution! In production, you need to generate your own keystore file.

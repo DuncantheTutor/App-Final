@@ -1,5 +1,7 @@
 import { Image } from "react-native";
 
+import type { Post } from "../domain/types";
+
 /** Default width/height before the real aspect is known (square — stable placeholder). */
 export const DEFAULT_FEED_IMAGE_ASPECT = 1;
 
@@ -53,16 +55,50 @@ export function feedPostMediaWidth(windowWidth: number): number {
 }
 
 /**
- * Height for a feed image given its aspect ratio (width / height), clamped so
- * tall portraits and panoramas stay readable in the list.
+ * Height for a feed image at full width preserving aspect ratio (width / height).
+ * Tall portraits may be capped so one post does not dominate the feed.
  */
 export function feedPostImageHeightForAspect(mediaWidth: number, aspectRatio: number): number {
   const safe =
     Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : DEFAULT_FEED_IMAGE_ASPECT;
   const raw = Math.round(mediaWidth / safe);
-  const maxH = Math.round(mediaWidth * 1.35);
-  const minH = Math.round(mediaWidth * 0.45);
-  return Math.max(minH, Math.min(maxH, raw));
+  const maxH = Math.round(mediaWidth * 2.5);
+  return Math.max(64, Math.min(maxH, raw));
+}
+
+/** Shared carousel slot height: tallest width-fit image in a multi-photo post. */
+export function feedPostGalleryTallestHeight(
+  mediaWidth: number,
+  uris: readonly string[],
+  aspectByUri: Record<string, number>
+): number {
+  if (uris.length === 0) return 0;
+  return uris.reduce((maxHeight, uri) => {
+    const aspect =
+      aspectByUri[uri] ?? getCachedFeedImageAspect(uri) ?? DEFAULT_FEED_IMAGE_ASPECT;
+    return Math.max(maxHeight, feedPostImageHeightForAspect(mediaWidth, aspect));
+  }, 0);
+}
+
+/** Image count for carousel chrome (legacy HTTPS + Tier B encrypted refs). */
+export function postCarouselImageCount(
+  post: Pick<Post, "imageUris" | "imageEncryptedMedia">
+): number {
+  return Math.max(post.imageUris?.length ?? 0, post.imageEncryptedMedia?.length ?? 0);
+}
+
+/** Preserve carousel slide when an optimistic post id is replaced by the server id. */
+export function remapPostMediaGalleryIndex(
+  current: Record<string, number>,
+  fromPostId: string,
+  toPostId: string
+): Record<string, number> {
+  if (fromPostId === toPostId) return current;
+  const idx = current[fromPostId];
+  if (idx == null) return current;
+  const next = { ...current, [toPostId]: idx };
+  delete next[fromPostId];
+  return next;
 }
 
 /** @deprecated Prefer {@link feedPostImageHeightForAspect} for width-fit feed images. */

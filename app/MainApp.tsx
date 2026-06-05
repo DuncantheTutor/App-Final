@@ -1,10 +1,14 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  storageGetItem,
+  storageRemoveItem,
+  storageSetItem,
+} from "./lib/encryptedLocalStorage";
+import { clearEncryptedMediaCaches } from "./lib/encryptedMediaCache";
 import * as ImagePicker from "expo-image-picker";
 import * as NavigationBar from "expo-navigation-bar";
 import { Audio, ResizeMode, Video } from "expo-av";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
-import * as ExpoLocation from "expo-location";
 import * as ExpoNetwork from "expo-network";
 import * as VideoThumbnails from "expo-video-thumbnails";
 import Constants from "expo-constants";
@@ -17,6 +21,8 @@ import {
   Alert,
   Animated,
   AppState,
+  BackHandler,
+  InteractionManager,
   Image,
   InputAccessoryView,
   Keyboard,
@@ -58,10 +64,25 @@ import {
 import { logAppError, logAppEvent, setTelemetryContext } from "../telemetry";
 import {
   mediaUriNeedsFirebaseUpload,
-  resolvePostMediaUrisForEncrypt,
   uploadSharedMediaFromDevice,
-  uploadSharedMediaIfNeeded,
 } from "../mediaStorageUpload";
+import { resolvePostMediaForEncrypt } from "./lib/tierBMedia/postMedia";
+import {
+  canonicalEncryptedPostId,
+  mapDecryptedPostPlainToPost,
+} from "./lib/tierBMedia/mapPostFromPlain";
+import type { PostMediaPlainPayload } from "./lib/tierBMedia/postMedia";
+import { parseMessageMediaFromPlain } from "./lib/tierBMedia/messageMedia";
+import {
+  ChatMessageMediaResolver,
+  messageHasResolvableMedia,
+} from "./components/ChatMessageMediaResolver";
+import { ChatThreadErrorBoundary } from "./components/ChatThreadErrorBoundary";
+import { ChatVideoAutoPlayWhenReady } from "./components/ChatVideoAutoPlayWhenReady";
+import { ChatVideoMessageBubble } from "./components/ChatVideoMessageBubble";
+import { ChatReplyTargetPreview } from "./components/ChatReplyTargetPreview";
+import { ChatVoiceNoteBubble } from "./components/ChatVoiceNoteBubble";
+import { resolveTierBMediaToFileUri } from "./lib/tierBMedia/storage";
 import { requestReadSmsPermissionIfNeeded, startAndroidOtpAssist } from "../otpSmsAssist";
 import { firebaseAuth, getFirestoreDb } from "../firebaseAuthClient";
 import {
@@ -75,13 +96,26 @@ import {
   where,
 } from "firebase/firestore";
 import { joinCutoffMsForViewer, normalizeMemberJoinedAtForClient } from "./lib/chatMemberJoinedAt";
-import { buildLastMessageByChatId } from "./lib/chatListLastMessage";
 import {
-  findLiveDirectChatForFriend,
+  broadcastCreatorFriendId,
+  canReplyToBroadcastMessage,
+  isBroadcastCreator,
+} from "./lib/broadcastMessaging";
+import {
+  buildLastMessageByChatId,
+  buildVisibleThreadMessagesByChatId,
+  chatListSortTimestampMs,
+  filterChatsVisibleInInbox,
+} from "./lib/chatListLastMessage";
+import { retainedMessageChatIds } from "./lib/messageRetentionChatIds";
+import { trimInMemoryMessages } from "./lib/trimInMemoryMessages";
+import { isIncomingChatUnread } from "./lib/chatUnreadState";
+import {
   friendBackendUidFromDirectChatLocalId,
   isCanonicalDirectChatId,
-  isCanonicalDmHiddenForViewer,
+  localChatIdsForDirectThread,
   resolveCanonicalDirectChatLocalId,
+  resolveDirectChatOpenTarget,
   resolveInboundDirectMessageTarget,
   resolveIncomingDirectChatId,
   serverConversationIdForChat,
@@ -106,16 +140,47 @@ import {
   mergeFriendsCatalog,
   upsertRitualFriend,
 } from "./lib/mergeFriendsCatalog";
-import { registerOsPushToken, addNotificationResponseListener } from "./lib/pushNotifications";
-import { inferOutgoingMediaKind } from "./lib/mediaKind";
 import {
-  composerBottomPadding,
-  fabBottomOffset,
+  registerPushTokenWithBackend,
+  requestOsNotificationPermission,
+  getOsNotificationPermissionStatus,
+  isOsNotificationPermissionGranted,
+  addNotificationReceivedListener,
+  addNotificationResponseListener,
+  conversationIdFromNotificationData,
+  pushNotificationType,
+} from "./lib/pushNotifications";
+import {
+  markNotificationPrePromptAnswered,
+  readNotificationPrePromptAnswered,
+} from "./lib/notificationPermissionGate";
+import { inferOutgoingMediaKind } from "./lib/mediaKind";
+import { chatPhotoMessageSize } from "./lib/chatMediaLayout";
+import { probeVideoDisplayDimensions } from "./lib/videoDisplayDimensions";
+import { prepareVoicePlaybackAudioMode, VOICE_RECORDING_OPTIONS } from "./lib/voicePlaybackAudio";
+import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri";
+import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
+import { readComposerTextTrimmed, writeComposerText } from "./lib/syncedComposerText";
+import {
+  keyboardComposerBottomPadding,
   navDeadZoneHeight,
   scrollPageBottomPadding,
   stickyFooterPadding,
 } from "./lib/safeAreaInsets";
+import { keyboardScrollPadding } from "./lib/keyboardInputScroll";
+import {
+  postCarouselImageCount,
+  remapPostMediaGalleryIndex,
+} from "./lib/feedPostLayout";
+import { useScrollPinnedInput } from "./lib/useScrollPinnedInput";
 import { FeedPostCard } from "./components/FeedPostCard";
+import { NotificationPrePromptScreen } from "./components/NotificationPrePromptScreen";
+import { PostGridCell } from "./components/PostGridCell";
+import { ImageCropModal } from "./components/ImageCropModal";
+import { HomeTopNavBar } from "./components/HomeTopNavBar";
+import { FullscreenMediaViewer } from "./components/FullscreenMediaViewer";
+import { VideoPostThumbnailModal } from "./components/VideoPostThumbnailModal";
+import { OpenSourceLicensesScreen } from "./screens/OpenSourceLicensesScreen";
 import { ReactionBubbleHost } from "./components/ReactionBubbleHost";
 import { aggregateReactionCounts, getMyReactionEmoji } from "./lib/reactionHelpers";
 import {
@@ -126,6 +191,11 @@ import {
 import { readAvatarsByMessageId, type ReadByMap } from "./lib/readReceipts";
 import { useInitialServerSync } from "./boot/useInitialServerSync";
 import { clearLocalSocialCacheForEmail } from "./lib/localSocialCache";
+import {
+  readProfileCardCache,
+  writeProfileCardCache,
+  type CachedProfileCard,
+} from "./lib/profileCardCache";
 import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "./lib/e2eeKeyBackup";
 import { pullEncryptedPostsIncremental as pullEncryptedPostsFromServer } from "./boot/pullEncryptedPosts";
 import {
@@ -142,10 +212,18 @@ import { useMessagingSync } from "./messaging/useMessagingSync";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
+import { shareOwnedPostsWithNewFriend } from "./posts/shareOwnedPostsWithNewFriend";
+import {
+  readPostsSharedWithFriends,
+  writePostsSharedWithFriends,
+} from "./lib/postsSharedWithFriendsPersistence";
 import { publishActivePresence } from "./presence/heartbeat";
 import { usePresenceFirestoreListener } from "./presence/usePresenceFirestoreListener";
 import { usePresenceHeartbeat } from "./presence/usePresenceHeartbeat";
-import { normalizeHttpsProfilePictureUrl } from "./lib/profilePictureUrl";
+import {
+  mergeProfilePictureUrl,
+  normalizeHttpsProfilePictureUrl,
+} from "./lib/profilePictureUrl";
 import {
   decryptPayloadForRecipient,
   ensureLocalKeyBundle,
@@ -184,8 +262,31 @@ import {
   mergeIdentityLockedChatIds,
 } from "./lib/identityLockedChats";
 import { friendDisplayNameFromProfile } from "./lib/friendDisplayName";
-import { resolveParticipantDisplay } from "./lib/participantDisplay";
+import {
+  resolveParticipantDisplay,
+  TOMBSTONE_DISPLAY_NAME,
+} from "./lib/participantDisplay";
+import {
+  pruneExpiredFeedMutes,
+  readFeedMutesForEmail,
+  writeFeedMutesForEmail,
+} from "./lib/feedMutePersistence";
+import {
+  countUnreadFeedReactionPosts,
+  markOwnedPostReactionsSeen,
+  readFeedReactionSeenForEmail,
+  writeFeedReactionSeenForEmail,
+} from "./lib/feedReactionUnread";
 import { maxCreatedAtMs, mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
+import { mapServerPostReactionsToFeed } from "./lib/mapPostFeedReactions";
+import { ensureCameraForPairing } from "./lib/pairingCamera";
+import {
+  collectPrecisePairingProximityEvidence,
+  ensurePreciseLocationForPairing,
+  preciseLocationGateMessage,
+} from "./lib/pairingLocation";
+import { mergeCloudChatsWithLocalReadBy, mergeReadByMaps } from "./lib/mergeChatReadBy";
+import { yieldToUi } from "./lib/yieldToUi";
 import { mergeHydratedPostComments } from "./lib/mergePostComments";
 import { makeStyles } from "./styles/makeAppStyles";
 import { AddFriendScreen } from "./screens/AddFriendScreen";
@@ -245,8 +346,20 @@ import {
   PRESENCE_ONLINE_WINDOW_MS,
   INITIAL_SERVER_SYNC_TIMEOUT_MS,
   ENCRYPTED_POSTS_FULL_SYNC_MS,
-  ENCRYPTED_POSTS_SYNC_LIMIT,
+  ENCRYPTED_POSTS_HOME_FEED_LIMIT,
+  ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT,
+  ENCRYPTED_POSTS_PAGE_SIZE,
+  ENCRYPTED_POSTS_LISTENER_LIMIT,
+  FEED_UI_INITIAL_COUNT,
+  FEED_UI_DISPLAY_PAGE_SIZE,
   ENCRYPTED_MESSAGES_SYNC_LIMIT,
+  CHAT_INITIAL_MESSAGE_LIMIT,
+  CHAT_OLDER_MESSAGES_PAGE_SIZE,
+  CHAT_UI_INITIAL_DISPLAY_COUNT,
+  CHAT_UI_DISPLAY_PAGE_SIZE,
+  PROFILE_FEED_POSTS_INITIAL,
+  PROFILE_FEED_POSTS_PAGE_SIZE,
+  FRIEND_PROFILE_REFRESH_MS,
   REACTION_EMOJIS,
   SCROLL_TEST_MESSAGES,
   SESSION_LOCK_TOKEN_STORAGE_KEY,
@@ -266,6 +379,7 @@ import {
   isEmailDerivedUsername,
   isPlaceholderProfileUsername,
   resolveProfileUsername,
+  CHAT_MESSAGE_LONG_PRESS_MS,
   usernameForProfileUpsert,
   fetchLedgerTokenFromRtdb,
   fetchLedgerTokenWithEtag,
@@ -274,7 +388,6 @@ import {
   generateMockSessionToken,
   getMessagePreviewBody,
   getMockSessionSyncUrl,
-  getPostThumbnailUri,
   homeBottomActionClearance,
   isLikelyChatProfileImageUri,
   isMockSessionSyncConfigured,
@@ -283,6 +396,7 @@ import {
   multiplyHexColor,
   normalizeSet,
   postsStorageKeyForEmail,
+  profileBioStorageKey,
   profilePictureStorageKey,
   profileUsernameStorageKey,
   readLedgerSessionToken,
@@ -308,7 +422,7 @@ function MainAppInner() {
   const [colorThemeId, setColorThemeId] = useState<ColorThemeId>("green");
   useEffect(() => {
     let cancelled = false;
-    void AsyncStorage.getItem(APPEARANCE_PREFS_STORAGE_KEY).then((raw) => {
+    void storageGetItem(APPEARANCE_PREFS_STORAGE_KEY).then((raw) => {
       if (cancelled || !raw) return;
       try {
         const o = JSON.parse(raw) as { isDarkMode?: unknown; colorThemeId?: unknown };
@@ -323,7 +437,7 @@ function MainAppInner() {
     };
   }, []);
   useEffect(() => {
-    void AsyncStorage.setItem(APPEARANCE_PREFS_STORAGE_KEY, JSON.stringify({ isDarkMode, colorThemeId })).catch(
+    void storageSetItem(APPEARANCE_PREFS_STORAGE_KEY, JSON.stringify({ isDarkMode, colorThemeId })).catch(
       () => {}
     );
   }, [isDarkMode, colorThemeId]);
@@ -333,6 +447,8 @@ function MainAppInner() {
   const backendDeviceIdRef = useRef<string | null>(null);
   const recipientKeyCacheRef = useRef<Record<string, string>>({});
   const [backendSessionReady, setBackendSessionReady] = useState(false);
+  const backendSessionReadyRef = useRef(false);
+  backendSessionReadyRef.current = backendSessionReady;
   const [encryptedSyncState, setEncryptedSyncState] = useState<{
     profile: EncryptedSyncChannelState;
     posts: EncryptedSyncChannelState;
@@ -347,9 +463,13 @@ function MainAppInner() {
   /** Mock single-device session: see `claimMockSessionLedger` / polling below. */
   const sessionTokenRef = useRef<string | null>(null);
   const sessionEmailRef = useRef<string | null>(null);
+  /** Username as friends see it — used for outgoing push notification titles. */
+  const myDisplayNameRef = useRef("");
   const sessionConflictNoticeAtRef = useRef(0);
   /** Latest `logout` so session-retry alerts can offer Logout before `logout` is defined in source order. */
   const logoutRef = useRef<() => void>(() => {});
+  /** Bumps on sign-out so in-flight `initializeBackendSessionForAccount` ignores stale results. */
+  const backendInitGenerationRef = useRef(0);
   const [authMode, setAuthMode] = useState<"login" | "loginOtp" | "signup" | "signupOtp">("login");
   const authModeRef = useRef(authMode);
   authModeRef.current = authMode;
@@ -381,10 +501,7 @@ function MainAppInner() {
   const [createTitleDraft, setCreateTitleDraft] = useState("");
   const [createGroupPictureUri, setCreateGroupPictureUri] = useState<string | null>(null);
   const [pendingStandardGroupCreateAfterTitle, setPendingStandardGroupCreateAfterTitle] = useState(false);
-  const [savedBroadcastGroups, setSavedBroadcastGroups] = useState<SavedBroadcastGroup[]>([
-    { id: "bg-1", name: "Family Core", memberIds: ["f2", "f3", "f5", "f6"] },
-    { id: "bg-2", name: "Project Leads", memberIds: ["f16", "f17", "f18"] },
-  ]);
+  const [savedBroadcastGroups, setSavedBroadcastGroups] = useState<SavedBroadcastGroup[]>([]);
   const [selectedBroadcastGroupId, setSelectedBroadcastGroupId] = useState<string | null>(null);
   const [broadcastGroupDropdownOpen, setBroadcastGroupDropdownOpen] = useState(false);
   const [saveBroadcastGroupPromptOpen, setSaveBroadcastGroupPromptOpen] = useState(false);
@@ -406,9 +523,17 @@ function MainAppInner() {
   const [fullscreenMedia, setFullscreenMedia] = useState<{
     uri: string;
     kind: "photo" | "gif" | "video";
+    mediaWidth?: number;
+    mediaHeight?: number;
+    galleryUris?: string[];
+    galleryIndex?: number;
+    postId?: string;
   } | null>(null);
-  const [messageActionsOpen, setMessageActionsOpen] = useState(false);
+  const [postMediaGalleryIndexByPostId, setPostMediaGalleryIndexByPostId] = useState<Record<string, number>>(
+    {}
+  );
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+  const [reactionTargetMessageId, setReactionTargetMessageId] = useState<string | null>(null);
   const [postReactionTargetId, setPostReactionTargetId] = useState<string | null>(null);
   const [commentReactionTarget, setCommentReactionTarget] = useState<{
     postId: string;
@@ -424,7 +549,17 @@ function MainAppInner() {
   const [voiceNoteMode, setVoiceNoteMode] = useState(false);
   const [voiceRecordStartedAt, setVoiceRecordStartedAt] = useState<number | null>(null);
   const [voiceRecordElapsedSec, setVoiceRecordElapsedSec] = useState(0);
+  const [pendingVoiceNote, setPendingVoiceNote] = useState<{ uri: string; durationSec: number } | null>(
+    null
+  );
+  const [previewVoicePlaying, setPreviewVoicePlaying] = useState(false);
   const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
+  const [photoEditorInCrop, setPhotoEditorInCrop] = useState(false);
+  const [photoEditorCropExitTick, setPhotoEditorCropExitTick] = useState(0);
+  const abortAddFriendPairingRef = useRef<(() => void) | null>(null);
+  const registerAddFriendPairingAbort = useCallback((abort: () => void) => {
+    abortAddFriendPairingRef.current = abort;
+  }, []);
   const [photoEditorMediaType, setPhotoEditorMediaType] = useState<"photo" | "video">("photo");
   const [photoEditorTarget, setPhotoEditorTarget] = useState<"chat" | "post" | "profile">("chat");
   const [photoEditorAsset, setPhotoEditorAsset] = useState<{
@@ -435,23 +570,59 @@ function MainAppInner() {
   const [queuedPostPhotoAssets, setQueuedPostPhotoAssets] = useState<
     Array<{ uri: string; width: number; height: number }>
   >([]);
+  const [imageCropVisible, setImageCropVisible] = useState(false);
+  const [imageCropUri, setImageCropUri] = useState<string | null>(null);
+  const [imageCropAspect, setImageCropAspect] = useState<number | undefined>(undefined);
+  const pendingPhotoEditorRef = useRef<{
+    target: "chat" | "post" | "profile";
+    mediaType: "photo" | "video";
+    queue: Array<{ uri: string; width: number; height: number }>;
+  } | null>(null);
+  const imageCropPurposeRef = useRef<"photoEditor" | "groupPicture">("photoEditor");
   const [playingVideoMessageId, setPlayingVideoMessageId] = useState<string | null>(null);
-  const [finishedVideoMessageIds, setFinishedVideoMessageIds] = useState<ReadonlySet<string>>(
+  const [measuredChatMediaByMessageId, setMeasuredChatMediaByMessageId] = useState<
+    Record<string, { width: number; height: number }>
+  >({});
+  /** Tier B chat videos: decrypt/download only after the user taps play. */
+  const [videoPrepareRequestedIds, setVideoPrepareRequestedIds] = useState<ReadonlySet<string>>(
     () => new Set()
   );
+  /** Play inline once decrypt finishes after tap-to-prepare. */
+  const [videoPlayAfterPrepareId, setVideoPlayAfterPrepareId] = useState<string | null>(null);
   const [playingVoiceMessageId, setPlayingVoiceMessageId] = useState<string | null>(null);
+  const [voiceLoadingMessageId, setVoiceLoadingMessageId] = useState<string | null>(null);
+  const [voicePlaybackProgress, setVoicePlaybackProgress] = useState<{
+    messageId: string;
+    positionMs: number;
+    durationMs: number;
+  } | null>(null);
+  /** Caps how many loaded chat rows FlatList mounts (scroll-up expands before server fetch). */
+  const [chatListDisplayLimit, setChatListDisplayLimit] = useState(CHAT_UI_INITIAL_DISPLAY_COUNT);
+  /** Full feed cards below profile media grid (grid always shows all media tiles). */
+  const [profileFeedPostLimit, setProfileFeedPostLimit] = useState(PROFILE_FEED_POSTS_INITIAL);
   const [editChatMetaOpen, setEditChatMetaOpen] = useState(false);
   const [editChatPictureOpen, setEditChatPictureOpen] = useState(false);
   const [chatTitleDraft, setChatTitleDraft] = useState("");
   const [chatPictureDraft, setChatPictureDraft] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [shouldFocusChatInput, setShouldFocusChatInput] = useState(false);
+  /** Synchronous mirror — Send must read this, not stale React state. */
+  const chatInputTextRef = useRef("");
   const chatInputRef = useRef<TextInput | null>(null);
+
+  const setChatInputSynced = useCallback((text: string) => {
+    writeComposerText(chatInputTextRef, setChatInput, text);
+  }, []);
+  const publishPostScrollRef = useRef<ScrollView | null>(null);
+  const publishCaptionInputRef = useRef<TextInput | null>(null);
   const [myProfilePictureUrl, setMyProfilePictureUrl] = useState<string | null>(null);
+  const myProfilePictureUrlRef = useRef<string | null>(null);
+  myProfilePictureUrlRef.current = myProfilePictureUrl;
   const [myBio, setMyBio] = useState("");
   /** When your bio has text, show read-only styling until long-press to edit (empty bio stays in the editor). */
   const [myBioTextEntryOpen, setMyBioTextEntryOpen] = useState(true);
   const bioInputRef = useRef<TextInput | null>(null);
+  const myProfileScrollRef = useRef<ScrollView | null>(null);
   const [fullScreenPost, setFullScreenPost] = useState<Post | null>(null);
   /** `${postId}:${commentId}` when post owner is replying in a private thread; else null = new top-level comment. */
   const [postFullscreenThreadReplyKey, setPostFullscreenThreadReplyKey] = useState<string | null>(null);
@@ -463,8 +634,16 @@ function MainAppInner() {
   const [postDraftText, setPostDraftText] = useState("");
   const [postDraftImageUris, setPostDraftImageUris] = useState<string[]>([]);
   const [postDraftVideoUri, setPostDraftVideoUri] = useState<string | null>(null);
+  const [videoThumbnailModalOpen, setVideoThumbnailModalOpen] = useState(false);
+  const [videoThumbnailDefaultPosterUri, setVideoThumbnailDefaultPosterUri] = useState<string | null>(
+    null
+  );
+  const [videoThumbnailPreviewLoading, setVideoThumbnailPreviewLoading] = useState(false);
   const [feedMutedUntilByFriendId, setFeedMutedUntilByFriendId] = useState<
     Record<string, number | null>
+  >({});
+  const [seenFeedReactionSigByPostId, setSeenFeedReactionSigByPostId] = useState<
+    Record<string, string>
   >({});
   const [view, setView] = useState<ViewState>({ screen: "home" });
   const viewRef = useRef<ViewState>(view);
@@ -481,39 +660,67 @@ function MainAppInner() {
   unfriendedIdsRef.current = unfriendedIds;
   const identityLockedChatIdsRef = useRef<string[]>([]);
   identityLockedChatIdsRef.current = identityLockedChatIds;
+  /** Prevents Firestore roster snapshots from briefly un-unfriending during `removeFriendship`. */
+  const stickyUnfriendedFriendIdsRef = useRef<Set<string>>(new Set());
   const [messages, setMessages] = useState<Message[]>([]);
   messagesRef.current = messages;
   const [posts, setPosts] = useState<Post[]>([]);
   const [feedRefreshing, setFeedRefreshing] = useState(false);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedHasMore, setFeedHasMore] = useState(true);
+  const [feedDisplayLimit, setFeedDisplayLimit] = useState(FEED_UI_INITIAL_COUNT);
+  const [feedMediaResolveIds, setFeedMediaResolveIds] = useState<Set<string>>(() => new Set());
   const [chatLoadingOlder, setChatLoadingOlder] = useState(false);
   const [chatHasMoreOlder, setChatHasMoreOlder] = useState<Record<string, boolean>>({});
-  const [playingFeedVideoPostId, setPlayingFeedVideoPostId] = useState<string | null>(null);
   const [feedPullNonce, setFeedPullNonce] = useState(0);
-  const feedVideoViewabilityConfig = useRef({ itemVisiblePercentThreshold: 55 }).current;
+  const feedViewabilityConfig = useRef({ itemVisiblePercentThreshold: 55 }).current;
   const feedViewableHydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialServerSyncCompletedAtRef = useRef(0);
+  const persistPostsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistSocialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hydrateInFlightPostIdsRef = useRef<Set<string>>(new Set());
+  const hydratedCommentPostAtRef = useRef<Record<string, number>>({});
   const [friendLinksState, setFriendLinksState] = useState<Record<string, string[]>>(() =>
     cloneFriendLinks(FRIEND_LINKS)
   );
   const [addedFriendsFromRitual, setAddedFriendsFromRitual] = useState<Friend[]>([]);
   const [presenceOnlineByBackendUid, setPresenceOnlineByBackendUid] = useState<Record<string, boolean>>({});
+  /** Persisted profile cards (name/bio/avatar) for every profile opened — fallback when offline. */
+  const [cachedProfileCards, setCachedProfileCards] = useState<Record<string, CachedProfileCard>>({});
+  const cachedProfileCardsRef = useRef<Record<string, CachedProfileCard>>({});
+  cachedProfileCardsRef.current = cachedProfileCards;
+  /** Network reachability — drives the "Not connected to internet" profile state. */
+  const [isOnline, setIsOnline] = useState(true);
   const addedFriendsFromRitualRef = useRef<Friend[]>([]);
   addedFriendsFromRitualRef.current = addedFriendsFromRitual;
   const autoReplyTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const messagesWatermarkMsRef = useRef(0);
   const acceptedFriendBackendUidsRef = useRef<Set<string>>(new Set());
+  const sharePostsBackfillStartedRef = useRef<Set<string>>(new Set());
+  const postsSharedWithFriendsRef = useRef<Set<string>>(new Set());
+  const sharePostsWithNewFriendHandlerRef = useRef<(newFriendUid: string) => void>(() => {});
+  const resolveRecipientEncryptionKeysRef = useRef<
+    (recipientUids: string[]) => Promise<Record<string, string>>
+  >(async () => ({}));
   const [serverAcceptedFriendBackendUids, setServerAcceptedFriendBackendUids] = useState<Set<string>>(
     () => new Set()
   );
   const syncServerAcceptedFriendBackendUids = useCallback((uids: Set<string>) => {
     acceptedFriendBackendUidsRef.current = uids;
     setServerAcceptedFriendBackendUids(new Set(uids));
+    for (const uid of uids) {
+      if (sharePostsBackfillStartedRef.current.has(uid)) continue;
+      if (postsSharedWithFriendsRef.current.has(uid)) continue;
+      sharePostsBackfillStartedRef.current.add(uid);
+      sharePostsWithNewFriendHandlerRef.current(uid);
+    }
   }, []);
   const messagesLastFullSyncAtRef = useRef(0);
   const backendUidToFriendIdRef = useRef<Record<string, string>>({});
   const postsWatermarkMsRef = useRef(0);
   const postsLastFullSyncAtRef = useRef(0);
+  /** Survives cold start via sync watermarks so deleted posts are not resurrected from disk or server. */
+  const deletedPostIdsRef = useRef<Set<string>>(new Set());
   /**
    * Snapshot the current sync watermarks to AsyncStorage so the next cold
    * start can do an incremental `sinceMs` pull instead of replaying the full
@@ -528,8 +735,22 @@ function MainAppInner() {
       messagesLastFullSyncAt: messagesLastFullSyncAtRef.current,
       postsWatermarkMs: postsWatermarkMsRef.current,
       postsLastFullSyncAt: postsLastFullSyncAtRef.current,
+      deletedPostIds: [...deletedPostIdsRef.current],
     });
   }, []);
+  const postsVisibleForCache = useCallback(
+    (list: Post[]) =>
+      list.filter((p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)),
+    []
+  );
+  const persistPostsNow = useCallback(() => {
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) return;
+    const alive = postsVisibleForCache(postsRef.current);
+    void storageSetItem(postsStorageKeyForEmail(email), JSON.stringify(alive)).catch(() => {
+      logAppError("posts.persistNow", new Error("write failed"), { email });
+    });
+  }, [postsVisibleForCache]);
   /**
    * Snapshot the friend public-key cache to AsyncStorage so the first send
    * after a cold start doesn't need an extra `getFriendKeyBundles` round-trip
@@ -588,6 +809,50 @@ function MainAppInner() {
    * run (it should only run once per session).
    */
   const [initialServerSyncDone, setInitialServerSyncDone] = useState(false);
+  const [notificationGateReady, setNotificationGateReady] = useState(false);
+  const [showNotificationPrePrompt, setShowNotificationPrePrompt] = useState(false);
+  const [notificationPrePromptBusy, setNotificationPrePromptBusy] = useState(false);
+  const [osNotificationGranted, setOsNotificationGranted] = useState(false);
+
+  useEffect(() => {
+    if (initialServerSyncDone) {
+      initialServerSyncCompletedAtRef.current = Date.now();
+    }
+  }, [initialServerSyncDone]);
+
+  useEffect(() => {
+    if (!signedIn) {
+      setNotificationGateReady(false);
+      setShowNotificationPrePrompt(false);
+      setOsNotificationGranted(false);
+      return;
+    }
+    if (DEMO_OFFLINE_MODE) {
+      setNotificationGateReady(true);
+      setShowNotificationPrePrompt(false);
+      setOsNotificationGranted(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const email = sessionEmailRef.current?.trim().toLowerCase();
+      if (!email) {
+        if (!cancelled) setNotificationGateReady(true);
+        return;
+      }
+      const [osStatus, answered] = await Promise.all([
+        getOsNotificationPermissionStatus(),
+        readNotificationPrePromptAnswered(email),
+      ]);
+      if (cancelled) return;
+      setOsNotificationGranted(isOsNotificationPermissionGranted(osStatus));
+      setShowNotificationPrePrompt(osStatus === "undetermined" && !answered);
+      setNotificationGateReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn]);
 
   useEffect(() => {
     return () => {
@@ -609,17 +874,20 @@ function MainAppInner() {
   }, []);
 
   useEffect(() => {
-    const addFriend = view.screen === "addFriend";
-    const rootBg = addFriend ? theme.accent : theme.background;
-    void SystemUI.setBackgroundColorAsync(rootBg);
+    void SystemUI.setBackgroundColorAsync(theme.background);
     if (Platform.OS === "android") {
       /* With edge-to-edge, background calls may no-op; system bar appearance still updates button style. */
-      void NavigationBar.setBackgroundColorAsync(rootBg);
-      void NavigationBar.setButtonStyleAsync(
-        addFriend ? (isDarkMode ? "dark" : "light") : isDarkMode ? "light" : "dark"
-      );
+      void NavigationBar.setBackgroundColorAsync(theme.background);
+      void NavigationBar.setButtonStyleAsync(isDarkMode ? "light" : "dark");
     }
-  }, [view.screen, colorThemeId, theme.accent, theme.background, isDarkMode]);
+  }, [colorThemeId, theme.background, isDarkMode]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    if (!reactionPickerOpen) return;
+    void NavigationBar.setBackgroundColorAsync(theme.background);
+    void NavigationBar.setButtonStyleAsync(isDarkMode ? "light" : "dark");
+  }, [reactionPickerOpen, theme.background, isDarkMode]);
 
   /** Android edge-to-edge can report `insets.top` as 0; combine with status bar height. */
   const safeTop = Math.max(
@@ -627,18 +895,52 @@ function MainAppInner() {
     Platform.OS === "android" ? RNStatusBar.currentHeight ?? 0 : 0
   );
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
     const show = Keyboard.addListener(
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
-      () => setKeyboardVisible(true)
+      (e) => {
+        setKeyboardVisible(true);
+        setKeyboardHeight(e.endCoordinates.height);
+      }
     );
     /** `keyboardDidHide` avoids leftover padding from KeyboardAvoidingView (bar stuck too high). */
-    const hide = Keyboard.addListener("keyboardDidHide", () => setKeyboardVisible(false));
+    const hide = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardVisible(false);
+      setKeyboardHeight(0);
+    });
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
+
+  /** Full-screen overlays that manage their own keyboard — don't shift chat/post composers underneath. */
+  const overlaySuppressesKeyboardAvoidance =
+    photoEditorOpen ||
+    imageCropVisible ||
+    videoThumbnailModalOpen ||
+    reactionPickerOpen;
+  const keyboardAvoidanceEnabled = keyboardVisible && !overlaySuppressesKeyboardAvoidance;
+
+  const myProfileBioPin = useScrollPinnedInput({
+    scrollRef: myProfileScrollRef,
+    inputRef: bioInputRef,
+    keyboardVisible,
+    keyboardHeight,
+    enabled:
+      view.screen === "myProfile" &&
+      (myBioTextEntryOpen || !myBio.trim()) &&
+      !overlaySuppressesKeyboardAvoidance,
+  });
+
+  const publishCaptionPin = useScrollPinnedInput({
+    scrollRef: publishPostScrollRef,
+    inputRef: publishCaptionInputRef,
+    keyboardVisible,
+    keyboardHeight,
+    enabled: view.screen === "publishPost" && !overlaySuppressesKeyboardAvoidance,
+  });
 
   useEffect(() => {
     if (!fullScreenPost || !shouldFocusPostCommentInput) return;
@@ -663,6 +965,49 @@ function MainAppInner() {
     setPostFullscreenThreadReplyKey(null);
     setShouldFocusPostCommentInput(false);
   }, []);
+
+  const setPostMediaGalleryIndex = useCallback((postId: string, index: number) => {
+    setPostMediaGalleryIndexByPostId((current) => ({ ...current, [postId]: index }));
+  }, []);
+
+  const openFullscreenMedia = useCallback(
+    (
+      uri: string,
+      kind: "photo" | "gif" | "video",
+      options?: {
+        galleryUris?: string[];
+        galleryIndex?: number;
+        postId?: string;
+        mediaWidth?: number;
+        mediaHeight?: number;
+      }
+    ) => {
+      Keyboard.dismiss();
+      chatInputRef.current?.blur();
+      // Post detail is a native Modal — close it before the full-screen media layer so
+      // video does not open underneath and appear only after dismissing post view.
+      setFullScreenPost(null);
+      setPostFullscreenThreadReplyKey(null);
+      const postId = options?.postId;
+      const uris = options?.galleryUris ?? [];
+      const maxIndex = Math.max(0, uris.length - 1);
+      const galleryIndex = Math.max(0, Math.min(options?.galleryIndex ?? 0, maxIndex));
+      const activeUri = uris[galleryIndex] ?? uri;
+      if (postId) {
+        setPostMediaGalleryIndex(postId, galleryIndex);
+      }
+      setFullscreenMedia({
+        uri: activeUri,
+        kind,
+        mediaWidth: options?.mediaWidth,
+        mediaHeight: options?.mediaHeight,
+        galleryUris: uris.length > 0 ? uris : undefined,
+        galleryIndex,
+        postId,
+      });
+    },
+    [setPostMediaGalleryIndex]
+  );
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -699,34 +1044,51 @@ function MainAppInner() {
     if (!signedIn) return;
     const email = sessionEmailRef.current?.trim().toLowerCase();
     if (!email) return;
-    void AsyncStorage.setItem(postsStorageKeyForEmail(email), JSON.stringify(posts)).catch(() => {
-      logAppError("posts.persist", new Error("write failed"), { email });
-    });
-  }, [posts, signedIn]);
+    if (persistPostsTimerRef.current) clearTimeout(persistPostsTimerRef.current);
+    persistPostsTimerRef.current = setTimeout(() => {
+      persistPostsTimerRef.current = null;
+      void storageSetItem(
+        postsStorageKeyForEmail(email),
+        JSON.stringify(postsVisibleForCache(posts))
+      ).catch(() => {
+        logAppError("posts.persist", new Error("write failed"), { email });
+      });
+    }, 1800);
+    return () => {
+      if (persistPostsTimerRef.current) clearTimeout(persistPostsTimerRef.current);
+    };
+  }, [posts, signedIn, postsVisibleForCache]);
 
   useEffect(() => {
     if (!signedIn || DEMO_OFFLINE_MODE) return;
     const email = sessionEmailRef.current?.trim().toLowerCase();
     if (!email) return;
-    void AsyncStorage.setItem(
-      socialMessagingStorageKeyForEmail(email),
-      JSON.stringify({
-        chats,
-        messages,
-        hiddenChatIds,
-        addedFriendsFromRitual,
-        unfriendedIds,
-        identityLockedChatIds,
-      })
-    ).catch(() => {
-      logAppError("messaging.persist", new Error("write failed"), { email });
-    });
+    if (persistSocialTimerRef.current) clearTimeout(persistSocialTimerRef.current);
+    persistSocialTimerRef.current = setTimeout(() => {
+      persistSocialTimerRef.current = null;
+      void storageSetItem(
+        socialMessagingStorageKeyForEmail(email),
+        JSON.stringify({
+          chats,
+          messages,
+          hiddenChatIds,
+          addedFriendsFromRitual,
+          unfriendedIds,
+          identityLockedChatIds,
+        })
+      ).catch(() => {
+        logAppError("messaging.persist", new Error("write failed"), { email });
+      });
+    }, 2200);
+    return () => {
+      if (persistSocialTimerRef.current) clearTimeout(persistSocialTimerRef.current);
+    };
   }, [chats, messages, hiddenChatIds, addedFriendsFromRitual, unfriendedIds, identityLockedChatIds, signedIn]);
 
   const persistSocialMessagingNow = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
     if (!email || DEMO_OFFLINE_MODE) return;
-    void AsyncStorage.setItem(
+    void storageSetItem(
       socialMessagingStorageKeyForEmail(email),
       JSON.stringify({
         chats: chatsRef.current,
@@ -744,15 +1106,53 @@ function MainAppInner() {
     return () => sub.remove();
   }, []);
 
+  // Track network reachability so profile screens can fall back to the cached
+  // card and show "Not connected to internet" instead of an empty/stale feed.
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const state = await ExpoNetwork.getNetworkStateAsync();
+        if (!cancelled) setIsOnline(Boolean(state.isConnected && state.isInternetReachable !== false));
+      } catch {
+        /* leave previous value on transient error */
+      }
+    };
+    void check();
+    const id = setInterval(() => void check(), 6000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Load the persisted profile-card cache for the signed-in account.
+  useEffect(() => {
+    if (!signedIn) {
+      setCachedProfileCards({});
+      return;
+    }
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) return;
+    let cancelled = false;
+    void (async () => {
+      const cards = await readProfileCardCache(email);
+      if (!cancelled) setCachedProfileCards(cards);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn]);
+
   useEffect(() => {
     if (!signedIn) return;
     const email = sessionEmailRef.current?.trim().toLowerCase();
     if (!email) return;
-    void AsyncStorage.setItem(lastViewStorageKey(email), JSON.stringify(view)).catch(() => {
+    void storageSetItem(lastViewStorageKey(email), JSON.stringify(view)).catch(() => {
       /* ignore */
     });
     if (view.screen === "home") {
-      void AsyncStorage.setItem(lastHomeTabStorageKey(email), homeTab).catch(() => {
+      void storageSetItem(lastHomeTabStorageKey(email), homeTab).catch(() => {
         /* ignore */
       });
     }
@@ -761,21 +1161,34 @@ function MainAppInner() {
   useEffect(() => {
     const timer = setInterval(() => {
       setFeedMutedUntilByFriendId((current) => {
-        const now = Date.now();
-        let changed = false;
-        const next: Record<string, number | null> = {};
-        for (const [friendId, until] of Object.entries(current)) {
-          if (until === null || until > now) {
-            next[friendId] = until;
-          } else {
-            changed = true;
-          }
-        }
-        return changed ? next : current;
+        const next = pruneExpiredFeedMutes(current);
+        const keys = Object.keys(current);
+        const prunedKeys = Object.keys(next);
+        const unchanged =
+          keys.length === prunedKeys.length && keys.every((id) => next[id] === current[id]);
+        return unchanged ? current : next;
       });
     }, 60_000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!signedIn) return;
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) return;
+    void writeFeedMutesForEmail(email, feedMutedUntilByFriendId).catch(() => {
+      logAppError("feedMutes.persist", new Error("write failed"), { email });
+    });
+  }, [feedMutedUntilByFriendId, signedIn]);
+
+  useEffect(() => {
+    if (!signedIn) return;
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) return;
+    void writeFeedReactionSeenForEmail(email, seenFeedReactionSigByPostId).catch(() => {
+      logAppError("feedReactionSeen.persist", new Error("write failed"), { email });
+    });
+  }, [seenFeedReactionSigByPostId, signedIn]);
 
   useEffect(() => {
     if (!signedIn) return;
@@ -822,6 +1235,74 @@ function MainAppInner() {
   const friendMapRef = useRef(friendMap);
   friendMapRef.current = friendMap;
 
+  // Keep the persisted profile-card cache in step with the live roster so a
+  // previously-seen friend's name/bio/avatar survive cold starts and offline.
+  useEffect(() => {
+    if (!signedIn) return;
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) return;
+    const prior = cachedProfileCardsRef.current;
+    let changed = false;
+    const next = { ...prior };
+    for (const friend of allFriends) {
+      const name = friend.displayName?.trim();
+      if (!name) continue;
+      const existing = prior[friend.id];
+      const card: CachedProfileCard = {
+        friendId: friend.id,
+        backendUid: friend.backendUid?.trim() || undefined,
+        displayName: name,
+        bio: friend.bio ?? "",
+        profilePictureUrl: mergeProfilePictureUrl(
+          friend.profilePictureUrl,
+          existing?.profilePictureUrl
+        ),
+        updatedAt: Date.now(),
+      };
+      if (
+        !existing ||
+        existing.displayName !== card.displayName ||
+        existing.bio !== card.bio ||
+        existing.profilePictureUrl !== card.profilePictureUrl
+      ) {
+        next[friend.id] = card;
+        changed = true;
+      }
+    }
+    if (changed) {
+      setCachedProfileCards(next);
+      void writeProfileCardCache(email, next);
+    }
+  }, [allFriends, signedIn]);
+
+  /** Live roster entry if present, else the persisted profile card (offline fallback). */
+  const resolveFriendProfileCard = useCallback(
+    (
+      friendId: string
+    ): { displayName: string; bio: string; profilePictureUrl: string; online: boolean } | null => {
+      const live = friendMap[friendId];
+      if (live?.displayName?.trim()) {
+        return {
+          displayName: live.displayName,
+          bio: live.bio ?? "",
+          profilePictureUrl: live.profilePictureUrl ?? "",
+          online: !!live.online,
+        };
+      }
+      const cached = cachedProfileCards[friendId];
+      if (cached?.displayName?.trim()) {
+        return {
+          displayName: cached.displayName,
+          bio: cached.bio ?? "",
+          profilePictureUrl: cached.profilePictureUrl ?? "",
+          online: false,
+        };
+      }
+      return null;
+    },
+    [friendMap, cachedProfileCards]
+  );
+
   const serverFriendUidsForDisplay = useMemo(() => {
     if (DEMO_OFFLINE_MODE) return null;
     if (!initialServerSyncDone) {
@@ -833,13 +1314,62 @@ function MainAppInner() {
     () => new Set(identityLockedChatIds),
     [identityLockedChatIds]
   );
+  const localAcceptedFriendIds = useMemo(
+    () => new Set(friendLinksState[CURRENT_USER_ID] ?? []),
+    [friendLinksState]
+  );
+
+  const visibleFriends = useMemo(
+    () => friendsForFriendsList(allFriends, unfriendedIds),
+    [allFriends, unfriendedIds]
+  );
+  const visibleFriendIds = useMemo(() => visibleFriends.map((f) => f.id), [visibleFriends]);
+  const demoActiveInboundFriendIds = useMemo(
+    () => (DEMO_OFFLINE_MODE ? visibleFriendIds.slice(0, 5) : []),
+    [visibleFriendIds]
+  );
+
+  const friendIdToBackendUid = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const friend of allFriends) {
+      const bu = friend.backendUid?.trim();
+      if (bu?.startsWith("u_")) out[friend.id] = bu;
+    }
+    return out;
+  }, [allFriends]);
+
+  const resolveChatMemberFriendId = useCallback(
+    (memberId: string) => {
+      if (friendMap[memberId]) return memberId;
+      const trimmed = memberId.trim();
+      if (trimmed.startsWith("u_")) {
+        return friendIdToBackendUid[trimmed] ?? (friendMap[trimmed] ? trimmed : memberId);
+      }
+      return memberId;
+    },
+    [friendMap, friendIdToBackendUid]
+  );
   const resolvePd = useCallback(
     (friendId: string, chatId?: string) =>
-      resolveParticipantDisplay(friendId, friendMap, unfriendedIds, serverFriendUidsForDisplay, {
-        chatId,
-        identityLockedChatIds: identityLockedChatIdsSet,
-      }),
-    [friendMap, unfriendedIds, serverFriendUidsForDisplay, identityLockedChatIdsSet]
+      resolveParticipantDisplay(
+        resolveChatMemberFriendId(friendId),
+        friendMap,
+        unfriendedIds,
+        serverFriendUidsForDisplay,
+        {
+          chatId,
+          identityLockedChatIds: identityLockedChatIdsSet,
+          localAcceptedFriendIds,
+        }
+      ),
+    [
+      friendMap,
+      unfriendedIds,
+      serverFriendUidsForDisplay,
+      identityLockedChatIdsSet,
+      localAcceptedFriendIds,
+      resolveChatMemberFriendId,
+    ]
   );
 
   useEffect(() => {
@@ -863,25 +1393,6 @@ function MainAppInner() {
     }
     setView({ screen: "home" });
   }, [view, resolvePd]);
-
-  const visibleFriends = useMemo(
-    () => friendsForFriendsList(allFriends, unfriendedIds),
-    [allFriends, unfriendedIds]
-  );
-  const visibleFriendIds = useMemo(() => visibleFriends.map((f) => f.id), [visibleFriends]);
-  const demoActiveInboundFriendIds = useMemo(
-    () => (DEMO_OFFLINE_MODE ? visibleFriendIds.slice(0, 5) : []),
-    [visibleFriendIds]
-  );
-
-  const friendIdToBackendUid = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const friend of allFriends) {
-      const bu = friend.backendUid?.trim();
-      if (bu?.startsWith("u_")) out[friend.id] = bu;
-    }
-    return out;
-  }, [allFriends]);
 
   const backendUidToFriendId = useMemo(() => {
     const out: Record<string, string> = {};
@@ -911,12 +1422,69 @@ function MainAppInner() {
     });
   }, [signedIn, friendMap, backendUidToFriendId]);
 
-  const getBackendSession = useCallback(() => {
+  const readBackendSessionFromRefs = useCallback((): { uid: string; deviceId: string } | null => {
     const uid = backendAuthUidRef.current;
     const deviceId = backendDeviceIdRef.current;
-    if (!backendSessionReady || !uid || !deviceId) return null;
+    if (!backendSessionReadyRef.current || !uid || !deviceId) return null;
     return { uid, deviceId };
-  }, [backendSessionReady]);
+  }, []);
+
+  const getBackendSession = useCallback(() => readBackendSessionFromRefs(), [backendSessionReady, readBackendSessionFromRefs]);
+
+  /** Waits for `claimDeviceSession` to finish after sign-in (home can render from cache earlier). */
+  const waitForBackendSession = useCallback(
+    async (maxMs = 10_000): Promise<{ uid: string; deviceId: string } | null> => {
+      const deadline = Date.now() + maxMs;
+      while (Date.now() < deadline) {
+        const session = readBackendSessionFromRefs();
+        if (session) return session;
+        await new Promise<void>((r) => setTimeout(r, 200));
+      }
+      return null;
+    },
+    [readBackendSessionFromRefs]
+  );
+
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE || !osNotificationGranted) return;
+    const session = getBackendSession();
+    if (!session) return;
+    void registerPushTokenWithBackend(session).catch((err) => {
+      logAppError("push.register", err, {});
+    });
+  }, [signedIn, osNotificationGranted, getBackendSession, backendSessionReady]);
+
+  /**
+   * OS permission can change while the app is backgrounded (Settings). Re-check on
+   * foreground so push tokens stay registered for chat/post alerts.
+   */
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE) return;
+    if (appLifecycleState !== "active") return;
+    const session = getBackendSession();
+    if (!session) return;
+    void (async () => {
+      const osStatus = await getOsNotificationPermissionStatus();
+      const granted = isOsNotificationPermissionGranted(osStatus);
+      setOsNotificationGranted(granted);
+      if (!granted) return;
+      const authUid = firebaseAuth.currentUser?.uid;
+      if (authUid) {
+        try {
+          await callEmulatorFunction("registerFirebaseAuthUid", {
+            uid: session.uid,
+            deviceId: session.deviceId,
+            firebaseAuthUid: authUid,
+          });
+        } catch (err) {
+          logAppError("push.foreground.auth_map", err, { uid: session.uid });
+        }
+      }
+      await registerPushTokenWithBackend(session);
+    })().catch((err) => {
+      logAppError("push.foreground.register", err, {});
+    });
+  }, [signedIn, appLifecycleState, getBackendSession, backendSessionReady]);
 
   const postsRef = useRef(posts);
   postsRef.current = posts;
@@ -934,12 +1502,12 @@ function MainAppInner() {
       void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
         chats: chatsRef.current,
         messages: messagesRef.current,
-        posts: postsRef.current,
+        posts: postsVisibleForCache(postsRef.current),
         messagesWatermarkMs: messagesWatermarkMsRef.current,
         postsWatermarkMs: postsWatermarkMsRef.current,
       }).catch(() => undefined);
     }, 8_000);
-  }, [DEMO_OFFLINE_MODE, getBackendSession]);
+  }, [DEMO_OFFLINE_MODE, getBackendSession, postsVisibleForCache]);
 
   useEffect(() => {
     backendUidToFriendIdRef.current = backendUidToFriendId;
@@ -963,6 +1531,7 @@ function MainAppInner() {
 
   const {
     pullEncryptedMessagesIncremental,
+    pullEncryptedMessagesForConversation,
     resolveConversationId,
     resolveRecipientEncryptionKeys,
     refreshHiddenConversationIdsFromServer,
@@ -970,9 +1539,9 @@ function MainAppInner() {
   } = useMessagingSync({
     demoOfflineMode: DEMO_OFFLINE_MODE,
     signedIn,
-    appLifecycleState,
     initialServerSyncDone,
     viewScreen: view.screen,
+    homeTab: view.screen === "home" ? homeTab : undefined,
     activeChatLocalId:
       view.screen === "chat" && "chatId" in view ? view.chatId : null,
     getBackendSession,
@@ -994,7 +1563,7 @@ function MainAppInner() {
   });
 
   const pullEncryptedPostsIncremental = useCallback(
-    async (options?: { forceFull?: boolean }) => {
+    async (options?: { forceFull?: boolean; limit?: number }) => {
       const session = getBackendSession();
       if (!session || DEMO_OFFLINE_MODE) return;
       setEncryptedSyncState((current) => ({ ...current, posts: "syncing" }));
@@ -1006,7 +1575,12 @@ function MainAppInner() {
             currentUserLocalId: CURRENT_USER_ID,
             postsWatermarkMsRef,
             postsLastFullSyncAtRef,
-            forceFull: options?.forceFull,
+            suppressedPostIdsRef: deletedPostIdsRef,
+            forceFull:
+              options?.forceFull ||
+              deletedPostIdsRef.current.size > 0 ||
+              postsLastFullSyncAtRef.current <= 0,
+            limit: options?.limit,
           },
           setPosts
         );
@@ -1018,6 +1592,51 @@ function MainAppInner() {
     },
     [DEMO_OFFLINE_MODE, backendUidToFriendId, getBackendSession, persistWatermarksNow]
   );
+
+  resolveRecipientEncryptionKeysRef.current = resolveRecipientEncryptionKeys;
+  sharePostsWithNewFriendHandlerRef.current = (newFriendUid: string) => {
+    if (DEMO_OFFLINE_MODE) return;
+    const session = getBackendSession();
+    if (!session) return;
+    void (async () => {
+      try {
+        const visibleIds = [
+          ...new Set([
+            ...friendsForFriendsList(
+              addedFriendsFromRitualRef.current,
+              unfriendedIdsRef.current
+            ).map((f) => f.id),
+            ...[...acceptedFriendBackendUidsRef.current].map((uid) => backendUidForFriendId(uid)),
+          ]),
+        ];
+        const result = await shareOwnedPostsWithNewFriend({
+          session,
+          newFriendUid,
+          allFriends: addedFriendsFromRitualRef.current,
+          visibleFriendIds: visibleIds,
+          serverFriendBackendUids: [...acceptedFriendBackendUidsRef.current],
+          resolveRecipientEncryptionKeys: (recipientUids) =>
+            resolveRecipientEncryptionKeysRef.current(recipientUids),
+        });
+        if (result.completedScan) {
+          postsSharedWithFriendsRef.current.add(newFriendUid);
+          const email = sessionEmailRef.current?.trim().toLowerCase();
+          if (email) {
+            void writePostsSharedWithFriends(email, postsSharedWithFriendsRef.current);
+          }
+        } else {
+          sharePostsBackfillStartedRef.current.delete(newFriendUid);
+        }
+        await pullEncryptedPostsIncremental({
+          forceFull: true,
+          limit: ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT,
+        });
+      } catch (err) {
+        sharePostsBackfillStartedRef.current.delete(newFriendUid);
+        logAppError("posts.share_with_new_friend.handler", err, { newFriendUid });
+      }
+    })();
+  };
 
   useEffect(() => {
     if (!signedIn || DEMO_OFFLINE_MODE || !backendSessionReady) return;
@@ -1032,11 +1651,11 @@ function MainAppInner() {
     void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
       chats: chatsRef.current,
       messages: messagesRef.current,
-      posts: postsRef.current,
+      posts: postsVisibleForCache(postsRef.current),
       messagesWatermarkMs: messagesWatermarkMsRef.current,
       postsWatermarkMs: postsWatermarkMsRef.current,
     }).catch(() => undefined);
-  }, [appLifecycleState, signedIn, getBackendSession]);
+  }, [appLifecycleState, signedIn, getBackendSession, postsVisibleForCache]);
 
   useEffect(() => {
     if (!DEMO_OFFLINE_MODE) return;
@@ -1054,7 +1673,33 @@ function MainAppInner() {
 
   useEffect(() => {
     const session = getBackendSession();
+    if (!session || !signedIn || !backendSessionReady || DEMO_OFFLINE_MODE) return;
+    const timer = setTimeout(() => {
+      void callEmulatorFunction("upsertUserProfile", {
+        uid: session.uid,
+        deviceId: session.deviceId,
+        bio: myBio,
+      })
+        .then(() => {
+          const email = sessionEmailRef.current?.trim().toLowerCase();
+          if (email) {
+            void storageSetItem(profileBioStorageKey(email), myBio).catch(() => {});
+          }
+        })
+        .catch(() => {
+          // Do not block local profile editing on backend sync failure.
+        });
+    }, 450);
+    return () => clearTimeout(timer);
+  }, [signedIn, backendSessionReady, myBio, getBackendSession]);
+
+  useEffect(() => {
+    const session = getBackendSession();
     if (!session || !signedIn) return;
+    const httpsPicture = normalizeHttpsProfilePictureUrl(myProfilePictureUrl);
+    // Local `file://` previews must not ship through encrypted sync — they normalize
+    // to "" and would wipe friends' cached avatars before Storage upload finishes.
+    if (!httpsPicture) return;
     const recipientUids = [
       session.uid,
       ...visibleFriendIds
@@ -1062,8 +1707,7 @@ function MainAppInner() {
         .filter((uid): uid is string => !!uid && uid.startsWith("u_")),
     ];
     const payload = {
-      bio: myBio,
-      profilePictureUrl: normalizeHttpsProfilePictureUrl(myProfilePictureUrl),
+      profilePictureUrl: httpsPicture,
       updatedAt: Date.now(),
     };
     const timer = setTimeout(() => {
@@ -1084,7 +1728,6 @@ function MainAppInner() {
     return () => clearTimeout(timer);
   }, [
     signedIn,
-    myBio,
     myProfilePictureUrl,
     visibleFriendIds,
     getBackendSession,
@@ -1098,11 +1741,9 @@ function MainAppInner() {
    * `recipientAuthUids` mirror that `putEncryptedProfile` now populates from
    * the envelope keys, so a single listener delivers:
    *
-   * - **self** updates pushed from another signed-in device (this is the
-   *   primary motivator — the user editing bio/picture on phone A propagates
-   *   instantly to phone B without waiting for a 45 s poll cycle), and
-   * - **friend** profile updates if/when we wire those into UI state (the
-   *   listener already decodes them; today we only assign self).
+   * - **self** picture updates pushed from another signed-in device (bio is read
+   *   from `users.bio` via `getUserProfiles`, not this listener), and
+   * - **friend** profile picture updates when ciphertext includes an HTTPS URL.
    */
   useEffect(() => {
     if (DEMO_OFFLINE_MODE) return;
@@ -1135,16 +1776,51 @@ function MainAppInner() {
           if (!envelope || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
           try {
             const plain = await decryptPayloadForRecipient<{
-              bio?: string;
               profilePictureUrl?: string | null;
             }>(session.uid, data.ciphertext, data.nonce, envelope);
             const rawPic = plain.profilePictureUrl;
             const safePic =
               typeof rawPic === "string" && /^https?:\/\//i.test(rawPic) ? rawPic : null;
             if (data.ownerUid === session.uid) {
-              if (typeof plain.bio === "string") setMyBio(plain.bio);
-              if (typeof rawPic === "string" || rawPic === null) {
+              if (safePic) {
                 setMyProfilePictureUrl(safePic);
+                const email = sessionEmailRef.current?.trim().toLowerCase();
+                if (email) {
+                  void storageSetItem(profilePictureStorageKey(email), safePic).catch(
+                    () => {}
+                  );
+                }
+              } else {
+                const ownerUid = session.uid;
+                void callEmulatorFunction<{
+                  profiles?: Record<
+                    string,
+                    { profilePictureUrl?: string | null } | null
+                  >;
+                }>("getUserProfiles", {
+                  uid: session.uid,
+                  deviceId: session.deviceId,
+                  targetUids: [ownerUid],
+                })
+                  .then((res) => {
+                    if (cancelled) return;
+                    const fromUsers = res.profiles?.[ownerUid]?.profilePictureUrl;
+                    const merged = mergeProfilePictureUrl(
+                      fromUsers,
+                      myProfilePictureUrlRef.current
+                    );
+                    if (!merged) return;
+                    setMyProfilePictureUrl(merged);
+                    const email = sessionEmailRef.current?.trim().toLowerCase();
+                    if (email) {
+                      void storageSetItem(profilePictureStorageKey(email), merged).catch(
+                        () => {}
+                      );
+                    }
+                  })
+                  .catch(() => {
+                    /* keep local HTTPS preview / AsyncStorage cache */
+                  });
               }
             } else if (data.ownerUid?.startsWith("u_")) {
               if (safePic !== null) {
@@ -1153,7 +1829,6 @@ function MainAppInner() {
                     f.backendUid === data.ownerUid
                       ? {
                           ...f,
-                          ...(typeof plain.bio === "string" ? { bio: plain.bio } : {}),
                           profilePictureUrl: safePic ?? "",
                         }
                       : f
@@ -1172,7 +1847,6 @@ function MainAppInner() {
                           ? {
                               ...f,
                               profilePictureUrl: row.profilePictureUrl,
-                              ...(typeof plain.bio === "string" ? { bio: plain.bio } : {}),
                             }
                           : f
                       );
@@ -1215,19 +1889,33 @@ function MainAppInner() {
   useEffect(() => {
     const session = getBackendSession();
     if (!session || !signedIn) return;
+    if (!initialServerSyncDone) return;
     if (appLifecycleState !== "active") return;
-    const onPostSurfaces =
-      (view.screen === "home" && homeTab === "feed") ||
-      view.screen === "myProfile" ||
-      view.screen === "friendProfile";
-    if (!onPostSurfaces) return;
+    const isHomeFeed = view.screen === "home" && homeTab === "feed";
+    const isProfileSurface = view.screen === "myProfile" || view.screen === "friendProfile";
+    if (!isHomeFeed && !isProfileSurface) return;
+    // Boot pull already fetched the same first page — skip redundant decrypt on first feed paint.
+    if (
+      isHomeFeed &&
+      !feedRefreshing &&
+      postsWatermarkMsRef.current > 0 &&
+      Date.now() - initialServerSyncCompletedAtRef.current < 12_000
+    ) {
+      return;
+    }
+    const pageLimit = isHomeFeed
+      ? ENCRYPTED_POSTS_HOME_FEED_LIMIT
+      : ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT;
     let cancelled = false;
     const tick = async () => {
       const now = Date.now();
-      const fullSync =
-        feedRefreshing ||
-        postsWatermarkMsRef.current <= 0 ||
-        now - postsLastFullSyncAtRef.current > ENCRYPTED_POSTS_FULL_SYNC_MS;
+      // Home feed: incremental unless pull-to-refresh / first watermark (listener handles deletes on feed tab).
+      // Profile grids: periodic full-catalog pull so older posts and deletions reconcile.
+      const fullSync = isHomeFeed
+        ? feedRefreshing || postsWatermarkMsRef.current <= 0
+        : feedRefreshing ||
+          postsWatermarkMsRef.current <= 0 ||
+          now - postsLastFullSyncAtRef.current > ENCRYPTED_POSTS_FULL_SYNC_MS;
       setEncryptedSyncState((current) => ({ ...current, posts: "syncing" }));
       try {
         const request: {
@@ -1238,7 +1926,7 @@ function MainAppInner() {
         } = {
           uid: session.uid,
           deviceId: session.deviceId,
-          limit: ENCRYPTED_POSTS_SYNC_LIMIT,
+          limit: pageLimit,
         };
         if (!fullSync && postsWatermarkMsRef.current > 0) {
           request.sinceMs = Math.max(0, postsWatermarkMsRef.current - 5_000);
@@ -1259,18 +1947,18 @@ function MainAppInner() {
         if (!Array.isArray(res.items)) return;
         const decoded: Post[] = [];
         let postDecodeFailures = 0;
+        let postsEarliestFailureMs: number | null = null;
         for (const item of res.items) {
           try {
-            const plain = await decryptPayloadForRecipient<{
-              postId: string;
-              authorId?: string;
-              authorUid?: string;
-              createdAt?: number;
-              text?: string | null;
-              imageUris?: string[] | null;
-              videoUri?: string | null;
-              videoPosterUri?: string | null;
-            }>(session.uid, item.ciphertext, item.nonce, item.envelope);
+            const plain = await decryptPayloadForRecipient<
+              PostMediaPlainPayload & {
+                postId: string;
+                authorId?: string;
+                authorUid?: string;
+                createdAt?: number;
+                text?: string | null;
+              }
+            >(session.uid, item.ciphertext, item.nonce, item.envelope);
             const authorUid =
               typeof plain.authorUid === "string" && plain.authorUid.trim()
                 ? plain.authorUid.trim()
@@ -1290,32 +1978,50 @@ function MainAppInner() {
                   ])
                 )
               : undefined;
-            decoded.push({
-              id: item.postId,
-              authorId: friendAuthorId,
-              createdAt: item.createdAtMs ?? plain.createdAt ?? Date.now(),
-              text: plain.text ?? undefined,
-              imageUris: plain.imageUris ?? undefined,
-              videoUri: plain.videoUri ?? undefined,
-              videoPosterUri: plain.videoPosterUri ?? undefined,
-              feedReactions: mappedReactions,
-            });
+            const canonicalPostId = canonicalEncryptedPostId(item.postId, plain.postId);
+            if (!canonicalPostId) continue;
+            decoded.push(
+              mapDecryptedPostPlainToPost({
+                plain: { ...plain, postId: canonicalPostId },
+                postId: canonicalPostId,
+                authorId: friendAuthorId,
+                createdAtMs: item.createdAtMs ?? plain.createdAt ?? Date.now(),
+                feedReactions: mappedReactions,
+              })
+            );
+            await yieldToUi();
           } catch {
             postDecodeFailures += 1;
+            const failMs = item.createdAtMs ?? 0;
+            if (failMs > 0 && (postsEarliestFailureMs == null || failMs < postsEarliestFailureMs)) {
+              postsEarliestFailureMs = failMs;
+            }
           }
         }
         if (cancelled) return;
         const incremental = Boolean(res.incremental);
         setPosts((current) =>
-          mergeSyncedPosts(current, decoded, { incremental, optimisticWindowMs: 90_000 })
+          mergeSyncedPosts(current, decoded, {
+            incremental,
+            optimisticWindowMs: 90_000,
+            suppressedPostIds: deletedPostIdsRef.current,
+          })
         );
-        if (decoded.length > 0 && postDecodeFailures === 0) {
-          postsWatermarkMsRef.current = Math.max(postsWatermarkMsRef.current, maxCreatedAtMs(decoded));
+        if (decoded.length > 0) {
+          // Cap watermark just below the earliest undecryptable post so it is
+          // retried on the next pull instead of being skipped permanently.
+          let candidate = maxCreatedAtMs(decoded);
+          if (postsEarliestFailureMs != null) {
+            candidate = Math.min(candidate, postsEarliestFailureMs - 1);
+          }
+          postsWatermarkMsRef.current = Math.max(postsWatermarkMsRef.current, candidate);
         }
         if (fullSync) {
           postsLastFullSyncAtRef.current = now;
         }
-        setFeedHasMore(res.hasMore ?? decoded.length >= ENCRYPTED_POSTS_SYNC_LIMIT);
+        if (isHomeFeed) {
+          setFeedHasMore(res.hasMore ?? decoded.length >= pageLimit);
+        }
         persistWatermarksNow();
         setEncryptedSyncState((current) => ({ ...current, posts: "ok", lastSuccessAt: Date.now() }));
       } catch {
@@ -1341,6 +2047,7 @@ function MainAppInner() {
     homeTab,
     persistWatermarksNow,
     feedPullNonce,
+    initialServerSyncDone,
   ]);
 
   useFriendRosterSync({
@@ -1355,6 +2062,7 @@ function MainAppInner() {
     setFriendLinksState,
     addUndirectedEdge,
     removeUndirectedEdge,
+    stickyUnfriendedFriendIdsRef,
   });
 
   /**
@@ -1372,6 +2080,9 @@ function MainAppInner() {
    */
   useEffect(() => {
     if (DEMO_OFFLINE_MODE) return;
+    if (!signedIn) return;
+    if (!initialServerSyncDone) return;
+    if (view.screen !== "home" || homeTab !== "feed") return;
     const session = getBackendSession();
     if (!session || !signedIn) return;
     const firebaseAuthUid = firebaseAuth.currentUser?.uid;
@@ -1383,7 +2094,7 @@ function MainAppInner() {
       collection(db, "encryptedPosts"),
       where("recipientAuthUids", "array-contains", firebaseAuthUid),
       orderBy("createdAt", "desc"),
-      firestoreLimit(ENCRYPTED_POSTS_SYNC_LIMIT)
+      firestoreLimit(ENCRYPTED_POSTS_LISTENER_LIMIT)
     );
 
     const unsubscribe = onSnapshot(
@@ -1433,32 +2144,31 @@ function MainAppInner() {
             continue;
           }
           try {
-            const plain = await decryptPayloadForRecipient<{
-              postId: string;
-              authorId?: string;
-              authorUid?: string;
-              createdAt?: number;
-              text?: string | null;
-              imageUris?: string[] | null;
-              videoUri?: string | null;
-              videoPosterUri?: string | null;
-            }>(session.uid, data.ciphertext, data.nonce, envelope);
+            const plain = await decryptPayloadForRecipient<
+              PostMediaPlainPayload & {
+                postId: string;
+                authorId?: string;
+                authorUid?: string;
+                createdAt?: number;
+                text?: string | null;
+              }
+            >(session.uid, data.ciphertext, data.nonce, envelope);
             const authorUid =
               typeof plain.authorUid === "string" && plain.authorUid.trim()
                 ? plain.authorUid.trim()
                 : data.ownerUid;
-            decoded.push({
-              id: data.postId || doc.id,
-              authorId:
-                authorUid === session.uid
-                  ? CURRENT_USER_ID
-                  : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid),
-              createdAt: createdAtMs || plain.createdAt || Date.now(),
-              text: plain.text ?? undefined,
-              imageUris: plain.imageUris ?? undefined,
-              videoUri: plain.videoUri ?? undefined,
-              videoPosterUri: plain.videoPosterUri ?? undefined,
-            });
+            decoded.push(
+              mapDecryptedPostPlainToPost({
+                plain: { ...plain, postId: data.postId || doc.id },
+                postId: data.postId || doc.id,
+                authorId:
+                  authorUid === session.uid
+                    ? CURRENT_USER_ID
+                    : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid),
+                createdAtMs: createdAtMs || plain.createdAt || Date.now(),
+              })
+            );
+            await yieldToUi();
           } catch {
             postDecodeFailures += 1;
           }
@@ -1467,7 +2177,11 @@ function MainAppInner() {
         if (cancelled) return;
         if (decoded.length > 0) {
           setPosts((current) =>
-            mergeSyncedPosts(current, decoded, { incremental: true, optimisticWindowMs: 90_000 })
+            mergeSyncedPosts(current, decoded, {
+              incremental: true,
+              optimisticWindowMs: 90_000,
+              suppressedPostIds: deletedPostIdsRef.current,
+            })
           );
           if (postDecodeFailures === 0) {
             postsWatermarkMsRef.current = Math.max(
@@ -1495,7 +2209,15 @@ function MainAppInner() {
       cancelled = true;
       unsubscribe();
     };
-  }, [signedIn, getBackendSession, backendUidToFriendId, persistWatermarksNow]);
+  }, [
+    signedIn,
+    getBackendSession,
+    backendUidToFriendId,
+    persistWatermarksNow,
+    initialServerSyncDone,
+    view.screen,
+    homeTab,
+  ]);
 
   useInitialServerSync({
     demoOfflineMode: DEMO_OFFLINE_MODE,
@@ -1506,6 +2228,8 @@ function MainAppInner() {
     getBackendSession,
     refreshHiddenConversationIdsFromServer,
     pullEncryptedMessagesIncremental,
+    pullEncryptedMessagesForConversation,
+    resolveConversationId,
     pullEncryptedPostsIncremental,
     setAddedFriendsFromRitual,
     setFriendLinksState,
@@ -1514,10 +2238,13 @@ function MainAppInner() {
     chatsRef,
     messagesRef,
     postsRef,
+    addedFriendsFromRitualRef,
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged: syncServerAcceptedFriendBackendUids,
     addUndirectedEdge,
     currentUserLocalId: CURRENT_USER_ID,
+    currentUserId: CURRENT_USER_ID,
+    unfriendedIdsRef,
   });
 
   useEffect(() => {
@@ -1557,11 +2284,7 @@ function MainAppInner() {
     initialServerSyncDone,
     appLifecycleState,
     getBackendSession,
-    allFriends,
-    friendIdToBackendUid,
     presenceRosterKey,
-    acceptedFriendBackendUidsRef,
-    setPresenceOnlineByBackendUid,
   });
 
   usePresenceFirestoreListener({
@@ -1573,12 +2296,52 @@ function MainAppInner() {
     setPresenceOnlineByBackendUid,
   });
 
+  /** Republish active presence when the server friend roster first becomes non-empty. */
+  useEffect(() => {
+    if (DEMO_OFFLINE_MODE || !signedIn || !backendSessionReady || !initialServerSyncDone) return;
+    if (appLifecycleState !== "active") return;
+    if (serverAcceptedFriendBackendUids.size === 0) return;
+    const session = getBackendSession();
+    if (!session) return;
+    void publishActivePresence(session, Date.now()).catch((err) => {
+      logAppError("presence.publish.roster_ready", err, { uid: session.uid });
+    });
+  }, [
+    presenceRosterKey,
+    signedIn,
+    backendSessionReady,
+    initialServerSyncDone,
+    DEMO_OFFLINE_MODE,
+    appLifecycleState,
+    getBackendSession,
+  ]);
+
   useEffect(() => {
     if (DEMO_OFFLINE_MODE || !signedIn || !initialServerSyncDone) return;
     const session = getBackendSession();
     if (!session) return;
     let cancelled = false;
     const run = async () => {
+      try {
+        const selfRes = await callEmulatorFunction<{
+          profiles?: Record<string, { bio?: string } | null>;
+        }>("getUserProfiles", {
+          uid: session.uid,
+          deviceId: session.deviceId,
+          targetUids: [session.uid],
+        });
+        const selfProfile = selfRes.profiles?.[session.uid];
+        if (selfProfile && typeof selfProfile.bio === "string") {
+          setMyBio(selfProfile.bio);
+          const email = sessionEmailRef.current?.trim().toLowerCase();
+          if (email) {
+            void storageSetItem(profileBioStorageKey(email), selfProfile.bio).catch(() => {});
+          }
+        }
+      } catch {
+        /* self profile refresh is best-effort */
+      }
+
       const refreshed = await refreshFriendProfilesFromServer(
         session,
         addedFriendsFromRitualRef.current
@@ -1602,7 +2365,7 @@ function MainAppInner() {
       });
     };
     void run();
-    const id = setInterval(() => void run(), 30_000);
+    const id = setInterval(() => void run(), FRIEND_PROFILE_REFRESH_MS);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -1614,6 +2377,7 @@ function MainAppInner() {
     const screen = view.screen;
     const onHome = screen === "home";
     return {
+      createPost: screen === "publishPost",
       settings: screen === "settings",
       chats: onHome && homeTab === "chats",
       feed: onHome && homeTab === "feed",
@@ -1622,6 +2386,16 @@ function MainAppInner() {
       addFriend: screen === "addFriend",
     };
   }, [view.screen, homeTab]);
+
+  const openHomeChatsFromNav = useCallback(() => {
+    setHomeTab("chats");
+    setView({ screen: "home" });
+  }, []);
+
+  const openHomeFeedFromNav = useCallback(() => {
+    setHomeTab("feed");
+    setView({ screen: "home" });
+  }, []);
 
   const isFriendFeedMuted = useCallback(
     (friendId: string) => {
@@ -1651,6 +2425,94 @@ function MainAppInner() {
     [sortedVisiblePosts, visibleFriendIds, isFriendFeedMuted]
   );
 
+  const displayedFeedPosts = useMemo(
+    () => feedPosts.slice(0, feedDisplayLimit),
+    [feedPosts, feedDisplayLimit]
+  );
+
+  const feedReactionListenPostIds = useMemo(() => {
+    const ids = new Set(displayedFeedPosts.map((p) => p.id));
+    if (fullScreenPost?.id) ids.add(fullScreenPost.id);
+    return [...ids].slice(0, ENCRYPTED_POSTS_HOME_FEED_LIMIT);
+  }, [displayedFeedPosts, fullScreenPost?.id]);
+
+  /**
+   * Realtime feed reaction pills via `encryptedPostReactions/{postId}`.
+   * Post ciphertext listener above does not include reaction docs.
+   */
+  useEffect(() => {
+    if (DEMO_OFFLINE_MODE) return;
+    if (!signedIn) return;
+    if (!initialServerSyncDone) return;
+    if (view.screen !== "home" || homeTab !== "feed") return;
+    const session = getBackendSession();
+    if (!session) return;
+    if (feedReactionListenPostIds.length === 0) return;
+
+    const db = getFirestoreDb();
+    const sessionUid = session.uid;
+    const friendMapSnapshot = { ...backendUidToFriendId };
+    const unsubs = feedReactionListenPostIds.map((postId) =>
+      onSnapshot(firestoreDoc(db, "encryptedPostReactions", postId), (snap) => {
+        const serverReactions = snap.exists()
+          ? ((snap.data()?.reactions ?? {}) as Record<string, string>)
+          : {};
+        const feedReactions = mapServerPostReactionsToFeed(
+          serverReactions,
+          sessionUid,
+          friendMapSnapshot
+        );
+        setPosts((current) => {
+          const idx = current.findIndex((p) => p.id === postId);
+          if (idx < 0) return current;
+          const existing = current[idx]!;
+          const prevRx = existing.feedReactions ?? {};
+          const same =
+            Object.keys(prevRx).length === Object.keys(feedReactions).length &&
+            Object.entries(feedReactions).every(([k, v]) => prevRx[k] === v);
+          if (same) return current;
+          const next = [...current];
+          next[idx] = { ...existing, feedReactions };
+          return next;
+        });
+      })
+    );
+
+    return () => {
+      for (const unsub of unsubs) unsub();
+    };
+  }, [
+    DEMO_OFFLINE_MODE,
+    signedIn,
+    initialServerSyncDone,
+    view.screen,
+    homeTab,
+    getBackendSession,
+    backendUidToFriendId,
+    feedReactionListenPostIds,
+  ]);
+
+  const markFeedPostsForMediaResolve = useCallback((postIds: string[]) => {
+    if (postIds.length === 0) return;
+    setFeedMediaResolveIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of postIds) {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    markFeedPostsForMediaResolve(
+      feedPosts.slice(0, FEED_UI_INITIAL_COUNT).map((post) => post.id)
+    );
+  }, [feedPosts, markFeedPostsForMediaResolve]);
+
   const loadMoreFeedPosts = useCallback(() => {
     if (feedLoadingMore || !feedHasMore || DEMO_OFFLINE_MODE) return;
     const session = getBackendSession();
@@ -1674,20 +2536,20 @@ function MainAppInner() {
         }>("listEncryptedPosts", {
           uid: session.uid,
           deviceId: session.deviceId,
-          limit: ENCRYPTED_POSTS_SYNC_LIMIT,
+          limit: ENCRYPTED_POSTS_PAGE_SIZE,
           beforeMs: oldest.createdAt - 1,
         });
         const decoded: Post[] = [];
         for (const item of res.items ?? []) {
           try {
-            const plain = await decryptPayloadForRecipient<{
-              authorUid?: string;
-              createdAt?: number;
-              text?: string | null;
-              imageUris?: string[] | null;
-              videoUri?: string | null;
-              videoPosterUri?: string | null;
-            }>(session.uid, item.ciphertext, item.nonce, item.envelope);
+            const plain = await decryptPayloadForRecipient<
+              PostMediaPlainPayload & {
+                postId?: string;
+                authorUid?: string;
+                createdAt?: number;
+                text?: string | null;
+              }
+            >(session.uid, item.ciphertext, item.nonce, item.envelope);
             const authorUid = plain.authorUid?.trim() || item.ownerUid;
             const serverReactions = res.reactionsByPostId?.[item.postId];
             const mappedReactions: Record<string, string> | undefined = serverReactions
@@ -1700,19 +2562,20 @@ function MainAppInner() {
                   ])
                 )
               : undefined;
-            decoded.push({
-              id: item.postId,
-              authorId:
-                authorUid === session.uid
-                  ? CURRENT_USER_ID
-                  : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid),
-              createdAt: item.createdAtMs ?? plain.createdAt ?? Date.now(),
-              text: plain.text ?? undefined,
-              imageUris: plain.imageUris ?? undefined,
-              videoUri: plain.videoUri ?? undefined,
-              videoPosterUri: plain.videoPosterUri ?? undefined,
-              feedReactions: mappedReactions,
-            });
+            const canonicalPostId = canonicalEncryptedPostId(item.postId, plain.postId);
+            if (!canonicalPostId) continue;
+            decoded.push(
+              mapDecryptedPostPlainToPost({
+                plain: { ...plain, postId: canonicalPostId },
+                postId: canonicalPostId,
+                authorId:
+                  authorUid === session.uid
+                    ? CURRENT_USER_ID
+                    : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid),
+                createdAtMs: item.createdAtMs ?? plain.createdAt ?? Date.now(),
+                feedReactions: mappedReactions,
+              })
+            );
           } catch {
             /* skip */
           }
@@ -1730,12 +2593,22 @@ function MainAppInner() {
           }
           return Object.values(byId).sort((a, b) => b.createdAt - a.createdAt);
         });
-        setFeedHasMore(res.hasMore ?? (res.items?.length ?? 0) >= ENCRYPTED_POSTS_SYNC_LIMIT);
+        setFeedHasMore(res.hasMore ?? (res.items?.length ?? 0) >= ENCRYPTED_POSTS_PAGE_SIZE);
       } finally {
         setFeedLoadingMore(false);
       }
     })();
   }, [feedLoadingMore, feedHasMore, feedPosts, getBackendSession, backendUidToFriendId]);
+
+  const onFeedEndReached = useCallback(() => {
+    if (feedDisplayLimit < feedPosts.length) {
+      setFeedDisplayLimit((cur) =>
+        Math.min(cur + FEED_UI_DISPLAY_PAGE_SIZE, feedPosts.length)
+      );
+      return;
+    }
+    loadMoreFeedPosts();
+  }, [feedDisplayLimit, feedPosts.length, loadMoreFeedPosts]);
 
   const myProfilePosts = useMemo(
     () => sortedVisiblePosts.filter((post) => post.authorId === CURRENT_USER_ID),
@@ -1743,7 +2616,14 @@ function MainAppInner() {
   );
 
   const myProfileMediaPosts = useMemo(
-    () => myProfilePosts.filter((post) => (post.imageUris?.length ?? 0) > 0),
+    () =>
+      myProfilePosts.filter(
+        (post) =>
+          (post.imageUris?.length ?? 0) > 0 ||
+          (post.imageEncryptedMedia?.length ?? 0) > 0 ||
+          !!post.videoUri ||
+          !!post.videoEncryptedMedia
+      ),
     [myProfilePosts]
   );
 
@@ -1753,9 +2633,30 @@ function MainAppInner() {
   }, [sortedVisiblePosts, view]);
 
   const friendProfileMediaPosts = useMemo(
-    () => friendProfilePosts.filter((post) => (post.imageUris?.length ?? 0) > 0),
+    () =>
+      friendProfilePosts.filter(
+        (post) =>
+          (post.imageUris?.length ?? 0) > 0 ||
+          (post.imageEncryptedMedia?.length ?? 0) > 0 ||
+          !!post.videoUri ||
+          !!post.videoEncryptedMedia
+      ),
     [friendProfilePosts]
   );
+
+  const visibleMyProfileFeedPosts = useMemo(
+    () => myProfilePosts.slice(0, profileFeedPostLimit),
+    [myProfilePosts, profileFeedPostLimit]
+  );
+
+  const visibleFriendProfileFeedPosts = useMemo(
+    () => friendProfilePosts.slice(0, profileFeedPostLimit),
+    [friendProfilePosts, profileFeedPostLimit]
+  );
+
+  const myProfileFeedHasMore = myProfilePosts.length > visibleMyProfileFeedPosts.length;
+  const friendProfileFeedHasMore =
+    friendProfilePosts.length > visibleFriendProfileFeedPosts.length;
 
   const postGridLayout = useMemo(() => {
     const cols = 3;
@@ -1786,15 +2687,36 @@ function MainAppInner() {
     });
   }, [messages, chats, friendMap, friendIdToBackendUid, getBackendSession]);
 
+  const visibleThreadMessagesByChatId = useMemo(() => {
+    const session = getBackendSession();
+    return buildVisibleThreadMessagesByChatId({
+      chats,
+      messages,
+      sessionAppUid: session?.uid ?? null,
+      friendMap,
+      friendIdToBackendUid,
+      currentUserId: CURRENT_USER_ID,
+      currentUserLocalId: CURRENT_USER_LOCAL_ID,
+    });
+  }, [messages, chats, friendMap, friendIdToBackendUid, getBackendSession]);
+
   const sortedChats = useMemo(() => {
     const hidden = new Set(hiddenChatIds);
     const mine = chats.filter((c) => c.memberIds.includes(CURRENT_USER_ID) && !hidden.has(c.id));
     return [...mine].sort((a, b) => {
-      const aTs = lastMessageByChatId[a.id]?.createdAt ?? a.updatedAt;
-      const bTs = lastMessageByChatId[b.id]?.createdAt ?? b.updatedAt;
+      const aTs = chatListSortTimestampMs(
+        a,
+        lastMessageByChatId[a.id],
+        visibleThreadMessagesByChatId[a.id] ?? []
+      );
+      const bTs = chatListSortTimestampMs(
+        b,
+        lastMessageByChatId[b.id],
+        visibleThreadMessagesByChatId[b.id] ?? []
+      );
       return bTs - aTs;
     });
-  }, [chats, lastMessageByChatId, hiddenChatIds]);
+  }, [chats, lastMessageByChatId, visibleThreadMessagesByChatId, hiddenChatIds]);
 
   /**
    * Chat list visibility rule (see `Planning/MASTER_PRODUCT_PLAN.md`,
@@ -1810,30 +2732,132 @@ function MainAppInner() {
    * 3. Chats with an unfriended counterpart stay visible when they already have
    *    message history (tombstone-with-history); empty ex-friend threads stay hidden.
    */
-  const visibleSortedChats = useMemo(() => {
-    return sortedChats.filter((c) => {
-      const ownedByMe = (c.createdBy ?? CURRENT_USER_ID) === CURRENT_USER_ID;
-      if (c.isDraft && c.visibleToRecipients !== true && !ownedByMe) return false;
+  const visibleSortedChats = useMemo(
+    () => filterChatsVisibleInInbox(sortedChats, lastMessageByChatId, unfriendedIds, CURRENT_USER_ID),
+    [sortedChats, lastMessageByChatId, unfriendedIds]
+  );
 
-      const hasVisibleMessages = lastMessageByChatId[c.id] !== undefined;
-      if (!hasVisibleMessages) {
-        const hasSavedDraftText = (c.draftComposerText ?? "").trim().length > 0;
-        if (!c.isDraft || !ownedByMe || !hasSavedDraftText) return false;
-        const others = c.memberIds.filter((id) => id !== CURRENT_USER_ID);
-        if (others.some((id) => unfriendedIds.includes(id))) return false;
-      }
-
-      return true;
+  useEffect(() => {
+    if (!initialServerSyncDone || DEMO_OFFLINE_MODE || !signedIn) return;
+    const session = getBackendSession();
+    const openChatLocalId =
+      view.screen === "chat" && "chatId" in view ? view.chatId : null;
+    const retained = retainedMessageChatIds({
+      chats,
+      messages,
+      sessionAppUid: session?.uid ?? null,
+      friendMap,
+      friendIdToBackendUid,
+      currentUserId: CURRENT_USER_ID,
+      currentUserLocalId: CURRENT_USER_LOCAL_ID,
+      unfriendedIds,
+      openChatLocalId,
     });
-  }, [sortedChats, lastMessageByChatId, unfriendedIds]);
+    setMessages((current) => {
+      const trimmed = trimInMemoryMessages(current, retained, CHAT_INITIAL_MESSAGE_LIMIT);
+      const curSig = current
+        .map((m) => m.id)
+        .sort()
+        .join("\n");
+      const triSig = trimmed
+        .map((m) => m.id)
+        .sort()
+        .join("\n");
+      return curSig === triSig ? current : trimmed;
+    });
+  }, [
+    initialServerSyncDone,
+    signedIn,
+    chats,
+    messages.length,
+    visibleSortedChats,
+    unfriendedIds,
+    view,
+    friendMap,
+    friendIdToBackendUid,
+    getBackendSession,
+  ]);
+
+  /**
+   * Number of chats with unread incoming messages — drives the red badge on the
+   * chat nav icon. A chat is unread when its latest visible message is from
+   * someone else and arrived after my read watermark (`readBy[myUid]`). The
+   * currently-open chat and muted chats never count.
+   */
+  const unreadChatIdSet = useMemo(() => {
+    if (!backendSessionReady) return new Set<string>();
+    const session = getBackendSession();
+    const myUid = session?.uid ?? null;
+    if (!myUid) return new Set<string>();
+    const openChatId = view.screen === "chat" && "chatId" in view ? view.chatId : null;
+    const unread = new Set<string>();
+    for (const chat of visibleSortedChats) {
+      if (chat.mutedForNotifications) continue;
+      if (chat.id === openChatId) continue;
+      const last = lastMessageByChatId[chat.id];
+      if (
+        isIncomingChatUnread({
+          chat,
+          lastMessage: last,
+          myUid,
+          currentUserId: CURRENT_USER_ID,
+          currentUserLocalId: CURRENT_USER_LOCAL_ID,
+        })
+      ) {
+        unread.add(chat.id);
+      }
+    }
+    return unread;
+  }, [visibleSortedChats, lastMessageByChatId, view, getBackendSession, backendSessionReady]);
+
+  const unreadChatCount = unreadChatIdSet.size;
+
+  const onHomeFeedTab = view.screen === "home" && homeTab === "feed";
+
+  const unreadFeedReactionCount = useMemo(() => {
+    if (onHomeFeedTab) return 0;
+    const session = getBackendSession();
+    return countUnreadFeedReactionPosts(
+      posts,
+      CURRENT_USER_ID,
+      session?.uid ?? null,
+      seenFeedReactionSigByPostId
+    );
+  }, [onHomeFeedTab, posts, seenFeedReactionSigByPostId, getBackendSession]);
+
+  const homeNavBadges = useMemo(
+    () => ({ chats: unreadChatCount, feed: unreadFeedReactionCount }),
+    [unreadChatCount, unreadFeedReactionCount]
+  );
+
+  useEffect(() => {
+    if (!onHomeFeedTab) return;
+    const session = getBackendSession();
+    setSeenFeedReactionSigByPostId((current) =>
+      markOwnedPostReactionsSeen(posts, CURRENT_USER_ID, session?.uid ?? null, current)
+    );
+  }, [onHomeFeedTab, posts, getBackendSession]);
 
   const pendingDraft =
     view.screen === "chat" && "pendingDraft" in view ? view.pendingDraft : null;
 
   const resolvedChat = useMemo(() => {
     if (view.screen !== "chat" || !("chatId" in view)) return null;
-    return chats.find((c) => c.id === view.chatId) ?? null;
-  }, [chats, view]);
+    const byViewId = chats.find((c) => c.id === view.chatId);
+    if (byViewId) return byViewId;
+    const session = getBackendSession();
+    if (session && !DEMO_OFFLINE_MODE) {
+      const threadIds = localChatIdsForDirectThread(
+        view.chatId,
+        chats,
+        session.uid,
+        friendMap,
+        friendIdToBackendUid
+      );
+      return chats.find((c) => threadIds.has(c.id)) ?? null;
+    }
+    return null;
+  }, [chats, view, friendMap, friendIdToBackendUid, getBackendSession]);
 
   const messageById = useMemo(
     () =>
@@ -1862,9 +2886,10 @@ function MainAppInner() {
       return pendingDraft?.name ?? resolvedChat?.name ?? "Chat";
     }
     if (activeCounterpartIds.length === 1) {
-      if (activeChatIdentityLocked) return "User";
-      const counterpartId = activeCounterpartIds[0];
+      if (activeChatIdentityLocked) return TOMBSTONE_DISPLAY_NAME;
+      const counterpartId = resolveChatMemberFriendId(activeCounterpartIds[0]);
       const pd = resolvePd(counterpartId, activeChatId);
+      if (!pd.canOpenProfile) return TOMBSTONE_DISPLAY_NAME;
       return pd.displayName;
     }
     if (activeCounterpartIds.length > 1) {
@@ -1890,6 +2915,8 @@ function MainAppInner() {
     identityLockedChatIds,
     serverFriendUidsForDisplay,
     resolvePd,
+    resolveChatMemberFriendId,
+    unfriendedIds,
   ]);
   /** Direct DM: ex-friend, unknown participant, or identity-locked history after refriend. */
   const isDirectTombstoneChat =
@@ -1919,6 +2946,16 @@ function MainAppInner() {
 
   const messageActionTarget = messageActionTargetId ? messageById[messageActionTargetId] : undefined;
   const replyTargetMessage = replyTargetMessageId ? messageById[replyTargetMessageId] : undefined;
+  const isActiveBroadcastCreator =
+    activeChatKind === "broadcast" &&
+    !!resolvedChat &&
+    isBroadcastCreator(resolvedChat, CURRENT_USER_ID);
+  const isActiveBroadcastRecipient =
+    activeChatKind === "broadcast" &&
+    !!resolvedChat &&
+    !isBroadcastCreator(resolvedChat, CURRENT_USER_ID);
+  const broadcastRecipientComposerLocked =
+    isActiveBroadcastRecipient && !replyTargetMessage;
   const editingMessage = editingMessageId ? messageById[editingMessageId] : undefined;
   const selectedBroadcastGroup = selectedBroadcastGroupId
     ? savedBroadcastGroups.find((group) => group.id === selectedBroadcastGroupId)
@@ -1971,10 +3008,38 @@ function MainAppInner() {
     [activeChatMessages]
   );
 
+  /** Only mount a window of rows even when more messages are already in memory. */
+  const invertedChatMessagesForList = useMemo(
+    () => invertedChatMessages.slice(0, chatListDisplayLimit),
+    [invertedChatMessages, chatListDisplayLimit]
+  );
+
+  const chatListCanExpandLocally = invertedChatMessages.length > chatListDisplayLimit;
+
+  /** FlatList extraData — avoid passing the global `messages` array (re-renders every row on any chat update). */
+  const activeChatListRenderKey = useMemo(() => {
+    const last = activeChatMessages[activeChatMessages.length - 1];
+    return `${activeChatMessages.length}:${last?.id ?? ""}:${last?.deliveryStatus ?? ""}:${last?.createdAt ?? 0}`;
+  }, [activeChatMessages]);
+
   const activeChatForRead = useMemo(() => {
-    if (view.screen !== "chat" || !("chatId" in view)) return null;
-    return chats.find((c) => c.id === view.chatId) ?? null;
-  }, [chats, view]);
+    const onChatThread = view.screen === "chat" || view.screen === "chatSharedMedia";
+    if (!onChatThread || !("chatId" in view)) return null;
+    const byViewId = chats.find((c) => c.id === view.chatId);
+    if (byViewId) return byViewId;
+    const session = getBackendSession();
+    if (session && !DEMO_OFFLINE_MODE) {
+      const threadIds = localChatIdsForDirectThread(
+        view.chatId,
+        chats,
+        session.uid,
+        friendMap,
+        friendIdToBackendUid
+      );
+      return chats.find((c) => threadIds.has(c.id)) ?? null;
+    }
+    return null;
+  }, [chats, view, friendMap, friendIdToBackendUid, getBackendSession]);
 
   const readAvatarsForActiveChat = useMemo(() => {
     const readByBackend = activeChatForRead?.readBy as ReadByMap | undefined;
@@ -2018,7 +3083,7 @@ function MainAppInner() {
         deviceId: session.deviceId,
         conversationId: resolveConversationId(chatId),
         beforeMs: oldest?.createdAt,
-        limit: 50,
+        limit: CHAT_OLDER_MESSAGES_PAGE_SIZE,
       });
       const chatRow = chats.find((c) => c.id === chatId) ?? null;
       const cutoff = joinCutoffForViewer(chatRow);
@@ -2048,6 +3113,11 @@ function MainAppInner() {
             createdAt: number;
             kind?: Message["kind"];
             mediaUri?: string | null;
+            mediaTier?: number | null;
+            mediaObjectPath?: string | null;
+            mediaKeyB64?: string | null;
+            mediaNonceB64?: string | null;
+            mediaContentType?: string | null;
             durationSec?: number | null;
             replyToMessageId?: string | null;
             broadcastThreadFriendId?: string | null;
@@ -2073,6 +3143,7 @@ function MainAppInner() {
             plainLocalChatId: plain.chatId,
           });
           if ("drop" in postTarget) continue;
+          const parsedMedia = parseMessageMediaFromPlain(plain);
           const messageChatId = postTarget.resolvedLocalChatId;
           const baseRow: Message = {
             id: item.messageId,
@@ -2084,7 +3155,8 @@ function MainAppInner() {
             text: plain.text ?? "",
             createdAt,
             kind: plain.kind,
-            mediaUri: plain.mediaUri ?? undefined,
+            mediaUri: parsedMedia.mediaUri,
+            mediaEncrypted: parsedMedia.mediaEncrypted,
             durationSec:
               typeof plain.durationSec === "number" && Number.isFinite(plain.durationSec)
                 ? Math.max(0, Math.round(plain.durationSec))
@@ -2108,6 +3180,7 @@ function MainAppInner() {
       }
       if (decoded.length > 0) {
         setMessages((current) => mergeSyncedMessages(current, decoded, { incremental: true, optimisticWindowMs: 120_000 }));
+        setChatListDisplayLimit((current) => current + decoded.length);
       }
       setChatHasMoreOlder((current) => ({ ...current, [chatId]: Boolean(res.hasMore) }));
     } finally {
@@ -2125,12 +3198,34 @@ function MainAppInner() {
   ]);
 
   useEffect(() => {
+    if (view.screen !== "chat" || !("chatId" in view)) return;
+    setChatListDisplayLimit(CHAT_UI_INITIAL_DISPLAY_COUNT);
+  }, [view]);
+
+  useEffect(() => {
+    if (view.screen !== "myProfile" && view.screen !== "friendProfile") return;
+    setProfileFeedPostLimit(PROFILE_FEED_POSTS_INITIAL);
+  }, [view]);
+
+  const handleChatListEndReached = useCallback(() => {
+    if (invertedChatMessages.length > chatListDisplayLimit) {
+      setChatListDisplayLimit((current) => current + CHAT_UI_DISPLAY_PAGE_SIZE);
+      return;
+    }
+    void loadOlderChatMessages();
+  }, [invertedChatMessages.length, chatListDisplayLimit, loadOlderChatMessages]);
+
+  const loadMoreProfileFeedPosts = useCallback(() => {
+    setProfileFeedPostLimit((current) => current + PROFILE_FEED_POSTS_PAGE_SIZE);
+  }, []);
+
+  useEffect(() => {
     if (view.screen !== "chat" || !("chatId" in view) || DEMO_OFFLINE_MODE) return;
-    const chatId = view.chatId;
+    const chatRowId = activeChatForRead?.id ?? view.chatId;
     const session = getBackendSession();
     if (!session) return;
     const db = getFirestoreDb();
-    const conversationDocId = resolveConversationId(chatId);
+    const conversationDocId = resolveConversationId(chatRowId);
     const unsub = onSnapshot(firestoreDoc(db, "conversations", conversationDocId), (snap) => {
       if (!snap.exists()) return;
       const data = snap.data() as {
@@ -2143,10 +3238,10 @@ function MainAppInner() {
       const serverMuted = Boolean(data.mutedBy?.[session.uid]);
       setChats((current) =>
         current.map((c) =>
-          c.id === chatId
+          c.id === chatRowId
             ? {
                 ...c,
-                readBy: data.readBy ?? c.readBy,
+                readBy: mergeReadByMaps(c.readBy, data.readBy),
                 memberJoinedAt:
                   normalizeMemberJoinedAtForClient(
                     data.memberJoinedAt,
@@ -2162,37 +3257,83 @@ function MainAppInner() {
       );
     });
     return () => unsub();
-  }, [view, getBackendSession, resolveConversationId, friendIdToBackendUid]);
+  }, [view, activeChatForRead?.id, getBackendSession, resolveConversationId, friendIdToBackendUid]);
 
   const activeChatLatestMessage = activeChatMessages[activeChatMessages.length - 1] ?? null;
+  const activeChatReadTargetRef = useRef<{ chatId: string; message: Message } | null>(null);
+
+  useEffect(() => {
+    if (view.screen !== "chat" || !activeChatLatestMessage || !("chatId" in view)) return;
+    activeChatReadTargetRef.current = {
+      chatId: activeChatForRead?.id ?? view.chatId,
+      message: activeChatLatestMessage,
+    };
+  }, [view, activeChatForRead?.id, activeChatLatestMessage?.id, activeChatLatestMessage?.createdAt]);
 
   const activeChatSharedMedia = useMemo(
     () =>
       activeChatMessages.filter(
         (m) =>
-          m.mediaUri &&
+          messageHasResolvableMedia(m) &&
           !m.unsentAt &&
           (m.kind === "photo" || m.kind === "gif" || m.kind === "video")
       ),
     [activeChatMessages]
   );
+  const pushChatReadPositionToServer = useCallback(
+    (chatRowId: string, readMessage: Message) => {
+      if (DEMO_OFFLINE_MODE) return;
+      const session = getBackendSession();
+      if (!session) return;
+      void callEmulatorFunction("updateConversationReadPosition", {
+        uid: session.uid,
+        deviceId: session.deviceId,
+        conversationId: resolveConversationId(chatRowId),
+        lastReadAtMs: readMessage.createdAt,
+        lastReadMessageId: readMessage.id,
+      }).catch((err) => {
+        logAppError("chat.read_position.update", err, { chatId: chatRowId });
+      });
+    },
+    [DEMO_OFFLINE_MODE, getBackendSession, resolveConversationId]
+  );
+
   useEffect(() => {
     if (view.screen !== "chat" || !activeChatLatestMessage || DEMO_OFFLINE_MODE) return;
-    const session = getBackendSession();
-    if (!session || !("chatId" in view)) return;
-    const conversationId = resolveConversationId(view.chatId);
-    void callEmulatorFunction("updateConversationReadPosition", {
-      uid: session.uid,
-      deviceId: session.deviceId,
-      conversationId,
-      lastReadAtMs: activeChatLatestMessage.createdAt,
-      lastReadMessageId: activeChatLatestMessage.id,
-    }).catch((err) => {
-      logAppError("chat.read_position.update", err, {
-        chatId: view.screen === "chat" && "chatId" in view ? view.chatId : "",
-      });
+    if (!("chatId" in view)) return;
+    if (
+      activeChatLatestMessage.senderId === CURRENT_USER_ID &&
+      activeChatLatestMessage.deliveryStatus === "sending"
+    ) {
+      return;
+    }
+    const chatRowId = activeChatForRead?.id ?? view.chatId;
+    const message = activeChatLatestMessage;
+    const task = InteractionManager.runAfterInteractions(() => {
+      pushChatReadPositionToServer(chatRowId, message);
     });
-  }, [view, activeChatLatestMessage?.id, activeChatLatestMessage?.createdAt, getBackendSession, resolveConversationId]);
+    return () => task.cancel();
+  }, [
+    view,
+    activeChatForRead?.id,
+    activeChatLatestMessage?.id,
+    activeChatLatestMessage?.createdAt,
+    activeChatLatestMessage?.senderId,
+    activeChatLatestMessage?.deliveryStatus,
+    pushChatReadPositionToServer,
+  ]);
+
+  const prevViewRef = useRef(view);
+  useEffect(() => {
+    const prev = prevViewRef.current;
+    prevViewRef.current = view;
+    if (prev.screen !== "chat" || !("chatId" in prev)) return;
+    if (view.screen === "chat" && "chatId" in view && view.chatId === prev.chatId) return;
+    const stored = activeChatReadTargetRef.current;
+    if (stored) {
+      pushChatReadPositionToServer(stored.chatId, stored.message);
+    }
+  }, [view, pushChatReadPositionToServer]);
 
   /**
    * Start Chat modal: selected members are pinned to the top (always visible).
@@ -2300,19 +3441,24 @@ function MainAppInner() {
     hiddenServerConversationIdsRef.current = new Set();
     setMessages([]);
     setPosts([]);
+    deletedPostIdsRef.current = new Set();
     setUnfriendedIds(allSeedIds);
     setFriendLinksState(cloneFriendLinks(FRIEND_LINKS));
     setAddedFriendsFromRitual([]);
-    setFeedMutedUntilByFriendId({});
     setMyBio("");
     setMyBioTextEntryOpen(true);
     setMyProfilePictureUrl(null);
-    void AsyncStorage.removeItem(POSTS_STORAGE_KEY);
+    myDisplayNameRef.current = "";
+    void storageRemoveItem(POSTS_STORAGE_KEY);
+    void clearEncryptedMediaCaches();
   }, []);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
     resetLocalSocialStateForSignedOut();
+    setFeedMutedUntilByFriendId({});
+    setSeenFeedReactionSigByPostId({});
+    postsSharedWithFriendsRef.current = new Set();
     setView({ screen: "home" });
     setHomeTab("feed");
     if (email) {
@@ -2325,7 +3471,11 @@ function MainAppInner() {
     const uid = backendUidForEmail(account.email);
     const deviceId = await getOrCreateBackendDeviceId();
     const persistedUsername =
-      (await AsyncStorage.getItem(profileUsernameStorageKey(account.email)))?.trim() ?? "";
+      (await storageGetItem(profileUsernameStorageKey(account.email)))?.trim() ?? "";
+    const persistedBio =
+      (await storageGetItem(profileBioStorageKey(account.email)))?.trim() ?? "";
+    const persistedProfilePic =
+      (await storageGetItem(profilePictureStorageKey(account.email)))?.trim() ?? "";
     const claimUsername = resolveProfileUsername({
       email: account.email,
       persistedUsername,
@@ -2353,152 +3503,165 @@ function MainAppInner() {
     }
     const ownBundle = await ensureLocalKeyBundle(uid);
 
-    const cloudSnapshot = await restoreSocialSnapshotFromCloud(uid, deviceId);
-    if (cloudSnapshot) {
-      setChats(cloudSnapshot.chats);
-      setMessages(cloudSnapshot.messages);
-      setPosts(cloudSnapshot.posts);
-      messagesWatermarkMsRef.current = cloudSnapshot.messagesWatermarkMs;
-      postsWatermarkMsRef.current = cloudSnapshot.postsWatermarkMs;
-      messagesLastFullSyncAtRef.current = Date.now();
-      postsLastFullSyncAtRef.current = Date.now();
-    }
-
-    // Register this device's Firebase Auth UID against the app uid so the
-    // backend can mirror it into `participantAuthUids` on every encrypted
-    // message and conversation doc. Without this, the client-side
-    // `onSnapshot` listener (push delivery) would never see new messages
-    // because Firestore rules can only authorize on the real auth UID.
-    // Soft-fails: if the registry write doesn't land, we still fall back to
-    // the boot-time `listEncryptedMessages` callable pull.
-    const firebaseAuthUid = firebaseAuth.currentUser?.uid;
-    if (firebaseAuthUid) {
-      let authRegistryOk = false;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          await callEmulatorFunction("registerFirebaseAuthUid", {
-            uid,
-            deviceId,
-            firebaseAuthUid,
-          });
-          // registerFirebaseAuthUid also refreshes presence server-side; publish again for redundancy.
-          await publishActivePresence({ uid, deviceId }, Date.now());
-          authRegistryOk = true;
-          break;
-        } catch (err) {
-          if (attempt >= 2) {
-            logAppError("auth.register_firebase_uid", err, { uid, attempt });
-          } else {
-            await new Promise<void>((r) => setTimeout(r, 400 * (attempt + 1)));
-          }
-        }
-      }
-      if (!authRegistryOk) {
-        void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
-      }
-    }
-
-    let resolvedBio = (account.bio || "").trim();
-    let resolvedPicture: string | null = account.profilePictureUrl ?? null;
-    let self: { username?: string; bio?: string; profilePictureUrl?: string | null } | null | undefined =
-      null;
-    try {
-      try {
-        const profilesRes = await callEmulatorFunction<{
-          profiles?: Record<string, { username?: string; bio?: string; profilePictureUrl?: string | null } | null>;
-        }>("getUserProfiles", {
-          uid,
-          deviceId,
-          targetUids: [uid],
-        });
-        self = profilesRes.profiles?.[uid] ?? null;
-      } catch {
-        /* no server profile yet — first device claim */
-      }
-      if (self) {
-        const sb = (self.bio ?? "").trim();
-        if (sb) resolvedBio = sb;
-        if (typeof self.profilePictureUrl === "string" && self.profilePictureUrl.trim()) {
-          resolvedPicture = self.profilePictureUrl.trim();
-        }
-      }
-    } catch {
-      // Keep account defaults — server may lag or profile may not exist yet.
-    }
-    const resolvedUsername = resolveProfileUsername({
-      email: account.email,
-      persistedUsername,
-      accountUsername: account.username,
-      serverUsername: self?.username,
-    });
-    if (!isPlaceholderProfileUsername(resolvedUsername, account.email)) {
-      void AsyncStorage.setItem(profileUsernameStorageKey(account.email), resolvedUsername).catch(
-        () => {}
-      );
-    }
-
-    await callEmulatorFunction("publishUserKeyBundle", {
-      uid,
-      deviceId,
-      keyVersion: ownBundle.keyVersion,
-      encryptionPublicKey: ownBundle.encryptionPublicKey,
-      identitySigningPublicKey: ownBundle.identitySigningPublicKey,
-    });
-    void uploadKeyBundleToCloudBackup(uid, deviceId).catch(() => undefined);
-    if (cloudSnapshot) {
-      void uploadSocialSnapshotToCloud(uid, deviceId, {
-        chats: cloudSnapshot.chats,
-        messages: cloudSnapshot.messages,
-        posts: cloudSnapshot.posts,
-        messagesWatermarkMs: cloudSnapshot.messagesWatermarkMs,
-        postsWatermarkMs: cloudSnapshot.postsWatermarkMs,
-      }).catch(() => undefined);
-    }
-    const usernameForUpsert = usernameForProfileUpsert({
-      email: account.email,
-      persistedUsername,
-      accountUsername: account.username,
-      serverUsername: self?.username,
-    });
-    await callEmulatorFunction("upsertUserProfile", {
-      uid,
-      deviceId,
-      ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
-      bio: resolvedBio,
-      profilePictureUrl: resolvedPicture,
-      phoneNumber: account.phoneNumber,
-    });
-    const safeProfilePic = normalizeHttpsProfilePictureUrl(resolvedPicture);
-    setMyProfilePictureUrl(safeProfilePic);
-    if (safeProfilePic) {
-      void AsyncStorage.setItem(profilePictureStorageKey(account.email), safeProfilePic).catch(() => {});
-    }
-
     backendAuthUidRef.current = uid;
     backendDeviceIdRef.current = deviceId;
     setTelemetryContext({ uid, deviceId });
-    /**
-     * Merge into the recipient key cache rather than replacing it: any friend
-     * public keys hydrated from `readFriendKeyBundleCache` in
-     * `applySignedInAccount` must survive this session-init step so the first
-     * outbound message after cold start doesn't pay an extra
-     * `getFriendKeyBundles` round-trip.
-     */
     recipientKeyCacheRef.current = {
       ...recipientKeyCacheRef.current,
       [uid]: ownBundle.encryptionPublicKey,
     };
     setBackendSessionReady(true);
-    /**
-     * Watermarks (`messagesWatermarkMsRef`, `postsWatermarkMsRef`, …) are now
-     * seeded from AsyncStorage in `applySignedInAccount` *before* this function
-     * runs, so the first `listEncryptedMessages` / `listEncryptedPosts` call
-     * can do an incremental `sinceMs` pull instead of replaying the full
-     * backlog. We deliberately do NOT zero them here — they are reset only on
-     * explicit sign-out / session-replaced (see `logout` / `logoutFromSessionReplaced`).
-     */
     setEncryptedSyncState({ profile: "syncing", posts: "syncing", messages: "syncing", lastSuccessAt: null });
-    await refreshHiddenConversationIdsFromServer();
+
+    void (async () => {
+      try {
+        const cloudSnapshot = await restoreSocialSnapshotFromCloud(uid, deviceId);
+        if (cloudSnapshot) {
+          const cloudPostsVisible = cloudSnapshot.posts.filter(
+            (p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)
+          );
+          setChats((current) => mergeCloudChatsWithLocalReadBy(current, cloudSnapshot.chats));
+          await yieldToUi();
+          setMessages((current) =>
+            mergeSyncedMessages(current, cloudSnapshot.messages, {
+              incremental: true,
+              optimisticWindowMs: 120_000,
+            })
+          );
+          await yieldToUi();
+          setPosts((current) =>
+            mergeSyncedPosts(current, cloudPostsVisible, {
+              incremental: true,
+              optimisticWindowMs: 120_000,
+              suppressedPostIds: deletedPostIdsRef.current,
+            })
+          );
+          messagesWatermarkMsRef.current = cloudSnapshot.messagesWatermarkMs;
+          postsWatermarkMsRef.current = cloudSnapshot.postsWatermarkMs;
+          messagesLastFullSyncAtRef.current = Date.now();
+          // Force the boot posts pull to replace the catalog against Firestore
+          // (cloud snapshot may still contain posts already deleted on server).
+          postsLastFullSyncAtRef.current = 0;
+        }
+
+        const firebaseAuthUid = firebaseAuth.currentUser?.uid;
+        if (firebaseAuthUid) {
+          let authRegistryOk = false;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              await callEmulatorFunction("registerFirebaseAuthUid", {
+                uid,
+                deviceId,
+                firebaseAuthUid,
+              });
+              await publishActivePresence({ uid, deviceId }, Date.now());
+              authRegistryOk = true;
+              break;
+            } catch (err) {
+              if (attempt >= 2) {
+                logAppError("auth.register_firebase_uid", err, { uid, attempt });
+              } else {
+                await new Promise<void>((r) => setTimeout(r, 400 * (attempt + 1)));
+              }
+            }
+          }
+          if (!authRegistryOk) {
+            void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
+          }
+        }
+
+        let resolvedBio = (account.bio || "").trim() || persistedBio;
+        let resolvedPicture = mergeProfilePictureUrl(
+          persistedProfilePic,
+          account.profilePictureUrl
+        );
+        let self:
+          | { username?: string; bio?: string; profilePictureUrl?: string | null }
+          | null
+          | undefined = null;
+        try {
+          try {
+            const profilesRes = await callEmulatorFunction<{
+              profiles?: Record<
+                string,
+                { username?: string; bio?: string; profilePictureUrl?: string | null } | null
+              >;
+            }>("getUserProfiles", {
+              uid,
+              deviceId,
+              targetUids: [uid],
+            });
+            self = profilesRes.profiles?.[uid] ?? null;
+          } catch {
+            /* no server profile yet — first device claim */
+          }
+          if (self) {
+            const sb = (self.bio ?? "").trim();
+            if (sb) resolvedBio = sb;
+            if (typeof self.profilePictureUrl === "string" && self.profilePictureUrl.trim()) {
+              resolvedPicture = mergeProfilePictureUrl(self.profilePictureUrl, resolvedPicture);
+            }
+          }
+        } catch {
+          /* keep account defaults */
+        }
+        const resolvedUsername = resolveProfileUsername({
+          email: account.email,
+          persistedUsername,
+          accountUsername: account.username,
+          serverUsername: self?.username,
+        });
+        if (!isPlaceholderProfileUsername(resolvedUsername, account.email)) {
+          void storageSetItem(profileUsernameStorageKey(account.email), resolvedUsername).catch(
+            () => {}
+          );
+          myDisplayNameRef.current = resolvedUsername;
+        }
+
+        await callEmulatorFunction("publishUserKeyBundle", {
+          uid,
+          deviceId,
+          keyVersion: ownBundle.keyVersion,
+          encryptionPublicKey: ownBundle.encryptionPublicKey,
+          identitySigningPublicKey: ownBundle.identitySigningPublicKey,
+        });
+        void uploadKeyBundleToCloudBackup(uid, deviceId).catch(() => undefined);
+        const usernameForUpsert = usernameForProfileUpsert({
+          email: account.email,
+          persistedUsername,
+          accountUsername: account.username,
+          serverUsername: self?.username,
+        });
+        await callEmulatorFunction("upsertUserProfile", {
+          uid,
+          deviceId,
+          ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
+          bio: resolvedBio,
+          ...(resolvedPicture ? { profilePictureUrl: resolvedPicture } : {}),
+          phoneNumber: account.phoneNumber,
+        });
+        const safeProfilePic = normalizeHttpsProfilePictureUrl(resolvedPicture);
+        setMyProfilePictureUrl(safeProfilePic);
+        setMyBio(resolvedBio);
+        setMyBioTextEntryOpen(!resolvedBio.trim());
+        if (safeProfilePic) {
+          void storageSetItem(profilePictureStorageKey(account.email), safeProfilePic).catch(
+            () => {}
+          );
+        }
+        void storageSetItem(profileBioStorageKey(account.email), resolvedBio).catch(() => {});
+
+        await refreshHiddenConversationIdsFromServer();
+        setEncryptedSyncState((current) => ({
+          ...current,
+          profile: "ok",
+          lastSuccessAt: Date.now(),
+        }));
+      } catch (err) {
+        logAppError("session.background_init", err, { uid });
+        setEncryptedSyncState((current) => ({ ...current, profile: "error" }));
+      }
+    })();
   }, [refreshHiddenConversationIdsFromServer]);
 
   const retryInitializeBackendForAccount = useCallback(
@@ -2544,14 +3707,22 @@ function MainAppInner() {
             : [];
       let restoredRitualFriends: Friend[] = [];
       let nextIdentityLockedChatIds: string[] = [];
+      let nextFeedMutes: Record<string, number | null> = {};
       try {
-        const [rawPosts, rawSocial, persistedWatermarks, persistedFriendKeys] =
+        const [rawPosts, rawSocial, persistedWatermarks, persistedFriendKeys, persistedFeedMutes, persistedPostsShared, persistedFeedReactionSeen] =
           await Promise.all([
-            AsyncStorage.getItem(postsStorageKeyForEmail(emailKey)),
-            AsyncStorage.getItem(socialMessagingStorageKeyForEmail(emailKey)),
+            storageGetItem(postsStorageKeyForEmail(emailKey)),
+            storageGetItem(socialMessagingStorageKeyForEmail(emailKey)),
             readSyncWatermarks(emailKey),
             readFriendKeyBundleCache(emailKey),
+            readFeedMutesForEmail(emailKey),
+            readPostsSharedWithFriends(emailKey),
+            readFeedReactionSeenForEmail(emailKey),
           ]);
+        nextFeedMutes = persistedFeedMutes;
+        setSeenFeedReactionSigByPostId(persistedFeedReactionSeen);
+        postsSharedWithFriendsRef.current = persistedPostsShared;
+        sharePostsBackfillStartedRef.current = new Set();
 
         /**
          * Seed the in-memory sync refs from disk so the boot-time
@@ -2563,6 +3734,7 @@ function MainAppInner() {
         messagesLastFullSyncAtRef.current = persistedWatermarks.messagesLastFullSyncAt;
         postsWatermarkMsRef.current = persistedWatermarks.postsWatermarkMs;
         postsLastFullSyncAtRef.current = persistedWatermarks.postsLastFullSyncAt;
+        deletedPostIdsRef.current = new Set(persistedWatermarks.deletedPostIds ?? []);
         /**
          * Seed the friend public-key cache from disk so the first outbound
          * message after a cold start doesn't need a `getFriendKeyBundles`
@@ -2583,7 +3755,7 @@ function MainAppInner() {
               nextChats = parsedSocial.chats as Chat[];
             }
             if (Array.isArray(parsedSocial.messages)) {
-              nextMessages = parsedSocial.messages as Message[];
+              nextMessages = normalizeMessagesForUi(parsedSocial.messages as Message[]);
             }
             // Strip ghost-empty chats lurking in legacy persisted blobs so the
             // first render after sign-in doesn't surface a friend's username
@@ -2603,6 +3775,20 @@ function MainAppInner() {
             const hiddenLocal = new Set(restoredHidden);
             nextChats = nextChats.filter((c) => !hiddenLocal.has(c.id));
             nextMessages = nextMessages.filter((m) => !hiddenLocal.has(m.chatId));
+            nextMessages = trimInMemoryMessages(
+              nextMessages,
+              retainedMessageChatIds({
+                chats: nextChats,
+                messages: nextMessages,
+                sessionAppUid: null,
+                friendMap: {},
+                friendIdToBackendUid: {},
+                currentUserId: CURRENT_USER_ID,
+                currentUserLocalId: CURRENT_USER_LOCAL_ID,
+                unfriendedIds: nextUnfriendedIds,
+              }),
+              CHAT_INITIAL_MESSAGE_LIMIT
+            );
             restoredRitualFriends = sanitizePersistedFriendsFromStorage(parsedSocial.addedFriendsFromRitual);
             if (Array.isArray(parsedSocial.unfriendedIds)) {
               const persistedUnfriends = parsedSocial.unfriendedIds
@@ -2629,7 +3815,9 @@ function MainAppInner() {
           try {
             const parsedPosts = JSON.parse(rawPosts) as Post[];
             if (Array.isArray(parsedPosts)) {
-              nextPosts = parsedPosts;
+              nextPosts = parsedPosts.filter(
+                (p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)
+              );
             }
           } catch {
             /* ignore */
@@ -2656,14 +3844,16 @@ function MainAppInner() {
       });
       setAddedFriendsFromRitual(dedupeFriendsByBackendUid(ritualFriendsFiltered));
       setPresenceOnlineByBackendUid({});
-      setFeedMutedUntilByFriendId({});
-      setMyBio(account.bio);
-      setMyBioTextEntryOpen(!account.bio.trim());
-      const persistedProfilePic = await AsyncStorage.getItem(profilePictureStorageKey(emailKey)).catch(
-        () => null
-      );
+      setFeedMutedUntilByFriendId(nextFeedMutes);
+      const [persistedProfilePic, persistedBio] = await Promise.all([
+        storageGetItem(profilePictureStorageKey(emailKey)).catch(() => null),
+        storageGetItem(profileBioStorageKey(emailKey)).catch(() => null),
+      ]);
+      const initialBio = persistedBio ?? account.bio ?? "";
+      setMyBio(initialBio);
+      setMyBioTextEntryOpen(!initialBio.trim());
       setMyProfilePictureUrl(
-        normalizeHttpsProfilePictureUrl(persistedProfilePic ?? account.profilePictureUrl)
+        mergeProfilePictureUrl(persistedProfilePic, account.profilePictureUrl) || null
       );
 
       /**
@@ -2697,34 +3887,54 @@ function MainAppInner() {
         return;
       }
 
-      try {
-        await initializeBackendSessionForAccount(account);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err ?? "");
-        backendAuthUidRef.current = null;
-        backendDeviceIdRef.current = null;
-        setTelemetryContext({ uid: null, deviceId: null });
-        setBackendSessionReady(false);
-        setEncryptedSyncState({ profile: "error", posts: "error", messages: "error", lastSuccessAt: null });
-        const retry = () => void retryInitializeBackendForAccount(account);
-        const buttons = [
-          { text: "Retry", onPress: retry },
-          { text: "Logout", style: "destructive" as const, onPress: () => logoutRef.current() },
-        ];
-        if (/already active on another device|active session belongs to a different device|permission-denied/i.test(message)) {
-          Alert.alert(
-            "Session in use",
-            "This account may be active on another device. Retry here, or tap Logout to sign out on this phone.",
-            buttons
-          );
-        } else {
-          Alert.alert(
-            "Connection issue",
-            "Could not reach the server. You remain signed in on this device — use Retry when you have a signal, or Logout to use a different account.",
-            buttons
-          );
+      const initGen = ++backendInitGenerationRef.current;
+      void (async () => {
+        try {
+          await initializeBackendSessionForAccount(account);
+          if (backendInitGenerationRef.current !== initGen) return;
+        } catch (err) {
+          if (backendInitGenerationRef.current !== initGen) return;
+          const message = err instanceof Error ? err.message : String(err ?? "");
+          backendAuthUidRef.current = null;
+          backendDeviceIdRef.current = null;
+          setTelemetryContext({ uid: null, deviceId: null });
+          setBackendSessionReady(false);
+          setEncryptedSyncState({
+            profile: "error",
+            posts: "error",
+            messages: "error",
+            lastSuccessAt: null,
+          });
+          const retry = () => void retryInitializeBackendForAccount(account);
+          const buttons = [
+            { text: "Retry", onPress: retry },
+            { text: "Logout", style: "destructive" as const, onPress: () => logoutRef.current() },
+          ];
+          if (/already exists for this email|already-exists/i.test(message)) {
+            Alert.alert(
+              "Account already exists",
+              "An account already exists for this email address. Please sign in instead of creating a new account.",
+              [{ text: "OK", style: "destructive" as const, onPress: () => logoutRef.current() }]
+            );
+          } else if (
+            /already active on another device|active session belongs to a different device|permission-denied/i.test(
+              message
+            )
+          ) {
+            Alert.alert(
+              "Session in use",
+              "This account may be active on another device. Retry here, or tap Logout to sign out on this phone.",
+              buttons
+            );
+          } else {
+            Alert.alert(
+              "Connection issue",
+              "Could not reach the server. You remain signed in on this device — use Retry when you have a signal, or Logout to use a different account.",
+              buttons
+            );
+          }
         }
-      }
+      })();
     },
     [initializeBackendSessionForAccount, retryInitializeBackendForAccount]
   );
@@ -2742,10 +3952,10 @@ function MainAppInner() {
         if (signedInRef.current) {
           const navEmail = sessionEmailRef.current;
           if (navEmail) {
-            void AsyncStorage.removeItem(lastViewStorageKey(navEmail)).catch(() => {
+            void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
               /* ignore */
             });
-            void AsyncStorage.removeItem(lastHomeTabStorageKey(navEmail)).catch(() => {
+            void storageRemoveItem(lastHomeTabStorageKey(navEmail)).catch(() => {
               /* ignore */
             });
           }
@@ -2754,6 +3964,7 @@ function MainAppInner() {
           resetLocalSocialStateForSignedOut();
           signedInRef.current = false;
           isRestoringAuthRef.current = false;
+          backendInitGenerationRef.current += 1;
           backendAuthUidRef.current = null;
           backendDeviceIdRef.current = null;
           setTelemetryContext({ uid: null, deviceId: null });
@@ -2776,7 +3987,7 @@ function MainAppInner() {
           const email = restoredEmail.trim().toLowerCase();
           sessionEmailRef.current = email;
           const persistedUsername =
-            (await AsyncStorage.getItem(profileUsernameStorageKey(email)))?.trim() ?? "";
+            (await storageGetItem(profileUsernameStorageKey(email)))?.trim() ?? "";
           const account: MockAuthAccount = {
             email,
             password: "",
@@ -2801,14 +4012,15 @@ function MainAppInner() {
   const logout = () => {
     const email = sessionEmailRef.current;
     if (email) {
-      void AsyncStorage.removeItem(lastViewStorageKey(email)).catch(() => {
+      void storageRemoveItem(lastViewStorageKey(email)).catch(() => {
         /* ignore */
       });
-      void AsyncStorage.removeItem(lastHomeTabStorageKey(email)).catch(() => {
+      void storageRemoveItem(lastHomeTabStorageKey(email)).catch(() => {
         /* ignore */
       });
       void clearLocalSocialCacheForEmail(email);
     }
+    backendInitGenerationRef.current += 1;
     resetLocalSocialStateForSignedOut();
     logAppEvent("auth.logout", { email: email ?? "" });
     sessionTokenRef.current = null;
@@ -2829,6 +4041,7 @@ function MainAppInner() {
     recipientKeyCacheRef.current = {};
     messagesWatermarkMsRef.current = 0;
     acceptedFriendBackendUidsRef.current = new Set();
+    sharePostsBackfillStartedRef.current = new Set();
     messagesLastFullSyncAtRef.current = 0;
     postsWatermarkMsRef.current = 0;
     postsLastFullSyncAtRef.current = 0;
@@ -2881,10 +4094,10 @@ function MainAppInner() {
   const logoutFromSessionReplaced = () => {
     const navEmail = sessionEmailRef.current;
     if (navEmail) {
-      void AsyncStorage.removeItem(lastViewStorageKey(navEmail)).catch(() => {
+      void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
         /* ignore */
       });
-      void AsyncStorage.removeItem(lastHomeTabStorageKey(navEmail)).catch(() => {
+      void storageRemoveItem(lastHomeTabStorageKey(navEmail)).catch(() => {
         /* ignore */
       });
     }
@@ -2898,6 +4111,7 @@ function MainAppInner() {
     recipientKeyCacheRef.current = {};
     messagesWatermarkMsRef.current = 0;
     acceptedFriendBackendUidsRef.current = new Set();
+    sharePostsBackfillStartedRef.current = new Set();
     messagesLastFullSyncAtRef.current = 0;
     postsWatermarkMsRef.current = 0;
     postsLastFullSyncAtRef.current = 0;
@@ -2951,7 +4165,7 @@ function MainAppInner() {
       return;
     }
     const persistedUsername =
-      (await AsyncStorage.getItem(profileUsernameStorageKey(email)))?.trim() ?? "";
+      (await storageGetItem(profileUsernameStorageKey(email)))?.trim() ?? "";
     const account: MockAuthAccount = {
       email,
       password,
@@ -3200,7 +4414,8 @@ function MainAppInner() {
     };
     sessionEmailRef.current = account.email;
     try {
-      await AsyncStorage.setItem(profileUsernameStorageKey(email), username.trim());
+      await storageSetItem(profileUsernameStorageKey(email), username.trim());
+      myDisplayNameRef.current = username.trim();
     } catch {
       /* ignore */
     }
@@ -3317,7 +4532,12 @@ function MainAppInner() {
       if (chat.kind === "broadcast") return chat.name;
       const counterpartIds = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
       if (counterpartIds.length === 1) {
-        return resolvePd(counterpartIds[0], chat.id).displayName;
+        if (isChatIdentityLocked(chat.id, identityLockedChatIdsSet)) {
+          return TOMBSTONE_DISPLAY_NAME;
+        }
+        const pd = resolvePd(counterpartIds[0], chat.id);
+        if (!pd.canOpenProfile) return TOMBSTONE_DISPLAY_NAME;
+        return pd.displayName;
       }
       if (counterpartIds.length > 1 && !chat.isCustomName) {
         return counterpartIds
@@ -3326,7 +4546,7 @@ function MainAppInner() {
       }
       return chat.name;
     },
-    [resolvePd]
+    [resolvePd, identityLockedChatIdsSet]
   );
 
   const openBroadcastPicker = () => {
@@ -3359,44 +4579,133 @@ function MainAppInner() {
     setEditingMessageId(null);
     let targetChatId = chatId;
     const session = getBackendSession();
-    if (session && isCanonicalDirectChatId(chatId)) {
-      const friendBackendUid = friendBackendUidFromDirectChatLocalId(chatId, session.uid);
-      if (
-        friendBackendUid &&
-        isCanonicalDmHiddenForViewer(
-          session.uid,
-          friendBackendUid,
-          new Set(hiddenChatIdsRef.current),
-          hiddenServerConversationIdsRef.current
-        )
-      ) {
-        const live = findLiveDirectChatForFriend(
-          chats,
-          session.uid,
-          friendBackendUid,
-          friendMap,
-          friendIdToBackendUid
-        );
-        if (live) targetChatId = live.id;
+    if (session) {
+      const resolved = resolveDirectChatOpenTarget({
+        requestedChatId: chatId,
+        chats,
+        sessionAppUid: session.uid,
+        friendMap,
+        friendIdToBackendUid,
+        identityLockedChatIds: identityLockedChatIdsSet,
+        unfriendedIds,
+        serverAcceptedFriendBackendUids,
+        hiddenLocalChatIds: new Set(hiddenChatIdsRef.current),
+        hiddenServerConversationIds: hiddenServerConversationIdsRef.current,
+        resolveMemberFriendId: resolveChatMemberFriendId,
+      });
+      targetChatId = resolved.targetChatId;
+      if (resolved.allocateLive && !chats.some((c) => c.id === resolved.allocateLive!.localId)) {
+        const friendId = resolved.allocateLive.friendId;
+        const profile = friendMap[friendId];
+        const liveRow: Chat = {
+          id: resolved.allocateLive.localId,
+          memberIds: [CURRENT_USER_LOCAL_ID, friendId],
+          name: profile?.displayName?.trim() || resolvePd(friendId).displayName,
+          profilePicture: profile?.profilePictureUrl || undefined,
+          kind: "standard",
+          createdBy: CURRENT_USER_LOCAL_ID,
+          isCustomName: false,
+          isDraft: true,
+          visibleToRecipients: false,
+          updatedAt: Date.now(),
+        };
+        setChats((current) => [liveRow, ...current.filter((c) => c.id !== liveRow.id)]);
       }
     }
     const chat = chats.find((c) => c.id === targetChatId);
     const draftText = chat?.draftComposerText ?? "";
     setHiddenChatIds((current) => current.filter((id) => id !== targetChatId));
-    setChatInput(draftText);
+    setChatInputSynced(draftText);
     setShouldFocusChatInput(draftText.trim().length > 0);
     setView({ screen: "chat", chatId: targetChatId });
   };
 
+  const completeNotificationPrePrompt = useCallback(async () => {
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (email) await markNotificationPrePromptAnswered(email);
+    setShowNotificationPrePrompt(false);
+  }, []);
+
+  const onAllowNotificationsPrePrompt = useCallback(async () => {
+    setNotificationPrePromptBusy(true);
+    try {
+      await completeNotificationPrePrompt();
+      const status = await requestOsNotificationPermission();
+      const granted = isOsNotificationPermissionGranted(status);
+      setOsNotificationGranted(granted);
+      if (granted) {
+        const session = (await waitForBackendSession()) ?? getBackendSession();
+        if (session) {
+          await registerPushTokenWithBackend(session);
+        }
+      }
+    } catch (err) {
+      logAppError("push.pre_prompt_allow", err, {});
+    } finally {
+      setNotificationPrePromptBusy(false);
+    }
+  }, [completeNotificationPrePrompt, getBackendSession, waitForBackendSession]);
+
+  const onDeclineNotificationsPrePrompt = useCallback(async () => {
+    await completeNotificationPrePrompt();
+  }, [completeNotificationPrePrompt]);
+
   useEffect(() => {
-    const session = getBackendSession();
-    if (!session || !signedIn || DEMO_OFFLINE_MODE) return;
-    void registerOsPushToken(session);
-    return addNotificationResponseListener((conversationId) => {
-      const localChatId = conversationId.replace(/^enc_/, "");
-      if (localChatId) goToChat(localChatId);
-    });
-  }, [signedIn, getBackendSession, goToChat]);
+    if (!signedIn || DEMO_OFFLINE_MODE) return;
+    const syncMessagesFromPush = (conversationId: string) => {
+      void pullEncryptedMessagesForConversation(conversationId).catch((err) => {
+        logAppError("messages.push_pull", err, { conversationId });
+      });
+      void pullEncryptedMessagesIncremental().catch((err) => {
+        logAppError("messages.push_inbox_pull", err, { conversationId });
+      });
+    };
+
+    const handlePushData = (data: Record<string, unknown>) => {
+      const type = pushNotificationType(data);
+      if (type === "post_reaction" || type === "new_post") {
+        void pullEncryptedPostsIncremental().catch((err) => {
+          logAppError("posts.push_pull", err, { type });
+        });
+        return;
+      }
+      const conversationId = conversationIdFromNotificationData(data);
+      if (conversationId || type === "chat_message") {
+        if (conversationId) syncMessagesFromPush(conversationId);
+      }
+    };
+
+    const handlePushResponse = (data: Record<string, unknown>) => {
+      const type = pushNotificationType(data);
+      if (type === "post_reaction" || type === "new_post") {
+        void pullEncryptedPostsIncremental().catch((err) => {
+          logAppError("posts.push_pull", err, { type });
+        });
+        openHomeFeedFromNav();
+        return;
+      }
+      const conversationId = conversationIdFromNotificationData(data);
+      if (conversationId) {
+        syncMessagesFromPush(conversationId);
+        const localChatId = conversationId.replace(/^enc_/, "");
+        if (localChatId) goToChat(localChatId);
+      }
+    };
+
+    const unsubReceived = addNotificationReceivedListener(handlePushData);
+    const unsubResponse = addNotificationResponseListener(handlePushResponse);
+    return () => {
+      unsubReceived();
+      unsubResponse();
+    };
+  }, [
+    signedIn,
+    goToChat,
+    openHomeFeedFromNav,
+    pullEncryptedMessagesForConversation,
+    pullEncryptedMessagesIncremental,
+    pullEncryptedPostsIncremental,
+  ]);
 
   const goToPendingDraftChat = (pending: PendingDraft) => {
     setChatOverflowOpen(false);
@@ -3406,7 +4715,7 @@ function MainAppInner() {
     setSelectedBroadcastThreadFriendId(null);
     setReplyTargetMessageId(null);
     setEditingMessageId(null);
-    setChatInput("");
+    setChatInputSynced("");
     setShouldFocusChatInput(false);
     setView({ screen: "chat", pendingDraft: pending });
   };
@@ -3506,6 +4815,12 @@ function MainAppInner() {
       return;
     }
 
+    if (mode === "standard" && selectedComposerIds.length === 1) {
+      findOrCreateChatWithFriend(selectedComposerIds[0]);
+      closeComposer();
+      return;
+    }
+
     const memberIds = [CURRENT_USER_ID, ...selectedComposerIds];
     const target = normalizeSet(memberIds);
     const existing = chats.find((chat) => normalizeSet(chat.memberIds) === target);
@@ -3563,16 +4878,70 @@ function MainAppInner() {
     goToChat(chatId);
   };
 
+  const friendHasCachedProfile = useCallback(
+    (friendId: string): boolean =>
+      Boolean(friendMap[friendId]?.displayName?.trim()) ||
+      Boolean(cachedProfileCards[friendId]?.displayName?.trim()),
+    [friendMap, cachedProfileCards]
+  );
+
+  const refreshFriendProfileInBackground = useCallback(
+    (friendId: string) => {
+      const session = getBackendSession();
+      if (!session || DEMO_OFFLINE_MODE) return;
+      void refreshFriendProfilesFromServer(session, addedFriendsFromRitualRef.current).then(
+        (refreshed) => {
+          setAddedFriendsFromRitual((current) => {
+            if (
+              refreshed.length === current.length &&
+              refreshed.every(
+                (f, i) =>
+                  current[i]?.id === f.id &&
+                  current[i]?.profilePictureUrl === f.profilePictureUrl &&
+                  current[i]?.displayName === f.displayName &&
+                  current[i]?.bio === f.bio
+              )
+            ) {
+              return current;
+            }
+            return refreshed;
+          });
+        }
+      );
+    },
+    [getBackendSession]
+  );
+
   const openFriendProfile = async (
     friendId: string,
     from: "home" | "chat",
     options?: { returnChatId?: string; returnPendingDraft?: PendingDraft }
   ) => {
     if (!resolvePd(friendId).canOpenProfile) return;
+    const cached = friendHasCachedProfile(friendId);
+    if (cached) {
+      setChatOverflowOpen(false);
+      setView({
+        screen: "friendProfile",
+        friendId,
+        returnTo: from,
+        returnChatId: from === "chat" ? options?.returnChatId : undefined,
+        returnPendingDraft: from === "chat" ? options?.returnPendingDraft : undefined,
+      });
+      refreshFriendProfileInBackground(friendId);
+      return;
+    }
+
     const backendUid = friendMap[friendId]?.backendUid?.trim();
     if (!DEMO_OFFLINE_MODE && backendUid?.startsWith("u_")) {
       const session = getBackendSession();
-      if (!session) return;
+      if (!session) {
+        Alert.alert(
+          "Profile unavailable",
+          "You need an internet connection to load this profile."
+        );
+        return;
+      }
       try {
         const res = await callEmulatorFunction<{
           profiles?: Record<string, { username?: string } | null>;
@@ -3581,8 +4950,15 @@ function MainAppInner() {
           deviceId: session.deviceId,
           targetUids: [backendUid],
         });
-        if (!res.profiles?.[backendUid]) return;
+        if (!res.profiles?.[backendUid]) {
+          Alert.alert("Profile unavailable", "Could not load this profile right now.");
+          return;
+        }
       } catch {
+        Alert.alert(
+          "Profile unavailable",
+          "You need an internet connection to load this profile."
+        );
         return;
       }
     }
@@ -3594,15 +4970,39 @@ function MainAppInner() {
       returnChatId: from === "chat" ? options?.returnChatId : undefined,
       returnPendingDraft: from === "chat" ? options?.returnPendingDraft : undefined,
     });
+    refreshFriendProfileInBackground(friendId);
   };
 
   const openFriendProfileFromFriendsList = async (friendId: string) => {
     if (view.screen !== "friendsList") return;
     if (!resolvePd(friendId).canOpenProfile) return;
+    const cached = friendHasCachedProfile(friendId);
+    if (cached) {
+      setChatOverflowOpen(false);
+      setView({
+        screen: "friendProfile",
+        friendId,
+        returnTo: "friendsList",
+        friendsListRestore: {
+          returnTo: view.returnTo,
+          returnChatId: view.returnChatId,
+          returnPendingDraft: view.returnPendingDraft,
+        },
+      });
+      refreshFriendProfileInBackground(friendId);
+      return;
+    }
+
     const backendUid = friendMap[friendId]?.backendUid?.trim();
     if (!DEMO_OFFLINE_MODE && backendUid?.startsWith("u_")) {
       const session = getBackendSession();
-      if (!session) return;
+      if (!session) {
+        Alert.alert(
+          "Profile unavailable",
+          "You need an internet connection to load this profile."
+        );
+        return;
+      }
       try {
         const res = await callEmulatorFunction<{
           profiles?: Record<string, { username?: string } | null>;
@@ -3611,8 +5011,15 @@ function MainAppInner() {
           deviceId: session.deviceId,
           targetUids: [backendUid],
         });
-        if (!res.profiles?.[backendUid]) return;
+        if (!res.profiles?.[backendUid]) {
+          Alert.alert("Profile unavailable", "Could not load this profile right now.");
+          return;
+        }
       } catch {
+        Alert.alert(
+          "Profile unavailable",
+          "You need an internet connection to load this profile."
+        );
         return;
       }
     }
@@ -3627,6 +5034,7 @@ function MainAppInner() {
         returnPendingDraft: view.returnPendingDraft,
       },
     });
+    refreshFriendProfileInBackground(friendId);
   };
 
   const openFriendsListFromHome = useCallback(() => {
@@ -3650,14 +5058,18 @@ function MainAppInner() {
       friendUid: string,
       opts?: { pairingPin?: string | null; previewOnly?: boolean }
     ): Promise<Friend | null> => {
-      const pin = opts?.pairingPin?.trim() ?? "";
+      const offerId = (opts?.pairingPin?.trim() ?? "").replace(/\s+/g, "");
+      const pairingProfileArg =
+        /^\d{4}$/.test(offerId) || /^[0-9a-f]{32}$/i.test(offerId)
+          ? { pairingPin: offerId.toLowerCase(), pairingToken: offerId.toLowerCase() }
+          : {};
       const profiles = await callEmulatorFunction<{
         profiles?: Record<string, { username?: string; bio?: string; profilePictureUrl?: string | null } | null>;
       }>("getUserProfiles", {
         uid: session.uid,
         deviceId: session.deviceId,
         targetUids: [friendUid],
-        ...(pin.length === 4 && /^\d{4}$/.test(pin) ? { pairingPin: pin } : {}),
+        ...pairingProfileArg,
       });
       const profile = profiles.profiles?.[friendUid] ?? {};
       const friend: Friend = {
@@ -3682,100 +5094,136 @@ function MainAppInner() {
         syncServerAcceptedFriendBackendUids(
           new Set([...acceptedFriendBackendUidsRef.current, friendUid])
         );
+        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
+        setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
+        persistSocialMessagingNow();
+        const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
+        if (firebaseAuthUid) {
+          try {
+            await callEmulatorFunction("registerFirebaseAuthUid", {
+              uid: session.uid,
+              deviceId: session.deviceId,
+              firebaseAuthUid,
+            });
+          } catch (err) {
+            logAppError("friends.hydrate.register_firebase_uid", err, { friendUid });
+          }
+        }
+        void registerPushTokenWithBackend(session).catch((err) => {
+          logAppError("friends.hydrate.push_token", err, { friendUid });
+        });
+        void publishActivePresence(session, Date.now()).catch(() => undefined);
       }
       return friend;
     },
-    [syncServerAcceptedFriendBackendUids]
+    [syncServerAcceptedFriendBackendUids, persistSocialMessagingNow]
   );
 
-  const collectPairingProximityEvidence = useCallback(async (): Promise<PairingProximityEvidence> => {
-    let lat: number | null = null;
-    let lng: number | null = null;
-    let horizontalAccuracyM: number | null = null;
-    let locationTimestampMs: number | null = null;
-    try {
-      const permission = await ExpoLocation.getForegroundPermissionsAsync();
-      const granted =
-        permission.granted ||
-        (await ExpoLocation.requestForegroundPermissionsAsync()).granted;
-      if (granted) {
-        const pos = await ExpoLocation.getCurrentPositionAsync({
-          accuracy: ExpoLocation.Accuracy.Balanced,
-        });
-        lat = Number.isFinite(pos.coords.latitude) ? pos.coords.latitude : null;
-        lng = Number.isFinite(pos.coords.longitude) ? pos.coords.longitude : null;
-        horizontalAccuracyM = Number.isFinite(pos.coords.accuracy ?? NaN) ? (pos.coords.accuracy as number) : null;
-        locationTimestampMs = Number.isFinite(pos.timestamp) ? pos.timestamp : Date.now();
-      }
-    } catch {
-      // location is optional for fallback; backend enforces final policy.
-    }
+  const collectPairingProximityEvidence = useCallback(
+    (): Promise<PairingProximityEvidence> => collectPrecisePairingProximityEvidence(),
+    []
+  );
 
-    let isWifiConnected = false;
-    let localIp: string | null = null;
-    try {
-      const state = await ExpoNetwork.getNetworkStateAsync();
-      isWifiConnected = Boolean(state.isConnected && state.type === ExpoNetwork.NetworkStateType.WIFI);
-      localIp = isWifiConnected ? await ExpoNetwork.getIpAddressAsync() : null;
-      localIp = localIp?.trim() || null;
-    } catch {
-      // ignore network evidence failures
-    }
+  const ensurePairingLocationPermission = useCallback(
+    async (options?: { showAlerts?: boolean }): Promise<boolean> => {
+      const gate = await ensurePreciseLocationForPairing({
+        showAlerts: options?.showAlerts !== false,
+      });
+      return gate.ok;
+    },
+    []
+  );
 
-    return {
-      lat,
-      lng,
-      horizontalAccuracyM,
-      locationTimestampMs,
-      isWifiConnected,
-      localIp,
-    };
-  }, []);
-
-  const ensurePairingLocationPermission = useCallback(async (): Promise<boolean> => {
-    const current = await ExpoLocation.getForegroundPermissionsAsync();
-    if (current.granted) return true;
-    const asked = await ExpoLocation.requestForegroundPermissionsAsync();
-    return asked.granted;
-  }, []);
+  const ensurePairingCameraPermission = useCallback(
+    async (options?: { showAlerts?: boolean }): Promise<boolean> => {
+      const gate = await ensureCameraForPairing({
+        showAlerts: options?.showAlerts !== false,
+      });
+      return gate.ok;
+    },
+    []
+  );
 
   const pairingRegisterPinWithRetryParent = useCallback(async (): Promise<string | null> => {
     if (DEMO_OFFLINE_MODE) {
       const email = (sessionEmailRef.current ?? "").trim().toLowerCase();
       if (email === "usera@demo.local") return DEMO_USER_A_QR_PIN;
-      return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+      let demoToken = "";
+      for (let i = 0; i < 32; i++) demoToken += Math.floor(Math.random() * 16).toString(16);
+      return demoToken;
     }
     const session = getBackendSession();
     if (!session) return null;
     logAppEvent("pairing.session.create", {});
     const proximityEvidence = await collectPairingProximityEvidence();
-    const maxAttempts = 48;
-    for (let i = 0; i < maxAttempts; i++) {
-      const pin = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
-      try {
-        await callEmulatorFunction<{ ok?: boolean }>("registerNfcPinPairOffer", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          pin,
-          proximityEvidence,
-        });
-        return pin;
-      } catch (e: unknown) {
-        const raw = e instanceof Error ? e.message : String(e ?? "");
-        const lower = raw.toLowerCase();
-        if (lower.includes("pin unavailable") || lower.includes("failed-precondition")) {
-          continue;
+
+    const parseRegisterResponse = (res: { pairingToken?: string; pin?: string }): string | null => {
+      const token = String(res.pairingToken ?? res.pin ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "");
+      return token.length > 0 ? token : null;
+    };
+
+    try {
+      const res = await callEmulatorFunction<{
+        ok?: boolean;
+        pin?: string;
+        pairingToken?: string;
+      }>("registerNfcPinPairOffer", {
+        uid: session.uid,
+        deviceId: session.deviceId,
+        proximityEvidence,
+      });
+      return parseRegisterResponse(res);
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e ?? "");
+      const lower = raw.toLowerCase();
+      const needsLegacyPin =
+        lower.includes("4 digit") ||
+        lower.includes("exactly 4") ||
+        (lower.includes("invalid-argument") && lower.includes("pin"));
+      if (needsLegacyPin) {
+        for (let i = 0; i < 48; i++) {
+          const pin = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+          try {
+            const res = await callEmulatorFunction<{
+              ok?: boolean;
+              pin?: string;
+              pairingToken?: string;
+            }>("registerNfcPinPairOffer", {
+              uid: session.uid,
+              deviceId: session.deviceId,
+              pin,
+              proximityEvidence,
+            });
+            const token = parseRegisterResponse(res);
+            if (token) return token;
+          } catch (legacyErr: unknown) {
+            const legacyRaw =
+              legacyErr instanceof Error ? legacyErr.message : String(legacyErr ?? "");
+            const legacyLower = legacyRaw.toLowerCase();
+            if (
+              legacyLower.includes("pin unavailable") ||
+              legacyLower.includes("offer token unavailable") ||
+              legacyLower.includes("failed-precondition")
+            ) {
+              continue;
+            }
+            logAppError("pairing.session.create.legacy", legacyErr, {});
+            break;
+          }
         }
-        logAppError("pairing.session.create", e, {});
-        if (lower.includes("404") || lower.includes("not found") || lower.includes("failed to fetch")) {
-          throw new Error(
-            "Could not reach pairing service. Deploy latest Cloud Functions (registerNfcPinPairOffer and related) or check network."
-          );
-        }
-        throw e instanceof Error ? e : new Error(String(e));
+        return null;
       }
+      logAppError("pairing.session.create", e, {});
+      if (lower.includes("404") || lower.includes("not found") || lower.includes("failed to fetch")) {
+        throw new Error(
+          "Could not reach pairing service. Deploy latest Cloud Functions (registerNfcPinPairOffer and related) or check network."
+        );
+      }
+      throw e instanceof Error ? e : new Error(String(e));
     }
-    return null;
   }, [getBackendSession, collectPairingProximityEvidence]);
 
   const pairingAwaitPinRedeemParent = useCallback(
@@ -3788,6 +5236,7 @@ function MainAppInner() {
         const friend = FRIENDS.find((f) => f.id === nextId) ?? null;
         if (!friend) return null;
         setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
+        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
         setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
         return friend;
       }
@@ -3805,7 +5254,10 @@ function MainAppInner() {
               pin: pin.trim(),
             }
           );
-          if (res.status === "awaiting_issuer_confirm" && res.redeemerUid?.trim()) {
+          if (
+            (res.status === "awaiting_redeemer_confirm" || res.status === "awaiting_issuer_confirm") &&
+            res.redeemerUid?.trim()
+          ) {
             const redeemerUid = res.redeemerUid.trim();
             try {
               const hydrated = await hydrateFriendByUid(session, redeemerUid, {
@@ -3842,6 +5294,7 @@ function MainAppInner() {
             messageCount: 0,
           };
           setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
+          stickyUnfriendedFriendIdsRef.current.delete(friend.id);
           setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
           return friend;
         }
@@ -3851,23 +5304,96 @@ function MainAppInner() {
         const friend = FRIENDS.find((f) => f.id === nextId) ?? null;
         if (!friend) return null;
         setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
+        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
         setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
         return friend;
       }
       const session = getBackendSession();
       if (!session) return null;
+      const locGate = await ensurePreciseLocationForPairing({ showAlerts: true });
+      if (!locGate.ok) {
+        throw new Error(preciseLocationGateMessage(locGate.reason));
+      }
+      const trimmedPin = pin.trim();
+      const buildIssuerPreviewFriend = (
+        issuerUid: string,
+        username?: string,
+        profilePictureUrl?: string | null
+      ): Friend => ({
+        id: backendUidForFriendId(issuerUid),
+        backendUid: issuerUid,
+        displayName: friendDisplayNameFromProfile(username, issuerUid),
+        online: false,
+        profilePictureUrl: profilePictureUrl || "",
+        bio: "",
+        messageCount: 0,
+      });
+
+      let previewFriend: Friend | null = null;
+      try {
+        const preview = await callEmulatorFunction<{
+          issuerUid?: string;
+          username?: string;
+          profilePictureUrl?: string | null;
+        }>("previewNfcPinPairOffer", {
+          uid: session.uid,
+          deviceId: session.deviceId,
+          pin: trimmedPin,
+        });
+        const previewUid = preview.issuerUid?.trim() ?? "";
+        if (previewUid) {
+          previewFriend = buildIssuerPreviewFriend(
+            previewUid,
+            preview.username,
+            preview.profilePictureUrl
+          );
+        }
+      } catch {
+        /* preview optional before phase-1 confirm */
+      }
+
       const proximityEvidence = await collectPairingProximityEvidence();
       const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>("confirmNfcPinPairOffer", {
         uid: session.uid,
         deviceId: session.deviceId,
-        pin: pin.trim(),
+        pin: trimmedPin,
         proximityEvidence,
       });
-      const friendUid = res.friendUid?.trim() ?? "";
+      const friendUid = res.friendUid?.trim() ?? previewFriend?.backendUid ?? "";
       if (!res.accepted || !friendUid) return null;
-      return hydrateFriendByUid(session, friendUid, { pairingPin: pin, previewOnly: true });
+
+      const quickFriend =
+        previewFriend?.backendUid === friendUid
+          ? previewFriend
+          : buildIssuerPreviewFriend(
+              friendUid,
+              previewFriend?.displayName,
+              previewFriend?.profilePictureUrl
+            );
+
+      void hydrateFriendByUid(session, friendUid, {
+        pairingPin: trimmedPin,
+        previewOnly: true,
+      }).catch(() => undefined);
+
+      return quickFriend;
     },
     [getBackendSession, hydrateFriendByUid, collectPairingProximityEvidence, demoPendingAddableQueue]
+  );
+
+  const pairingConfirmRedeemerDualConfirmParent = useCallback(
+    async (pin: string): Promise<boolean> => {
+      if (DEMO_OFFLINE_MODE) return true;
+      const session = getBackendSession();
+      if (!session) return false;
+      const res = await callEmulatorFunction<{ accepted?: boolean }>("confirmRedeemerNfcPinPairOffer", {
+        uid: session.uid,
+        deviceId: session.deviceId,
+        pin: pin.trim(),
+      });
+      return Boolean(res.accepted);
+    },
+    [getBackendSession]
   );
 
   const pairingAwaitIssuerFinalConfirmParent = useCallback(
@@ -3931,19 +5457,38 @@ function MainAppInner() {
         if (!seed) return null;
         const friend: Friend = { ...seed, online: false };
         setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
+        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
         setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
         setFriendLinksState((prev) => addUndirectedEdge(prev, CURRENT_USER_ID, friend.id));
         return friend;
       }
       const session = getBackendSession();
       if (!session) return null;
-      const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>("finalizeNfcPinPairOffer", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        pin: pin.trim(),
-      });
-      const friendUid = res.friendUid?.trim() ?? "";
-      if (!res.accepted || !friendUid) return null;
+      const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
+      let friendUid = "";
+      while (Date.now() < deadline) {
+        try {
+          const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>(
+            "finalizeNfcPinPairOffer",
+            {
+              uid: session.uid,
+              deviceId: session.deviceId,
+              pin: pin.trim(),
+            }
+          );
+          friendUid = res.friendUid?.trim() ?? "";
+          if (res.accepted && friendUid) break;
+        } catch (e: unknown) {
+          const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
+          if (msg.includes("waiting for your friend to confirm")) {
+            await new Promise<void>((r) => setTimeout(r, 700));
+            continue;
+          }
+          throw e instanceof Error ? e : new Error(String(e));
+        }
+        await new Promise<void>((r) => setTimeout(r, 700));
+      }
+      if (!friendUid) return null;
       const friendsRes = await callEmulatorFunction<{ friendUids?: string[] }>("listMyFriends", {
         uid: session.uid,
         deviceId: session.deviceId,
@@ -4003,6 +5548,36 @@ function MainAppInner() {
     [getBackendSession]
   );
 
+  const pairingGetOfferStatusParent = useCallback(
+    async (
+      pin: string
+    ): Promise<"pending" | "awaiting_redeemer_confirm" | "awaiting_issuer_confirm" | "joined" | "gone"> => {
+      if (DEMO_OFFLINE_MODE) return "awaiting_redeemer_confirm";
+      const session = getBackendSession();
+      if (!session) return "gone";
+      try {
+        const res = await callEmulatorFunction<{ status?: string }>("getNfcPinPairOfferStatus", {
+          uid: session.uid,
+          deviceId: session.deviceId,
+          pin: pin.trim(),
+        });
+        const status = res.status ?? "pending";
+        if (
+          status === "pending" ||
+          status === "awaiting_redeemer_confirm" ||
+          status === "awaiting_issuer_confirm" ||
+          status === "joined"
+        ) {
+          return status;
+        }
+        return "pending";
+      } catch {
+        return "gone";
+      }
+    },
+    [getBackendSession]
+  );
+
   /**
    * Swipe right on the main chat page (chat list + empty space below the online strip).
    * Uses capture so horizontal intent wins over vertical chat list scroll; excludes the
@@ -4035,27 +5610,17 @@ function MainAppInner() {
             const session = getBackendSession();
             const friendRow = friendMap[friendId];
             const otherUid = friendRow?.backendUid?.trim();
-            if (!DEMO_OFFLINE_MODE && session && otherUid) {
-              try {
-                await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {
-                  uid: session.uid,
-                  deviceId: session.deviceId,
-                  otherUid,
-                });
-              } catch (e) {
-                logAppError("unfriend.removeFriendship", e, { friendId });
-                const detail = e instanceof Error ? e.message.trim() : String(e ?? "");
-                Alert.alert(
-                  "Couldn't unfriend",
-                  detail && detail.length < 200 ? detail : "Check your connection and try again."
-                );
-                return;
-              }
-            }
+            stickyUnfriendedFriendIdsRef.current.add(friendId);
             setUnfriendedIds((cur) => (cur.includes(friendId) ? cur : [...cur, friendId]));
             const chatIdsToLock = collectDirectChatIdsToLockForFriend(
               chatsRef.current ?? [],
-              friendId
+              friendId,
+              {
+                friendBackendUid: otherUid,
+                sessionAppUid: session?.uid ?? null,
+                friendMap: friendMapRef.current,
+                friendIdToBackendUid,
+              }
             );
             if (chatIdsToLock.length > 0) {
               setIdentityLockedChatIds((cur) => mergeIdentityLockedChatIds(cur, chatIdsToLock));
@@ -4074,6 +5639,30 @@ function MainAppInner() {
               }
               return next;
             });
+            if (!DEMO_OFFLINE_MODE && session && otherUid) {
+              try {
+                await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {
+                  uid: session.uid,
+                  deviceId: session.deviceId,
+                  otherUid,
+                });
+              } catch (e) {
+                logAppError("unfriend.removeFriendship", e, { friendId });
+                const detail = e instanceof Error ? e.message.trim() : String(e ?? "");
+                Alert.alert(
+                  "Couldn't unfriend",
+                  detail && detail.length < 200 ? detail : "Check your connection and try again."
+                );
+              }
+            }
+            if (otherUid?.startsWith("u_")) {
+              postsSharedWithFriendsRef.current.delete(otherUid);
+              sharePostsBackfillStartedRef.current.delete(otherUid);
+              const email = sessionEmailRef.current?.trim().toLowerCase();
+              if (email) {
+                void writePostsSharedWithFriends(email, postsSharedWithFriendsRef.current);
+              }
+            }
           })();
         },
       },
@@ -4100,10 +5689,14 @@ function MainAppInner() {
     const currentlyMuted = isFriendFeedMuted(friend.id);
     const cancelButton = { text: "Cancel", style: "cancel" as const };
     const actionButtons = [
-      ...FEED_MUTE_CHOICES.map((choice) => ({
-        text: `Mute for ${choice.label}`,
-        onPress: () => setFeedMuteForFriend(friend.id, choice.durationMs),
-      })),
+      {
+        text: "Mute for 24 hours",
+        onPress: () => setFeedMuteForFriend(friend.id, FEED_MUTE_CHOICES[0].durationMs),
+      },
+      {
+        text: "Mute for 1 week",
+        onPress: () => setFeedMuteForFriend(friend.id, FEED_MUTE_CHOICES[1].durationMs),
+      },
       { text: "Mute until unmuted", onPress: () => setFeedMuteForFriend(friend.id, null) },
       ...(currentlyMuted
         ? [{ text: "Unmute feed", onPress: () => clearFeedMuteForFriend(friend.id) }]
@@ -4134,18 +5727,20 @@ function MainAppInner() {
   };
 
   const handleFriendsListFriendLongPress = (friend: Friend) => {
+    if (isFriendFeedMuted(friend.id)) {
+      Alert.alert(
+        friend.displayName,
+        "Unmute this friend in your feed?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Unmute feed", onPress: () => clearFeedMuteForFriend(friend.id) },
+        ]
+      );
+      return;
+    }
     Alert.alert(friend.displayName, undefined, [
       { text: "Start chat", onPress: () => findOrCreateChatWithFriend(friend.id) },
-      {
-        text: isFriendFeedMuted(friend.id) ? "Unmute feed" : "Mute feed",
-        onPress: () => {
-          if (isFriendFeedMuted(friend.id)) {
-            clearFeedMuteForFriend(friend.id);
-            return;
-          }
-          openFeedMutePicker(friend);
-        },
-      },
+      { text: "Mute feed", onPress: () => openFeedMutePicker(friend) },
       {
         text: "Unfriend",
         style: "destructive",
@@ -4159,31 +5754,111 @@ function MainAppInner() {
     setView({ screen: "myProfile" });
   };
 
+  const cancelImageCropFlow = useCallback(() => {
+    setImageCropVisible(false);
+    setImageCropUri(null);
+    setImageCropAspect(undefined);
+    imageCropPurposeRef.current = "photoEditor";
+    pendingPhotoEditorRef.current = null;
+    setQueuedPostPhotoAssets([]);
+    setPhotoEditorOpen(false);
+    setPhotoEditorAsset(null);
+    setPhotoEditorMediaType("photo");
+    setPhotoEditorTarget("chat");
+  }, []);
+
+  const openPhotoEditorAfterCrop = useCallback(
+    (cropped: { uri: string; width: number; height: number }) => {
+      const pending = pendingPhotoEditorRef.current;
+      if (!pending) return;
+      Keyboard.dismiss();
+      chatInputRef.current?.blur();
+      setImageCropVisible(false);
+      setImageCropUri(null);
+      setImageCropAspect(undefined);
+      setPhotoEditorTarget(pending.target);
+      setPhotoEditorMediaType(pending.mediaType);
+      setQueuedPostPhotoAssets(pending.queue);
+      setPhotoEditorAsset(cropped);
+      setPhotoEditorOpen(true);
+    },
+    []
+  );
+
+  const openPhotoEditorDirect = useCallback(
+    (
+      asset: { uri: string; width: number; height: number },
+      pending: {
+        target: "chat" | "post" | "profile";
+        mediaType: "photo" | "video";
+        queue: Array<{ uri: string; width: number; height: number }>;
+      }
+    ) => {
+      Keyboard.dismiss();
+      chatInputRef.current?.blur();
+      setPhotoEditorTarget(pending.target);
+      setPhotoEditorMediaType(pending.mediaType);
+      setQueuedPostPhotoAssets(pending.queue);
+      setPhotoEditorAsset(asset);
+      setPhotoEditorOpen(true);
+    },
+    []
+  );
+
+  const openImageCropThenEditor = useCallback(
+    (
+      asset: { uri: string; width: number; height: number },
+      pending: {
+        target: "chat" | "post" | "profile";
+        mediaType: "photo" | "video";
+        queue: Array<{ uri: string; width: number; height: number }>;
+        fixedAspectRatio?: number;
+      }
+    ) => {
+      imageCropPurposeRef.current = "photoEditor";
+      pendingPhotoEditorRef.current = {
+        target: pending.target,
+        mediaType: pending.mediaType,
+        queue: pending.queue,
+      };
+      Keyboard.dismiss();
+      chatInputRef.current?.blur();
+      setImageCropAspect(pending.fixedAspectRatio);
+      setImageCropUri(asset.uri);
+      setImageCropVisible(true);
+    },
+    []
+  );
+
+  const handleImageCropComplete = useCallback(
+    (cropped: { uri: string; width: number; height: number }) => {
+      if (imageCropPurposeRef.current === "groupPicture") {
+        setImageCropVisible(false);
+        setImageCropUri(null);
+        setImageCropAspect(undefined);
+        setCreateGroupPictureUri(cropped.uri);
+        imageCropPurposeRef.current = "photoEditor";
+        return;
+      }
+      openPhotoEditorAfterCrop(cropped);
+    },
+    [openPhotoEditorAfterCrop]
+  );
+
   const pickProfileImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return;
-    setPhotoEditorTarget("profile");
-    setPhotoEditorMediaType("photo");
-    setPhotoEditorOpen(true);
-    setPhotoEditorAsset(null);
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: false,
       quality: 0.92,
     });
-    if (result.canceled || !result.assets[0]) {
-      setPhotoEditorOpen(false);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("photo");
-      setPhotoEditorTarget("chat");
-      return;
-    }
+    if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    setPhotoEditorAsset({
-      uri: asset.uri,
-      width: asset.width ?? 1,
-      height: asset.height ?? 1,
-    });
+    openPhotoEditorDirect(
+      { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
+      { target: "profile", mediaType: "photo", queue: [] }
+    );
   };
 
   const pickCreateGroupPicture = async () => {
@@ -4191,13 +5866,15 @@ function MainAppInner() {
     if (!permission.granted) return;
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
+      allowsEditing: false,
       quality: 0.85,
     });
-    if (!result.canceled && result.assets[0]) {
-      setCreateGroupPictureUri(result.assets[0].uri);
-    }
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    imageCropPurposeRef.current = "groupPicture";
+    setImageCropAspect(1);
+    setImageCropUri(asset.uri);
+    setImageCropVisible(true);
   };
 
   const openPostComposer = () => {
@@ -4231,11 +5908,7 @@ function MainAppInner() {
       }));
       const [first, ...rest] = normalized;
       if (!first) return;
-      setQueuedPostPhotoAssets(rest);
-      setPhotoEditorTarget("post");
-      setPhotoEditorMediaType("photo");
-      setPhotoEditorAsset(first);
-      setPhotoEditorOpen(true);
+      openPhotoEditorDirect(first, { target: "post", mediaType: "photo", queue: rest });
     }
   };
 
@@ -4264,8 +5937,6 @@ function MainAppInner() {
       } else {
         const r = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          allowsEditing: true,
-          aspect: [1, 1],
           quality: 0.9,
         });
         if (!r.canceled && r.assets[0]) {
@@ -4309,7 +5980,7 @@ function MainAppInner() {
         const keyMap = await resolveRecipientEncryptionKeys(recipientUids);
         const authUid = firebaseAuth.currentUser?.uid;
         if (!authUid) throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
-        const remoteMedia = await resolvePostMediaUrisForEncrypt(
+        const remoteMedia = await resolvePostMediaForEncrypt(
           newPost.imageUris,
           newPost.videoUri,
           newPost.videoPosterUri,
@@ -4326,15 +5997,23 @@ function MainAppInner() {
             imageUris: remoteMedia.imageUris ?? null,
             videoUri: remoteMedia.videoUri ?? null,
             videoPosterUri: remoteMedia.videoPosterUri ?? null,
+            imagesMedia: remoteMedia.imagesMedia ?? null,
+            videoMedia: remoteMedia.videoMedia ?? null,
+            videoPosterMedia: remoteMedia.videoPosterMedia ?? null,
           },
           keyMap
         );
         const created = await callEmulatorFunction<{ ok?: boolean; postId?: string }>("createEncryptedPost", {
           uid: session.uid,
           deviceId: session.deviceId,
+          storageObjectPaths: remoteMedia.storageObjectPaths,
+          notificationAuthorName: getSenderDisplayName(),
           ...encrypted,
         });
         if (created.postId && created.postId !== newPost.id) {
+          setPostMediaGalleryIndexByPostId((current) =>
+            remapPostMediaGalleryIndex(current, newPost.id, created.postId!)
+          );
           setPosts((current) =>
             current.map((post) => (post.id === newPost.id ? { ...post, id: created.postId! } : post))
           );
@@ -4347,6 +6026,28 @@ function MainAppInner() {
     }
   };
 
+  const openVideoThumbnailModal = useCallback(async () => {
+    const videoUri = postDraftVideoUri?.trim();
+    if (!videoUri) return;
+    setVideoThumbnailModalOpen(true);
+    setVideoThumbnailPreviewLoading(true);
+    setVideoThumbnailDefaultPosterUri(null);
+    try {
+      const thumb = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 0, quality: 0.85 });
+      setVideoThumbnailDefaultPosterUri(thumb.uri?.trim() || null);
+    } catch {
+      setVideoThumbnailDefaultPosterUri(null);
+    } finally {
+      setVideoThumbnailPreviewLoading(false);
+    }
+  }, [postDraftVideoUri]);
+
+  const closeVideoThumbnailModal = useCallback(() => {
+    setVideoThumbnailModalOpen(false);
+    setVideoThumbnailDefaultPosterUri(null);
+    setVideoThumbnailPreviewLoading(false);
+  }, []);
+
   const publishPost = () => {
     const text = postDraftText.trim();
     const hasVideo = !!postDraftVideoUri;
@@ -4356,11 +6057,7 @@ function MainAppInner() {
       return;
     }
     if (hasVideo) {
-      Alert.alert("Video thumbnail", "Choose a thumbnail image, or skip to use the first frame.", [
-        { text: "Choose thumbnail", onPress: () => void finalizeVideoPosterAndPublish("pick") },
-        { text: "Skip", onPress: () => void finalizeVideoPosterAndPublish("skip") },
-        { text: "Cancel", style: "cancel" },
-      ]);
+      void openVideoThumbnailModal();
       return;
     }
     const newPost: Post = {
@@ -4389,7 +6086,7 @@ function MainAppInner() {
           const keyMap = await resolveRecipientEncryptionKeys(recipientUids);
           const authUid = firebaseAuth.currentUser?.uid;
           if (!authUid) throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
-          const remoteMedia = await resolvePostMediaUrisForEncrypt(
+          const remoteMedia = await resolvePostMediaForEncrypt(
             newPost.imageUris,
             newPost.videoUri,
             newPost.videoPosterUri,
@@ -4406,15 +6103,23 @@ function MainAppInner() {
               imageUris: remoteMedia.imageUris ?? null,
               videoUri: remoteMedia.videoUri ?? null,
               videoPosterUri: remoteMedia.videoPosterUri ?? null,
+              imagesMedia: remoteMedia.imagesMedia ?? null,
+              videoMedia: remoteMedia.videoMedia ?? null,
+              videoPosterMedia: remoteMedia.videoPosterMedia ?? null,
             },
             keyMap
           );
           const created = await callEmulatorFunction<{ ok?: boolean; postId?: string }>("createEncryptedPost", {
             uid: session.uid,
             deviceId: session.deviceId,
+            storageObjectPaths: remoteMedia.storageObjectPaths,
+            notificationAuthorName: getSenderDisplayName(),
             ...encrypted,
           });
           if (created.postId && created.postId !== newPost.id) {
+            setPostMediaGalleryIndexByPostId((current) =>
+              remapPostMediaGalleryIndex(current, newPost.id, created.postId!)
+            );
             setPosts((current) =>
               current.map((p) => (p.id === newPost.id ? { ...p, id: created.postId! } : p))
             );
@@ -4430,6 +6135,13 @@ function MainAppInner() {
 
   const confirmDeletePost = (post: Post) => {
     if (post.authorId !== CURRENT_USER_ID) return;
+    if (!DEMO_OFFLINE_MODE && /^p-\d+$/.test(post.id)) {
+      Alert.alert(
+        "Post still uploading",
+        "Wait until the post finishes publishing, then delete again."
+      );
+      return;
+    }
     Alert.alert(
       "Delete post?",
       "This removes the post for you and for friends who could see it.",
@@ -4446,24 +6158,78 @@ function MainAppInner() {
             }
             return cur;
           });
-          setPosts((list) =>
-            list.map((p) => (p.id === post.id ? { ...p, deletedAt: Date.now() } : p))
-          );
+          const removedPost = post;
+          deletedPostIdsRef.current.add(post.id);
+          setPosts((list) => list.filter((p) => p.id !== post.id));
+          setPostMediaGalleryIndexByPostId((current) => {
+            if (!(post.id in current)) return current;
+            const next = { ...current };
+            delete next[post.id];
+            return next;
+          });
+          setSeenFeedReactionSigByPostId((current) => {
+            if (!(post.id in current)) return current;
+            const next = { ...current };
+            delete next[post.id];
+            return next;
+          });
+          persistPostsNow();
+          persistWatermarksNow();
+          const postsAfterDelete = postsRef.current.filter((p) => p.id !== post.id);
+          const sessionForSnapshot = getBackendSession();
+          if (sessionForSnapshot && !DEMO_OFFLINE_MODE) {
+            void uploadSocialSnapshotToCloud(sessionForSnapshot.uid, sessionForSnapshot.deviceId, {
+              chats: chatsRef.current,
+              messages: messagesRef.current,
+              posts: postsAfterDelete,
+              messagesWatermarkMs: messagesWatermarkMsRef.current,
+              postsWatermarkMs: postsWatermarkMsRef.current,
+            }).catch(() => undefined);
+          }
           if (!DEMO_OFFLINE_MODE) {
             void (async () => {
               try {
-                const session = getBackendSession();
-                if (!session) throw new Error("Account session is not ready. Try again in a moment.");
+                let session = getBackendSession();
+                if (!session) session = await waitForBackendSession();
+                if (!session) {
+                  const syncFailed =
+                    encryptedSyncState.profile === "error" ||
+                    encryptedSyncState.posts === "error" ||
+                    encryptedSyncState.messages === "error";
+                  throw new Error(
+                    syncFailed
+                      ? "Could not reach the server. If you saw a connection alert, tap Retry there, then delete again."
+                      : "Account session is still starting. Wait a few seconds on the home screen, then try again."
+                  );
+                }
+                const deletePostId = post.id.trim();
                 await callEmulatorFunction<{ ok?: boolean }>("deleteEncryptedPost", {
                   uid: session.uid,
                   deviceId: session.deviceId,
-                  postId: post.id,
+                  postId: deletePostId,
                 });
+                postsLastFullSyncAtRef.current = 0;
+                persistWatermarksNow();
+                logAppEvent("post.deleted", { postId: deletePostId });
+                void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
+                  chats: chatsRef.current,
+                  messages: messagesRef.current,
+                  posts: postsVisibleForCache(postsRef.current),
+                  messagesWatermarkMs: messagesWatermarkMsRef.current,
+                  postsWatermarkMs: postsWatermarkMsRef.current,
+                }).catch(() => undefined);
               } catch (err) {
+                deletedPostIdsRef.current.delete(removedPost.id);
+                persistWatermarksNow();
                 const message = err instanceof Error ? err.message : "Could not delete post.";
-                setPosts((list) =>
-                  list.map((p) => (p.id === post.id ? { ...p, deletedAt: undefined } : p))
-                );
+                setPosts((list) => {
+                  const restored = { ...removedPost, deletedAt: undefined };
+                  if (list.some((p) => p.id === removedPost.id)) {
+                    return list.map((p) => (p.id === removedPost.id ? restored : p));
+                  }
+                  return [restored, ...list].sort((a, b) => b.createdAt - a.createdAt);
+                });
+                persistPostsNow();
                 Alert.alert("Could not delete post", message);
               }
             })();
@@ -4475,6 +6241,7 @@ function MainAppInner() {
   };
 
   const handleChatInputChange = (text: string) => {
+    chatInputTextRef.current = text;
     if (view.screen === "chat" && "pendingDraft" in view && view.pendingDraft && text.trim().length > 0) {
       promotePendingChatToRow({
         pending: view.pendingDraft,
@@ -4485,7 +6252,7 @@ function MainAppInner() {
         setView,
       });
     }
-    setChatInput(text);
+    setChatInputSynced(text);
   };
 
   const ensureChatForSend = (): Chat | null => {
@@ -4575,6 +6342,8 @@ function MainAppInner() {
     scheduleReply(reply, delayMs);
   };
 
+  const getSenderDisplayName = useCallback(() => myDisplayNameRef.current.trim(), []);
+
   const { commitOutgoingMessages } = useOutgoingMessages({
     demoOfflineMode: DEMO_OFFLINE_MODE,
     getBackendSession,
@@ -4585,6 +6354,7 @@ function MainAppInner() {
     recipientKeyCacheRef,
     persistFriendKeyCacheNow,
     resolveConversationId,
+    getSenderDisplayName,
     pullEncryptedMessagesIncremental,
     setChats,
     setMessages,
@@ -4592,6 +6362,39 @@ function MainAppInner() {
     setView,
     addAutoReplies,
   });
+
+  const retryFailedMessage = useCallback(
+    (message: Message) => {
+      const chat = chats.find((c) => c.id === message.chatId);
+      if (!chat || message.unsentAt || message.deliveryStatus !== "failed") return;
+      const retryMessage: Message = {
+        ...message,
+        deliveryStatus: undefined,
+        unsentAt: undefined,
+      };
+      setMessages((current) => current.filter((m) => m.id !== message.id));
+      commitOutgoingMessages(chat, [retryMessage]);
+    },
+    [chats, commitOutgoingMessages, setMessages]
+  );
+
+  const deleteFailedMessage = useCallback(
+    (messageId: string) => {
+      setMessages((current) => current.filter((m) => m.id !== messageId));
+    },
+    [setMessages]
+  );
+
+  const handleChatMessagePress = useCallback(
+    (message: Message, isMine: boolean, defaultAction: () => void) => {
+      if (isMine && message.deliveryStatus === "failed" && !message.unsentAt) {
+        retryFailedMessage(message);
+        return;
+      }
+      defaultAction();
+    },
+    [retryFailedMessage]
+  );
 
   const sendPayload = (payload: {
     text: string;
@@ -4602,13 +6405,16 @@ function MainAppInner() {
     durationSec?: number;
     videoTextOverlays?: VideoTextOverlayData[];
   }) => {
+    try {
     const chat = ensureChatForSend();
     if (!chat) return;
     if (isDirectTombstoneChat) return;
     if (!DEMO_OFFLINE_MODE && !getBackendSession()) {
       Alert.alert(
-        "Not connected",
-        "Your account session is still starting. Wait a few seconds and try again."
+        isOnline ? "Not connected" : "You're offline",
+        isOnline
+          ? "Your account session is still starting. Wait a few seconds and try again."
+          : "Connect to the internet to send messages. You can still browse cached chats and posts."
       );
       return;
     }
@@ -4635,7 +6441,7 @@ function MainAppInner() {
         )
       );
       setEditingMessageId(null);
-      setChatInput("");
+      setChatInputSynced("");
       if (!DEMO_OFFLINE_MODE) {
         const session = getBackendSession();
         const target = messages.find((m) => m.id === targetId);
@@ -4671,14 +6477,42 @@ function MainAppInner() {
     if (!trimmedText && !payload.mediaUri) return;
     const chatKind = chat.kind ?? "standard";
     if (chatKind === "broadcast") {
+      const isCreator = isBroadcastCreator(chat, CURRENT_USER_ID);
+      const creatorId = broadcastCreatorFriendId(chat, CURRENT_USER_ID);
+
+      if (!isCreator) {
+        const rt = replyTargetMessage;
+        if (!rt || !canReplyToBroadcastMessage(rt, chat, CURRENT_USER_ID)) {
+          Alert.alert(
+            "Private reply only",
+            "Long-press a message from the broadcaster and choose Reply to respond privately. You cannot message the whole group."
+          );
+          return;
+        }
+        const followUp: Message = {
+          id: `m-${now}`,
+          chatId: chat.id,
+          senderId: CURRENT_USER_ID,
+          text: trimmedText,
+          createdAt: now,
+          kind: payload.kind ?? "text",
+          mediaUri: payload.mediaUri,
+          mediaWidth: payload.mediaWidth,
+          mediaHeight: payload.mediaHeight,
+          durationSec: payload.durationSec,
+          videoTextOverlays: payload.videoTextOverlays,
+          replyToMessageId: rt.id,
+          broadcastThreadFriendId: CURRENT_USER_ID,
+        };
+        commitOutgoingMessages(chat, [followUp]);
+        setChatInputSynced("");
+        setReplyTargetMessageId(null);
+        return;
+      }
+
       const existingInChat = messages.filter((m) => m.chatId === chat.id);
       const recipients =
         chat.broadcastRecipientIds ?? chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-
-      const clearComposerAfterSend = () => {
-        setChatInput("");
-        setReplyTargetMessageId(null);
-      };
 
       const scheduleDemoThreadRepliesToRoot = (rootId: string, t0: number) => {
         if (!DEMO_OFFLINE_MODE) return;
@@ -4729,7 +6563,8 @@ function MainAppInner() {
               commitOutgoingMessages(chat, [rootMessage]);
               scheduleDemoThreadRepliesToRoot(rootMessage.id, t);
               setSelectedBroadcastThreadFriendId(recipients[0] ?? null);
-              clearComposerAfterSend();
+              setChatInputSynced("");
+              setReplyTargetMessageId(null);
             },
           },
         ]);
@@ -4738,7 +6573,7 @@ function MainAppInner() {
 
       const rt = replyTargetMessage;
       const replyingToOwnGlobalBroadcast =
-        !!rt && rt.senderId === CURRENT_USER_ID && !rt.broadcastThreadFriendId;
+        !!rt && rt.senderId === creatorId && !rt.broadcastThreadFriendId;
       const threadFriendId =
         selectedBroadcastThreadFriendId ?? rt?.broadcastThreadFriendId ?? undefined;
 
@@ -4761,7 +6596,8 @@ function MainAppInner() {
           broadcastThreadFriendId: threadFriendId as string,
         };
         commitOutgoingMessages(chat, [followUp]);
-        clearComposerAfterSend();
+        setChatInputSynced("");
+        setReplyTargetMessageId(null);
         return;
       }
 
@@ -4788,7 +6624,8 @@ function MainAppInner() {
             };
             commitOutgoingMessages(chat, [everyoneMessage]);
             setSelectedBroadcastThreadFriendId(null);
-            clearComposerAfterSend();
+            setChatInputSynced("");
+            setReplyTargetMessageId(null);
           },
         },
       ]);
@@ -4811,84 +6648,71 @@ function MainAppInner() {
       commitOutgoingMessages(chat, [out]);
     }
 
-    setChatInput("");
+    setChatInputSynced("");
     setReplyTargetMessageId(null);
+    } catch (err) {
+      logAppError("send.payload", err, {});
+      Alert.alert(
+        "Could not send",
+        err instanceof Error ? err.message : "Something went wrong. Try again."
+      );
+    }
   };
 
   const sendMessage = () => {
-    if (!chatInput.trim()) return;
-    sendPayload({ text: chatInput.trim(), kind: "text" });
+    const text = readComposerTextTrimmed(chatInputTextRef);
+    if (!text) return;
+    Keyboard.dismiss();
+    chatInputRef.current?.blur();
+    try {
+      sendPayload({ text, kind: "text" });
+    } catch (err) {
+      logAppError("send.compose", err, {});
+      Alert.alert("Could not send", "Something went wrong. Try again.");
+    }
   };
 
   const sendCameraMedia = async (mode: "photo" | "video") => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) return;
     setPhotoEditorTarget("chat");
-    if (mode === "photo") {
-      setPhotoEditorOpen(true);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("photo");
-    }
-    if (mode === "video") {
-      setPhotoEditorOpen(true);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("video");
-    }
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes:
         mode === "photo" ? ImagePicker.MediaTypeOptions.Images : ImagePicker.MediaTypeOptions.Videos,
-      quality: 0.85,
+      quality: mode === "photo" ? 0.85 : 0.72,
       allowsEditing: false,
     });
-    if (result.canceled || !result.assets[0]) {
-      if (mode === "photo" || mode === "video") {
-        setPhotoEditorOpen(false);
-        setPhotoEditorAsset(null);
-        setPhotoEditorMediaType("photo");
-      }
-      return;
-    }
+    if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
     if (mode === "photo") {
-      setPhotoEditorAsset({
-        uri: asset.uri,
-        width: asset.width ?? 1,
-        height: asset.height ?? 1,
-      });
+      openPhotoEditorDirect(
+        { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
+        { target: "chat", mediaType: "photo", queue: [] }
+      );
       return;
     }
-    if (mode === "video") {
-      setPhotoEditorAsset({
-        uri: asset.uri,
-        width: asset.width ?? 1,
-        height: asset.height ?? 1,
-      });
-    }
+    setPhotoEditorMediaType("video");
+    setPhotoEditorAsset({
+      uri: asset.uri,
+      width: asset.width ?? 1,
+      height: asset.height ?? 1,
+    });
+    setPhotoEditorOpen(true);
   };
 
   const sendGalleryPhoto = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return;
     setPhotoEditorTarget("chat");
-    setPhotoEditorOpen(true);
-    setPhotoEditorAsset(null);
-    setPhotoEditorMediaType("photo");
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       quality: 0.92,
       allowsEditing: false,
     });
-    if (result.canceled || !result.assets[0]) {
-      setPhotoEditorOpen(false);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("photo");
-      return;
-    }
+    if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
     const kind = inferOutgoingMediaKind(asset.uri, asset.type);
     if (kind === "gif") {
-      setPhotoEditorOpen(false);
-      setPhotoEditorAsset(null);
       sendPayload({
         text: "",
         kind: "gif",
@@ -4898,11 +6722,10 @@ function MainAppInner() {
       });
       return;
     }
-    setPhotoEditorAsset({
-      uri: asset.uri,
-      width: asset.width ?? 1,
-      height: asset.height ?? 1,
-    });
+    openPhotoEditorDirect(
+      { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
+      { target: "chat", mediaType: "photo", queue: [] }
+    );
   };
 
   const sendGalleryVideo = async () => {
@@ -4914,7 +6737,7 @@ function MainAppInner() {
     setPhotoEditorMediaType("video");
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      quality: 0.92,
+      quality: 0.72,
       allowsEditing: false,
     });
     if (result.canceled || !result.assets[0]) {
@@ -4929,9 +6752,17 @@ function MainAppInner() {
       width: asset.width ?? 1,
       height: asset.height ?? 1,
     });
+    void probeVideoDisplayDimensions(asset.uri).then((dims) => {
+      if (!dims) return;
+      setPhotoEditorAsset((prev) =>
+        prev ? { ...prev, width: dims.width, height: dims.height } : prev
+      );
+    });
   };
 
   const completePhotoEditor = (result: PhotoEditorResult) => {
+    Keyboard.dismiss();
+    chatInputRef.current?.blur();
     if (photoEditorTarget === "profile") {
       setPhotoEditorOpen(false);
       setPhotoEditorAsset(null);
@@ -4950,16 +6781,16 @@ function MainAppInner() {
           try {
             const authUid = firebaseAuth.currentUser?.uid;
             if (!authUid || !mediaUriNeedsFirebaseUpload(result.uri)) return;
-            const httpsUrl = await uploadSharedMediaFromDevice(result.uri, authUid);
-            setMyProfilePictureUrl(httpsUrl);
+            const uploaded = await uploadSharedMediaFromDevice(result.uri, authUid);
+            setMyProfilePictureUrl(uploaded.downloadUrl);
             const session = getBackendSession();
             const email = sessionEmailRef.current?.trim();
             if (email) {
-              void AsyncStorage.setItem(profilePictureStorageKey(email), httpsUrl).catch(() => {});
+              void storageSetItem(profilePictureStorageKey(email), uploaded.downloadUrl).catch(() => {});
             }
             if (session && email) {
               const persistedUsername =
-                (await AsyncStorage.getItem(profileUsernameStorageKey(email)))?.trim() ?? "";
+                (await storageGetItem(profileUsernameStorageKey(email)))?.trim() ?? "";
               let serverUsername = "";
               try {
                 const profilesRes = await callEmulatorFunction<{
@@ -4983,7 +6814,7 @@ function MainAppInner() {
                 deviceId: session.deviceId,
                 ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
                 bio: myBio,
-                profilePictureUrl: httpsUrl,
+                profilePictureUrl: uploaded.downloadUrl,
               });
             }
           } catch (err) {
@@ -4991,7 +6822,16 @@ function MainAppInner() {
               "Couldn't save profile picture",
               err instanceof Error && err.message ? err.message : "Please try again."
             );
-            setMyProfilePictureUrl(null);
+            const email = sessionEmailRef.current?.trim().toLowerCase();
+            void (async () => {
+              const prior =
+                email
+                  ? (await storageGetItem(profilePictureStorageKey(email)).catch(() => null)) ??
+                    null
+                  : null;
+              const restored = normalizeHttpsProfilePictureUrl(prior) || null;
+              setMyProfilePictureUrl(restored);
+            })();
           }
         })();
       }
@@ -5004,10 +6844,9 @@ function MainAppInner() {
       }
       if (queuedPostPhotoAssets.length > 0) {
         const [next, ...rest] = queuedPostPhotoAssets;
-        setQueuedPostPhotoAssets(rest);
-        setPhotoEditorAsset(next ?? null);
-        setPhotoEditorMediaType("photo");
-        setPhotoEditorOpen(true);
+        if (next) {
+          openPhotoEditorDirect(next, { target: "post", mediaType: "photo", queue: rest });
+        }
         return;
       }
       setQueuedPostPhotoAssets([]);
@@ -5042,6 +6881,8 @@ function MainAppInner() {
   };
 
   const cancelPhotoEditor = () => {
+    Keyboard.dismiss();
+    chatInputRef.current?.blur();
     setPhotoEditorOpen(false);
     setPhotoEditorAsset(null);
     setPhotoEditorMediaType("photo");
@@ -5080,6 +6921,12 @@ function MainAppInner() {
 
   const exitVoiceNoteMode = useCallback(async () => {
     await cancelVoiceRecording();
+    if (previewSoundRef.current) {
+      await previewSoundRef.current.unloadAsync();
+      previewSoundRef.current = null;
+    }
+    setPreviewVoicePlaying(false);
+    setPendingVoiceNote(null);
     setVoiceNoteMode(false);
   }, [cancelVoiceRecording]);
 
@@ -5108,7 +6955,7 @@ function MainAppInner() {
         previewSoundRef.current = null;
       }
       const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
       await recording.startAsync();
       recordingRef.current = recording;
       const startedAt = Date.now();
@@ -5124,7 +6971,7 @@ function MainAppInner() {
     }
   }, []);
 
-  const stopVoiceRecordingAndSend = useCallback(async () => {
+  const stopVoiceRecordingForPreview = useCallback(async () => {
     const recording = recordingRef.current;
     const startedAt = voiceRecordStartedAtRef.current;
     if (!recording || startedAt == null) return;
@@ -5146,30 +6993,88 @@ function MainAppInner() {
       voiceRecordStartedAtRef.current = null;
       setVoiceRecordStartedAt(null);
       setVoiceRecordElapsedSec(0);
-      setVoiceNoteMode(false);
       try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          playsInSilentModeIOS: true,
-        });
+        await prepareVoicePlaybackAudioMode();
       } catch {
         /* ignore */
       }
     }
 
     if (!uri) return;
+    setPendingVoiceNote({ uri, durationSec });
+  }, []);
+
+  const togglePendingVoicePreview = useCallback(async () => {
+    if (!pendingVoiceNote) return;
+    if (previewVoicePlaying && previewSoundRef.current) {
+      await previewSoundRef.current.stopAsync();
+      await previewSoundRef.current.unloadAsync();
+      previewSoundRef.current = null;
+      setPreviewVoicePlaying(false);
+      return;
+    }
+    if (previewSoundRef.current) {
+      await previewSoundRef.current.unloadAsync();
+      previewSoundRef.current = null;
+    }
+    try {
+      await prepareVoicePlaybackAudioMode();
+      const source = voiceSoundSource(pendingVoiceNote.uri, "audio/mp4");
+      const { sound } = await Audio.Sound.createAsync(source, { shouldPlay: false, volume: 1 });
+      await sound.playAsync();
+      previewSoundRef.current = sound;
+      setPreviewVoicePlaying(true);
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          void sound.unloadAsync();
+          if (previewSoundRef.current === sound) {
+            previewSoundRef.current = null;
+          }
+          setPreviewVoicePlaying(false);
+        }
+      });
+    } catch (err) {
+      logAppError("voice.preview_playback", err, {});
+      Alert.alert("Voice note", "Could not play this recording. Try recording again.");
+      setPreviewVoicePlaying(false);
+    }
+  }, [pendingVoiceNote, previewVoicePlaying]);
+
+  const discardPendingVoiceNote = useCallback(async () => {
+    if (previewSoundRef.current) {
+      await previewSoundRef.current.unloadAsync();
+      previewSoundRef.current = null;
+    }
+    setPreviewVoicePlaying(false);
+    setPendingVoiceNote(null);
+  }, []);
+
+  const sendPendingVoiceNote = useCallback(async () => {
+    if (!pendingVoiceNote) return;
+    if (previewSoundRef.current) {
+      await previewSoundRef.current.unloadAsync();
+      previewSoundRef.current = null;
+    }
+    setPreviewVoicePlaying(false);
     sendPayload({
-      text: `Voice note (${durationSec}s)`,
+      text: `Voice note (${pendingVoiceNote.durationSec}s)`,
       kind: "voice",
-      durationSec,
-      mediaUri: uri,
+      durationSec: pendingVoiceNote.durationSec,
+      mediaUri: pendingVoiceNote.uri,
     });
-  }, [sendPayload]);
+    setPendingVoiceNote(null);
+    setVoiceNoteMode(false);
+  }, [pendingVoiceNote, sendPayload]);
 
   const onComposerPrimaryPress = useCallback(() => {
     if (voiceNoteMode) {
+      if (pendingVoiceNote) {
+        void sendPendingVoiceNote();
+        return;
+      }
       if (voiceRecordStartedAt) {
-        void stopVoiceRecordingAndSend();
+        void stopVoiceRecordingForPreview();
       } else {
         void startVoiceRecording();
       }
@@ -5178,8 +7083,10 @@ function MainAppInner() {
     sendMessage();
   }, [
     voiceNoteMode,
+    pendingVoiceNote,
     voiceRecordStartedAt,
-    stopVoiceRecordingAndSend,
+    stopVoiceRecordingForPreview,
+    sendPendingVoiceNote,
     startVoiceRecording,
     sendMessage,
   ]);
@@ -5197,40 +7104,85 @@ function MainAppInner() {
   }, [voiceRecordStartedAt]);
 
   const toggleVoiceMessagePlayback = async (message: Message) => {
-    if (!message.mediaUri) return;
     if (playingVoiceMessageId === message.id && messageSoundRef.current) {
       await messageSoundRef.current.stopAsync();
       await messageSoundRef.current.unloadAsync();
       messageSoundRef.current = null;
       setPlayingVoiceMessageId(null);
+      setVoicePlaybackProgress(null);
       return;
     }
-    if (messageSoundRef.current) {
-      await messageSoundRef.current.unloadAsync();
-      messageSoundRef.current = null;
-    }
-    const { sound } = await Audio.Sound.createAsync(
-      { uri: message.mediaUri },
-      { shouldPlay: true }
-    );
-    messageSoundRef.current = sound;
-    setPlayingVoiceMessageId(message.id);
-    sound.setOnPlaybackStatusUpdate((status) => {
-      if (!status.isLoaded) return;
-      if (status.didJustFinish) {
-        void sound.unloadAsync();
-        if (messageSoundRef.current === sound) {
-          messageSoundRef.current = null;
-        }
-        setPlayingVoiceMessageId(null);
+
+    setVoiceLoadingMessageId(message.id);
+    try {
+      const playUri = await resolveVoicePlayUri(message);
+      if (!playUri) {
+        Alert.alert("Voice note", "Could not load this voice note. Ask the sender to send it again.");
+        return;
       }
-    });
+
+      await prepareVoicePlaybackAudioMode();
+
+      if (messageSoundRef.current) {
+        await messageSoundRef.current.unloadAsync();
+        messageSoundRef.current = null;
+      }
+
+      const source = voiceSoundSource(playUri, message.mediaEncrypted?.contentType);
+      const { sound } = await Audio.Sound.createAsync(source, { shouldPlay: false, volume: 1 });
+      await sound.playAsync();
+      messageSoundRef.current = sound;
+      setPlayingVoiceMessageId(message.id);
+      const fallbackDurationMs = Math.max(1, message.durationSec ?? 1) * 1000;
+      setVoicePlaybackProgress({
+        messageId: message.id,
+        positionMs: 0,
+        durationMs: fallbackDurationMs,
+      });
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          void sound.unloadAsync();
+          if (messageSoundRef.current === sound) {
+            messageSoundRef.current = null;
+          }
+          setPlayingVoiceMessageId(null);
+          setVoicePlaybackProgress(null);
+          return;
+        }
+        const nextPosition = status.positionMillis ?? 0;
+        const nextDuration = status.durationMillis ?? fallbackDurationMs;
+        setVoicePlaybackProgress((prev) => {
+          if (prev?.messageId !== message.id) {
+            return { messageId: message.id, positionMs: nextPosition, durationMs: nextDuration };
+          }
+          const positionMs =
+            Math.abs(prev.positionMs - nextPosition) >= 200 ? nextPosition : prev.positionMs;
+          const durationMs = prev.durationMs !== nextDuration ? nextDuration : prev.durationMs;
+          if (
+            positionMs === prev.positionMs &&
+            durationMs === prev.durationMs
+          ) {
+            return prev;
+          }
+          return { messageId: message.id, positionMs, durationMs };
+        });
+      });
+    } catch (err) {
+      logAppError("voice.playback", err, { messageId: message.id });
+      Alert.alert("Voice note", "Could not play this voice note.");
+      setPlayingVoiceMessageId(null);
+      setVoicePlaybackProgress(null);
+    } finally {
+      setVoiceLoadingMessageId((cur) => (cur === message.id ? null : cur));
+    }
   };
 
   const leaveChatToHome = () => {
     setView({ screen: "home" });
     setChatSearch("");
-    setChatInput("");
+    setChatInputSynced("");
     setShouldFocusChatInput(false);
     setChatSearchVisible(false);
     setChatOverflowOpen(false);
@@ -5238,7 +7190,6 @@ function MainAppInner() {
     setReplyTargetMessageId(null);
     setEditingMessageId(null);
     setMessageActionTargetId(null);
-    setMessageActionsOpen(false);
     setReactionPickerOpen(false);
     setSelectedBroadcastThreadFriendId(null);
     setPhotoEditorOpen(false);
@@ -5249,9 +7200,15 @@ function MainAppInner() {
     setVoiceRecordStartedAt(null);
     setVoiceRecordElapsedSec(0);
     voiceRecordStartedAtRef.current = null;
+    setPendingVoiceNote(null);
+    setPreviewVoicePlaying(false);
     setPlayingVoiceMessageId(null);
+    setVoiceLoadingMessageId(null);
+    setVoicePlaybackProgress(null);
     setPlayingVideoMessageId(null);
-    setFinishedVideoMessageIds(new Set());
+    setVideoPrepareRequestedIds(new Set());
+    setChatListDisplayLimit(CHAT_UI_INITIAL_DISPLAY_COUNT);
+    setVideoPlayAfterPrepareId(null);
     if (previewSoundRef.current) {
       void previewSoundRef.current.unloadAsync();
       previewSoundRef.current = null;
@@ -5545,14 +7502,17 @@ function MainAppInner() {
     if (view.screen !== "chat") return;
 
     if ("pendingDraft" in view) {
-      setChatInput("");
+      setChatInputSynced("");
       leaveChatToHome();
       return;
     }
 
     const chatId = view.chatId;
     const chat = chats.find((c) => c.id === chatId);
-    const hasUnsent = chatInput.trim().length > 0 || !!voiceRecordStartedAt;
+    const hasUnsent =
+      readComposerTextTrimmed(chatInputTextRef).length > 0 ||
+      !!voiceRecordStartedAt ||
+      !!pendingVoiceNote;
 
     if (chat?.isDraft && hasUnsent) {
       Alert.alert("Save draft?", "You have unsent text in this draft.", [
@@ -5571,7 +7531,7 @@ function MainAppInner() {
             setChats((current) =>
               current.map((c) =>
                 c.id === chatId
-                  ? { ...c, draftComposerText: chatInput.trim(), updatedAt: Date.now() }
+                  ? { ...c, draftComposerText: readComposerTextTrimmed(chatInputTextRef), updatedAt: Date.now() }
                   : c
               )
             );
@@ -5593,10 +7553,225 @@ function MainAppInner() {
     leaveChatToHome();
   };
 
-  const openMessageActions = (message: Message) => {
-    setMessageActionTargetId(message.id);
-    setMessageActionsOpen(true);
-  };
+  const handleAndroidHardwareBackRef = useRef<() => boolean>(() => false);
+
+  const handleAndroidHardwareBack = useCallback(() => {
+    if (imageCropVisible) {
+      cancelImageCropFlow();
+      return true;
+    }
+    if (photoEditorOpen) {
+      if (photoEditorInCrop) {
+        setPhotoEditorCropExitTick((t) => t + 1);
+        return true;
+      }
+      cancelPhotoEditor();
+      return true;
+    }
+    if (keyboardVisible) {
+      Keyboard.dismiss();
+      return true;
+    }
+    if (fullscreenMedia) {
+      setFullscreenMedia(null);
+      return true;
+    }
+    if (fullScreenPost) {
+      closeFullscreenPost();
+      return true;
+    }
+    if (reactionDetailPost) {
+      setReactionDetailPost(null);
+      return true;
+    }
+    if (themePickerOpen) {
+      setThemePickerOpen(false);
+      return true;
+    }
+    if (reactionPickerOpen) {
+      setReactionPickerOpen(false);
+      setReactionTargetMessageId(null);
+      setPostReactionTargetId(null);
+      setCommentReactionTarget(null);
+      return true;
+    }
+    if (postFullscreenThreadReplyKey) {
+      setPostFullscreenThreadReplyKey(null);
+      Keyboard.dismiss();
+      return true;
+    }
+    if (chatOverflowOpen) {
+      setChatOverflowOpen(false);
+      return true;
+    }
+    if (membersModalOpen) {
+      setMembersModalOpen(false);
+      return true;
+    }
+    if (addMemberModalOpen) {
+      setAddMemberModalOpen(false);
+      setAddMemberSearch("");
+      return true;
+    }
+    if (editChatMetaOpen) {
+      setEditChatMetaOpen(false);
+      return true;
+    }
+    if (editChatPictureOpen) {
+      setEditChatPictureOpen(false);
+      return true;
+    }
+    if (saveBroadcastGroupNameModalOpen) {
+      setSaveBroadcastGroupNameModalOpen(false);
+      setSaveBroadcastGroupPromptOpen(true);
+      return true;
+    }
+    if (saveBroadcastGroupPromptOpen) {
+      setSaveBroadcastGroupPromptOpen(false);
+      return true;
+    }
+    if (createTitleEditOpen) {
+      setPendingStandardGroupCreateAfterTitle(false);
+      setCreateTitleEditOpen(false);
+      setCreateGroupPictureUri(null);
+      return true;
+    }
+    if (broadcastPickerOpen) {
+      setBroadcastPickerOpen(false);
+      return true;
+    }
+    if (chatComposerOpen) {
+      setChatComposerOpen(false);
+      return true;
+    }
+    if (chatSearchVisible) {
+      setChatSearchVisible(false);
+      setChatSearch("");
+      return true;
+    }
+    if (voiceRecordStartedAt) {
+      void cancelVoiceRecording();
+      return true;
+    }
+    if (pendingVoiceNote) {
+      void discardPendingVoiceNote();
+      return true;
+    }
+    if (voiceNoteMode) {
+      void exitVoiceNoteMode();
+      return true;
+    }
+
+    const v = viewRef.current;
+    if (v.screen === "chatSharedMedia" && "chatId" in v) {
+      setView({ screen: "chat", chatId: v.chatId });
+      return true;
+    }
+    if (v.screen === "chat") {
+      onBackFromChat();
+      return true;
+    }
+    if (v.screen === "publishPost") {
+      closePublishPostScreen();
+      return true;
+    }
+    if (v.screen === "addFriend") {
+      abortAddFriendPairingRef.current?.();
+      setView({ screen: "home" });
+      return true;
+    }
+    if (v.screen === "openSourceLicenses") {
+      setView({ screen: "settings" });
+      return true;
+    }
+    if (v.screen === "settings") {
+      setView({ screen: "home" });
+      return true;
+    }
+    if (v.screen === "friendsList") {
+      if (v.returnTo === "chat") {
+        if (v.returnPendingDraft) {
+          setView({ screen: "chat", pendingDraft: v.returnPendingDraft });
+        } else if (v.returnChatId) {
+          setView({ screen: "chat", chatId: v.returnChatId });
+        } else {
+          setView({ screen: "home" });
+        }
+      } else {
+        setView({ screen: "home" });
+      }
+      return true;
+    }
+    if (v.screen === "friendProfile") {
+      if (v.returnTo === "chat") {
+        if (v.returnPendingDraft) {
+          setView({ screen: "chat", pendingDraft: v.returnPendingDraft });
+        } else if (v.returnChatId) {
+          setView({ screen: "chat", chatId: v.returnChatId });
+        } else {
+          setView({ screen: "home" });
+        }
+      } else if (v.returnTo === "friendsList" && v.friendsListRestore) {
+        setView({
+          screen: "friendsList",
+          returnTo: v.friendsListRestore.returnTo,
+          returnChatId: v.friendsListRestore.returnChatId,
+          returnPendingDraft: v.friendsListRestore.returnPendingDraft,
+        });
+      } else {
+        setView({ screen: "home" });
+      }
+      return true;
+    }
+    if (v.screen === "myProfile") {
+      setView({ screen: "home" });
+      return true;
+    }
+    return false;
+  }, [
+    imageCropVisible,
+    cancelImageCropFlow,
+    photoEditorOpen,
+    photoEditorInCrop,
+    keyboardVisible,
+    fullscreenMedia,
+    fullScreenPost,
+    reactionDetailPost,
+    themePickerOpen,
+    reactionPickerOpen,
+    postFullscreenThreadReplyKey,
+    chatOverflowOpen,
+    membersModalOpen,
+    addMemberModalOpen,
+    editChatMetaOpen,
+    editChatPictureOpen,
+    saveBroadcastGroupNameModalOpen,
+    saveBroadcastGroupPromptOpen,
+    createTitleEditOpen,
+    broadcastPickerOpen,
+    chatComposerOpen,
+    chatSearchVisible,
+    voiceRecordStartedAt,
+    pendingVoiceNote,
+    voiceNoteMode,
+    closeFullscreenPost,
+    closePublishPostScreen,
+    cancelPhotoEditor,
+    cancelVoiceRecording,
+    discardPendingVoiceNote,
+    exitVoiceNoteMode,
+    onBackFromChat,
+  ]);
+
+  handleAndroidHardwareBackRef.current = handleAndroidHardwareBack;
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () =>
+      handleAndroidHardwareBackRef.current()
+    );
+    return () => sub.remove();
+  }, []);
 
   const applyReactionToMessage = useCallback(
     (messageId: string, emoji: string) => {
@@ -5619,7 +7794,6 @@ function MainAppInner() {
         })
       );
       setReactionPickerOpen(false);
-      setMessageActionsOpen(false);
       if (!target || !chat || DEMO_OFFLINE_MODE) return;
       void callEmulatorFunction("updateMessageMetadata", {
         uid: session.uid,
@@ -5644,12 +7818,46 @@ function MainAppInner() {
     ]
   );
 
+  const reactionPickerActiveEmoji = useMemo(() => {
+    const session = getBackendSession();
+    if (postReactionTargetId) {
+      const post = posts.find((p) => p.id === postReactionTargetId);
+      if (!post) return undefined;
+      const rx = post.feedReactions ?? {};
+      return rx[CURRENT_USER_ID] ?? (session ? rx[session.uid] : undefined);
+    }
+    if (commentReactionTarget) {
+      const post = posts.find((p) => p.id === commentReactionTarget.postId);
+      const comment = post?.comments?.find((c) => c.id === commentReactionTarget.commentId);
+      if (!comment) return undefined;
+      const entry = commentReactionTarget.threadEntryId
+        ? (comment.thread ?? []).find((t) => t.id === commentReactionTarget.threadEntryId)
+        : comment;
+      if (!entry) return undefined;
+      return getMyReactionEmoji(entry.reactions, session?.uid, backendUidToFriendId);
+    }
+    const messageId = reactionTargetMessageId ?? messageActionTargetId;
+    if (!messageId) return undefined;
+    const target = messages.find((m) => m.id === messageId);
+    return getMyReactionEmoji(target?.reactions, session?.uid, backendUidToFriendId);
+  }, [
+    postReactionTargetId,
+    commentReactionTarget,
+    reactionTargetMessageId,
+    messageActionTargetId,
+    posts,
+    messages,
+    getBackendSession,
+    backendUidToFriendId,
+  ]);
+
   const applyReaction = (emoji: string) => {
     if (postReactionTargetId) {
       const post = posts.find((p) => p.id === postReactionTargetId);
       if (post) void togglePostReaction(post, emoji);
       setPostReactionTargetId(null);
       setReactionPickerOpen(false);
+      setReactionTargetMessageId(null);
       return;
     }
     if (commentReactionTarget) {
@@ -5661,18 +7869,27 @@ function MainAppInner() {
       }
       setCommentReactionTarget(null);
       setReactionPickerOpen(false);
+      setReactionTargetMessageId(null);
       return;
     }
-    if (!messageActionTargetId) return;
-    applyReactionToMessage(messageActionTargetId, emoji);
+    const messageId = reactionTargetMessageId ?? messageActionTargetId;
+    if (!messageId) return;
+    applyReactionToMessage(messageId, emoji);
+    setReactionTargetMessageId(null);
     setReactionPickerOpen(false);
   };
+
+  const removeActiveReaction = useCallback(() => {
+    const emoji = reactionPickerActiveEmoji;
+    if (!emoji) return;
+    applyReaction(emoji);
+  }, [reactionPickerActiveEmoji]);
 
   const openReactionPickerForMessage = useCallback((messageId: string) => {
     setPostReactionTargetId(null);
     setCommentReactionTarget(null);
+    setReactionTargetMessageId(messageId);
     setMessageActionTargetId(messageId);
-    setMessageActionsOpen(false);
     setReactionPickerOpen(true);
   }, []);
 
@@ -5713,7 +7930,6 @@ function MainAppInner() {
           : message
       )
     );
-    setMessageActionsOpen(false);
     if (!DEMO_OFFLINE_MODE) {
       const session = getBackendSession();
       const chat = chats.find((c) => c.id === target.chatId);
@@ -5732,19 +7948,31 @@ function MainAppInner() {
   const startEditMessage = () => {
     if (!messageActionTarget || messageActionTarget.senderId !== CURRENT_USER_ID) return;
     setEditingMessageId(messageActionTarget.id);
-    setChatInput(messageActionTarget.text);
-    setMessageActionsOpen(false);
+    setChatInputSynced(messageActionTarget.text);
   };
 
   const startReplyToMessage = () => {
-    if (!messageActionTarget) return;
+    if (!messageActionTarget || !resolvedChat) return;
+    if (
+      (resolvedChat.kind ?? "standard") === "broadcast" &&
+      !canReplyToBroadcastMessage(messageActionTarget, resolvedChat, CURRENT_USER_ID)
+    ) {
+      Alert.alert(
+        "Private reply only",
+        isActiveBroadcastRecipient
+          ? "Long-press a message from the broadcaster and choose Reply to respond privately."
+          : "Choose a friend's message to reply in that private thread."
+      );
+      return;
+    }
     setReplyTargetMessageId(messageActionTarget.id);
     if (messageActionTarget.broadcastThreadFriendId) {
       setSelectedBroadcastThreadFriendId(messageActionTarget.broadcastThreadFriendId);
+    } else if (isActiveBroadcastRecipient) {
+      setSelectedBroadcastThreadFriendId(CURRENT_USER_ID);
     } else {
       setSelectedBroadcastThreadFriendId(null);
     }
-    setMessageActionsOpen(false);
   };
 
   const saveChatTitle = () => {
@@ -5771,16 +7999,38 @@ function MainAppInner() {
     setEditChatPictureOpen(false);
   };
 
-  const getPhotoMessageSize = (message: Message) => {
-    const maxWidth = 220;
-    const fallback = { width: 180, height: 180 };
-    if (!message.mediaWidth || !message.mediaHeight || message.mediaWidth <= 0 || message.mediaHeight <= 0) {
-      return fallback;
-    }
-    const width = Math.min(maxWidth, message.mediaWidth);
-    const height = Math.max(110, Math.round((width * message.mediaHeight) / message.mediaWidth));
-    return { width, height };
-  };
+  const getPhotoMessageSize = useCallback(
+    (message: Message) => {
+      const measured = measuredChatMediaByMessageId[message.id];
+      const fallbackAspect = message.kind === "video" ? 9 / 16 : 4 / 3;
+      return chatPhotoMessageSize(
+        windowWidth,
+        message.mediaWidth ?? measured?.width,
+        message.mediaHeight ?? measured?.height,
+        fallbackAspect
+      );
+    },
+    [windowWidth, measuredChatMediaByMessageId]
+  );
+
+  const rememberChatVideoDimensions = useCallback((messageId: string, width: number, height: number) => {
+    setMeasuredChatMediaByMessageId((prev) => {
+      const cur = prev[messageId];
+      if (cur?.width === width && cur?.height === height) return prev;
+      return { ...prev, [messageId]: { width, height } };
+    });
+  }, []);
+
+  const cancelVideoPrepare = useCallback((messageId: string) => {
+    setVideoPlayAfterPrepareId((cur) => (cur === messageId ? null : cur));
+    setPlayingVideoMessageId((cur) => (cur === messageId ? null : cur));
+    setVideoPrepareRequestedIds((prev) => {
+      if (!prev.has(messageId)) return prev;
+      const next = new Set(prev);
+      next.delete(messageId);
+      return next;
+    });
+  }, []);
 
   const getReactionEntries = (message: Message) => {
     const session = getBackendSession();
@@ -5837,7 +8087,10 @@ function MainAppInner() {
   const feedReactionDetailRows = useMemo(() => {
     if (!reactionDetailPost) return [];
     return Object.entries(reactionDetailPost.feedReactions ?? {})
-      .filter(([userId]) => visibleFriendIds.includes(userId))
+      .filter(
+        ([userId]) =>
+          userId === CURRENT_USER_ID || visibleFriendIds.includes(userId)
+      )
       .map(([userId, emoji]) => ({
         userId,
         emoji,
@@ -5903,6 +8156,11 @@ function MainAppInner() {
     async (post: Post) => {
       const session = getBackendSession();
       if (!session) return;
+      const lastHydratedAt = hydratedCommentPostAtRef.current[post.id];
+      if (lastHydratedAt && Date.now() - lastHydratedAt < 120_000) return;
+      if (hydrateInFlightPostIdsRef.current.has(post.id)) return;
+      hydrateInFlightPostIdsRef.current.add(post.id);
+      try {
       const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
       if (!postOwnerUid) return;
       const pairFriendUids =
@@ -5996,6 +8254,10 @@ function MainAppInner() {
           return { ...candidate, comments: merged };
         })
       );
+      hydratedCommentPostAtRef.current[post.id] = Date.now();
+      } finally {
+        hydrateInFlightPostIdsRef.current.delete(post.id);
+      }
     },
     [allFriends, backendUidToFriendId, getBackendSession, resolvePostOwnerBackendUid]
   );
@@ -6012,13 +8274,14 @@ function MainAppInner() {
     setPosts((current) =>
       current.map((candidate) => {
         if (candidate.id !== postId) return candidate;
-        const optimistic: PostComment = {
+    const optimistic: PostComment = {
           id: optimisticId,
           authorId: CURRENT_USER_ID,
           text,
           createdAt: Date.now(),
           reactions: {},
           thread: [],
+          syncState: "posting",
         };
         return { ...candidate, comments: [...(candidate.comments ?? []), optimistic] };
       })
@@ -6031,14 +8294,29 @@ function MainAppInner() {
       friendUid: session.uid,
       text,
     })
-      .then(() => hydratePrivateThreadForPost(post))
+      .then(() => {
+        setPosts((current) =>
+          current.map((candidate) => {
+            if (candidate.id !== postId) return candidate;
+            return {
+              ...candidate,
+              comments: (candidate.comments ?? []).map((c) =>
+                c.id === optimisticId ? { ...c, syncState: "posted" as const } : c
+              ),
+            };
+          })
+        );
+        return hydratePrivateThreadForPost(post);
+      })
       .catch(() => {
         setPosts((current) =>
           current.map((candidate) => {
             if (candidate.id !== postId) return candidate;
             return {
               ...candidate,
-              comments: (candidate.comments ?? []).filter((c) => c.id !== optimisticId),
+              comments: (candidate.comments ?? []).map((c) =>
+                c.id === optimisticId ? { ...c, syncState: "failed" as const } : c
+              ),
             };
           })
         );
@@ -6111,7 +8389,9 @@ function MainAppInner() {
   }, [friendMap, getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid]);
 
   const submitFullscreenPostComment = useCallback(() => {
-    const post = fullScreenPost;
+    const post = fullScreenPost
+      ? posts.find((p) => p.id === fullScreenPost.id) ?? fullScreenPost
+      : null;
     if (!post) return;
     if (postFullscreenThreadReplyKey) {
       const prefix = `${post.id}:`;
@@ -6128,6 +8408,7 @@ function MainAppInner() {
     addCommentToPost(post.id, topDraft);
   }, [
     fullScreenPost,
+    posts,
     postFullscreenThreadReplyKey,
     threadDraftByChainKey,
     commentDraftByPostId,
@@ -6297,11 +8578,24 @@ function MainAppInner() {
     if (!firebaseAuthUid) return;
     const postOwnerUid = resolvePostOwnerBackendUid(fullScreenPost, session.uid);
     if (!postOwnerUid) return;
-    const pairFriendUids =
-      fullScreenPost.authorId === CURRENT_USER_ID
-        ? allFriends.map((f) => f.backendUid).filter((x): x is string => !!x && x !== session.uid)
-        : [session.uid];
-    if (pairFriendUids.length === 0) return;
+
+    const watchFriendUids = new Set<string>();
+    if (fullScreenPost.authorId === CURRENT_USER_ID) {
+      for (const comment of fullScreenPost.comments ?? []) {
+        const bu = friendMap[comment.authorId]?.backendUid?.trim();
+        if (bu?.startsWith("u_") && bu !== session.uid) watchFriendUids.add(bu);
+      }
+      if (postFullscreenThreadReplyKey?.startsWith(`${fullScreenPost.id}:`)) {
+        const anchorId = postFullscreenThreadReplyKey.slice(fullScreenPost.id.length + 1);
+        const anchor = fullScreenPost.comments?.find((c) => c.id === anchorId);
+        const bu = anchor ? friendMap[anchor.authorId]?.backendUid?.trim() : "";
+        if (bu?.startsWith("u_") && bu !== session.uid) watchFriendUids.add(bu);
+      }
+    } else {
+      watchFriendUids.add(session.uid);
+    }
+    if (watchFriendUids.size === 0) return;
+
     const buildThreadId = (friendUid: string) => {
       const pair =
         postOwnerUid < friendUid ? `${postOwnerUid}_${friendUid}` : `${friendUid}_${postOwnerUid}`;
@@ -6313,14 +8607,12 @@ function MainAppInner() {
     const scheduleRehydrate = () => {
       if (cancelled) return;
       if (debounceTimer) clearTimeout(debounceTimer);
-      // Debounce: a burst of writes (e.g. message + thread doc updatedAt
-      // in the same callable) shouldn't trigger N hydrations.
       debounceTimer = setTimeout(() => {
         if (cancelled) return;
         void hydratePrivateThreadForPost(fullScreenPost);
       }, 80);
     };
-    const unsubscribers = pairFriendUids.map((friendUid) => {
+    const unsubscribers = [...watchFriendUids].map((friendUid) => {
       const threadId = buildThreadId(friendUid);
       const q = firestoreQuery(
         collection(db, "privatePostThreads", threadId, "messages"),
@@ -6332,11 +8624,7 @@ function MainAppInner() {
           if (cancelled) return;
           if (snap.docChanges().length > 0) scheduleRehydrate();
         },
-        () => {
-          /* Listener torn down. The initial hydration above and the
-           * post-action `.then(() => hydratePrivateThreadForPost(post))`
-           * fallbacks remain the durable path. */
-        }
+        () => undefined
       );
     });
     return () => {
@@ -6346,7 +8634,8 @@ function MainAppInner() {
     };
   }, [
     fullScreenPost,
-    allFriends,
+    friendMap,
+    postFullscreenThreadReplyKey,
     getBackendSession,
     hydratePrivateThreadForPost,
     resolvePostOwnerBackendUid,
@@ -6360,18 +8649,20 @@ function MainAppInner() {
       return friendProfilePosts.slice(0, 25);
     }
     if (view.screen === "home" && homeTab === "feed") {
-      const ownPosts = feedPosts.filter((p) => p.authorId === CURRENT_USER_ID);
-      const friendPosts = feedPosts.filter((p) => p.authorId !== CURRENT_USER_ID).slice(0, 12);
-      return [...new Map([...ownPosts, ...friendPosts].map((p) => [p.id, p])).values()].slice(0, 25);
+      // Feed comment threads hydrate lazily from viewability — not a bulk 25-post storm on open.
+      return [];
     }
     return [];
   }, [view.screen, homeTab, feedPosts, myProfilePosts, friendProfilePosts]);
 
   /**
-   * Post comments live in `privatePostThreads` and are not part of the encrypted
-   * post payload. Poll open post surfaces so owners see new friend comments on
-   * the feed without opening fullscreen first.
+   * Post comments live in `privatePostThreads`. Hydrate once when feed/profile
+   * surfaces change (not on a 6s poll — that drove hundreds of thousands of reads).
    */
+  const postsToHydrateCommentsKey = useMemo(
+    () => postsToHydrateComments.map((p) => p.id).join("|"),
+    [postsToHydrateComments]
+  );
   useEffect(() => {
     if (DEMO_OFFLINE_MODE) return;
     const session = getBackendSession();
@@ -6379,55 +8670,36 @@ function MainAppInner() {
     if (appLifecycleState !== "active") return;
     if (postsToHydrateComments.length === 0) return;
     let cancelled = false;
-    const tick = async () => {
-      if (cancelled) return;
-      await Promise.all(postsToHydrateComments.map((post) => hydratePrivateThreadForPost(post)));
-    };
-    void tick();
-    const intervalId = setInterval(() => void tick(), 6000);
+    void (async () => {
+      for (let i = 0; i < postsToHydrateComments.length; i += 2) {
+        if (cancelled) return;
+        const batch = postsToHydrateComments.slice(i, i + 2);
+        await Promise.all(batch.map((post) => hydratePrivateThreadForPost(post)));
+        await yieldToUi();
+      }
+    })();
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
     };
   }, [
     DEMO_OFFLINE_MODE,
     signedIn,
     appLifecycleState,
-    postsToHydrateComments,
+    postsToHydrateCommentsKey,
     getBackendSession,
     hydratePrivateThreadForPost,
+    postsToHydrateComments.length,
   ]);
 
-  const renderPostGridCell = (post: Post) => {
-    const w = postGridLayout.cell;
-    const h = w;
-    const thumb = getPostThumbnailUri(post);
-    const hasMedia = !!(post.imageUris?.length || post.videoUri);
-    return (
-      <View style={[styles.postGridCell, { width: w, height: h }]}>
-        {!hasMedia && post.text?.trim() ? (
-          <View style={styles.postGridTextMiniWrap}>
-            <Text style={styles.postGridTextMini} numberOfLines={5}>
-              {post.text}
-            </Text>
-          </View>
-        ) : thumb ? (
-          <View style={StyleSheet.absoluteFillObject}>
-            <Image source={{ uri: thumb }} style={styles.postGridImage} resizeMode="cover" />
-            {post.videoUri ? (
-              <View style={styles.postGridPlayBadge}>
-                <Ionicons name="play" size={18} color="#FFFFFF" />
-              </View>
-            ) : null}
-          </View>
-        ) : (
-          <View style={[styles.postGridEmpty, { width: w, height: h }]}>
-            <Feather name="image" size={18} color={theme.subtleText} />
-          </View>
-        )}
-      </View>
-    );
-  };
+  const renderPostGridCell = (post: Post) => (
+    <PostGridCell
+      post={post}
+      width={postGridLayout.cell}
+      height={postGridLayout.cell}
+      styles={styles}
+      subtleTextColor={theme.subtleText}
+    />
+  );
 
   const commentReactionEntries = useCallback(
     (reactions: Record<string, string> | undefined) => {
@@ -6440,6 +8712,25 @@ function MainAppInner() {
       );
     },
     [backendUidToFriendId, getBackendSession, visibleFriendIds]
+  );
+
+  const feedPostGalleryProps = useCallback(
+    (post: Post) => {
+      const count = postCarouselImageCount(post);
+      const raw = postMediaGalleryIndexByPostId[post.id];
+      const onMediaGalleryIndexChange = (index: number) => {
+        const clamped = count > 0 ? Math.max(0, Math.min(index, count - 1)) : 0;
+        setPostMediaGalleryIndex(post.id, clamped);
+      };
+      if (raw === undefined) {
+        return { onMediaGalleryIndexChange };
+      }
+      return {
+        mediaGalleryIndex: count > 0 ? Math.min(raw, count - 1) : 0,
+        onMediaGalleryIndexChange,
+      };
+    },
+    [postMediaGalleryIndexByPostId, setPostMediaGalleryIndex]
   );
 
   const feedPostCardShared = useMemo(
@@ -6465,6 +8756,11 @@ function MainAppInner() {
       onOpenReactionPickerForPost: openReactionPickerForPost,
       onOpenReactionPickerForComment: openReactionPickerForComment,
       onOpenReactionDetail: setReactionDetailPost,
+      onOpenMedia: (
+        uri: string,
+        kind: "photo" | "video",
+        options?: { galleryUris?: string[]; galleryIndex?: number; postId?: string }
+      ) => openFullscreenMedia(uri, kind, options),
     }),
     [
       windowWidth,
@@ -6477,12 +8773,17 @@ function MainAppInner() {
       commentReactionEntries,
       openReactionPickerForPost,
       openReactionPickerForComment,
+      openFullscreenMedia,
     ]
   );
 
   const showHome = view.screen === "home";
-  const showChatScreen =
-    view.screen === "chat" && (pendingDraft !== null || resolvedChat !== null);
+  /** Keep chat mounted whenever `view.screen === "chat"` — do not gate on `resolvedChat` (send/migrate can briefly drop the row). */
+  const showChatScreen = view.screen === "chat";
+  const fullScreenPostLive = useMemo(() => {
+    if (!fullScreenPost) return null;
+    return posts.find((p) => p.id === fullScreenPost.id) ?? fullScreenPost;
+  }, [fullScreenPost, posts]);
   const showCompactComposer = keyboardVisible && !!chatInput.trim();
 
   useEffect(() => {
@@ -6524,13 +8825,13 @@ function MainAppInner() {
         >
           <Text
             style={{
-              fontSize: 44,
+              fontSize: 64,
               fontWeight: "900",
               letterSpacing: 0.5,
               color: theme.accent,
             }}
           >
-            tBH
+            E
           </Text>
           <Text
             style={{
@@ -6544,6 +8845,34 @@ function MainAppInner() {
             {PLACEHOLDER_APP_PRODUCT_NAME}
           </Text>
         </View>
+      </View>
+    );
+  }
+
+  if (signedIn && !notificationGateReady) {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background, paddingTop: safeTop }}>
+        <StatusBar style={isDarkMode ? "light" : "dark"} />
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+          <ActivityIndicator size="large" color={theme.accent} />
+        </View>
+      </View>
+    );
+  }
+
+  if (signedIn && showNotificationPrePrompt) {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={isDarkMode ? "light" : "dark"} />
+        <NotificationPrePromptScreen
+          theme={theme}
+          styles={styles}
+          productName={PLACEHOLDER_APP_PRODUCT_NAME}
+          safeTop={safeTop}
+          busy={notificationPrePromptBusy}
+          onAllow={() => void onAllowNotificationsPrePrompt()}
+          onDecline={() => void onDeclineNotificationsPrePrompt()}
+        />
       </View>
     );
   }
@@ -6627,9 +8956,9 @@ function MainAppInner() {
               <View style={[styles.authCard, { width: "100%", maxWidth: 420 }]}>
                 <Text style={styles.authHeading}>Verification code</Text>
                 <Text style={styles.subtleText}>
-                  Enter the 6-digit code for {loginEmail.trim()}. Tap “Request OTP code” below; on Android your
-                  phone will ask for SMS access so only messages that match your sign-in can fill the code
-                  automatically.
+                  Enter the 6-digit code for {loginEmail.trim()}. Tap “Request OTP code” first, then “Verify OTP”
+                  after you enter it. On Android your phone will ask for SMS access so only messages that match your
+                  sign-in can fill the code automatically.
                 </Text>
                 <TextInput
                   value={loginOtp}
@@ -6642,22 +8971,34 @@ function MainAppInner() {
                 />
                 <View style={{ height: 14 }} />
                 <View style={{ flexDirection: "row", gap: 10 }}>
-                  <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={completeLoginWithOtp}>
-                    <Text style={styles.primaryButtonText}>Validate OTP</Text>
-                  </Pressable>
                   <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={() => void requestLoginOtpCode()}>
                     <Text style={styles.primaryButtonText}>Request OTP code</Text>
+                  </Pressable>
+                  <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={completeLoginWithOtp}>
+                    <Text style={styles.primaryButtonText}>Verify OTP</Text>
                   </Pressable>
                 </View>
               </View>
             </View>
           </View>
         ) : authMode === "signup" ? (
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior="padding"
+            enabled={keyboardVisible}
+            keyboardVerticalOffset={safeTop}
+          >
           <ScrollViewUntilScroll
             contentContainerStyle={[
               styles.authCard,
-              { paddingBottom: scrollPageBottomPadding(insets.bottom, 20) },
+              {
+                paddingBottom:
+                  keyboardHeight > 0
+                    ? keyboardScrollPadding(keyboardHeight, 20)
+                    : scrollPageBottomPadding(insets.bottom, 20),
+              },
             ]}
+            keyboardShouldPersistTaps="handled"
           >
             <View style={styles.authTopBar}>
               <Pressable onPress={() => setAuthMode("login")} style={styles.authTopLinkButton}>
@@ -6740,6 +9081,7 @@ function MainAppInner() {
               <Text style={styles.primaryButtonText}>Create account</Text>
             </Pressable>
           </ScrollViewUntilScroll>
+          </KeyboardAvoidingView>
         ) : (
           <View style={styles.authLoginRoot}>
             <View style={styles.authTopBar}>
@@ -6774,11 +9116,19 @@ function MainAppInner() {
 
   return (
     <View style={[styles.screenRoot, { backgroundColor: theme.background }]}>
-      <StatusBar
-        style={
-          view.screen === "addFriend" ? (isDarkMode ? "dark" : "light") : isDarkMode ? "light" : "dark"
-        }
-      />
+      <StatusBar style={isDarkMode ? "light" : "dark"} />
+      {!isOnline ? (
+        <View
+          style={[styles.offlineBanner, { top: safeTop }]}
+          accessibilityRole="text"
+          accessibilityLabel="You are offline. Showing cached content."
+        >
+          <Ionicons name="cloud-offline-outline" size={16} color="#fff" />
+          <Text style={styles.offlineBannerText}>
+            You&apos;re offline — showing cached content
+          </Text>
+        </View>
+      ) : null}
       {Platform.OS === "ios" ? (
         <InputAccessoryView nativeID="bioInputAccessory">
           <View style={styles.inputAccessoryBar}>
@@ -6794,7 +9144,7 @@ function MainAppInner() {
         </InputAccessoryView>
       ) : null}
 
-      {fullScreenPost ? (
+      {fullScreenPost && fullScreenPostLive ? (
         <Modal
           visible
           animationType="fade"
@@ -6804,8 +9154,8 @@ function MainAppInner() {
           <KeyboardAvoidingView
             style={[styles.fullScreenPostRoot, { backgroundColor: theme.background }]}
             behavior="padding"
-            enabled={keyboardVisible}
-            keyboardVerticalOffset={0}
+            enabled={keyboardAvoidanceEnabled}
+            keyboardVerticalOffset={safeTop}
           >
             <View style={{ paddingTop: safeTop, flex: 1 }}>
               {Platform.OS === "ios" ? (
@@ -6854,14 +9204,15 @@ function MainAppInner() {
               >
                 <FeedPostCard
                   {...feedPostCardShared}
-                  post={fullScreenPost}
+                  {...feedPostGalleryProps(fullScreenPostLive)}
+                  post={fullScreenPostLive}
                   inFullscreenModal
                   hideComposers
-                  onToggleReaction={(emoji) => togglePostReaction(fullScreenPost, emoji)}
+                  onToggleReaction={(emoji) => togglePostReaction(fullScreenPostLive, emoji)}
                   onOpenThreadReply={
-                    fullScreenPost.authorId === CURRENT_USER_ID
+                    fullScreenPostLive.authorId === CURRENT_USER_ID
                       ? (cid) => {
-                          setPostFullscreenThreadReplyKey(`${fullScreenPost.id}:${cid}`);
+                          setPostFullscreenThreadReplyKey(`${fullScreenPostLive.id}:${cid}`);
                           requestAnimationFrame(() => postCommentInputRef.current?.focus());
                         }
                       : undefined
@@ -6869,7 +9220,7 @@ function MainAppInner() {
                 />
               </ScrollViewUntilScroll>
               {(() => {
-                const pc = fullScreenPost;
+                const pc = fullScreenPostLive;
                 const isViewerOwner = pc.authorId === CURRENT_USER_ID;
                 const threadDraftKey = postFullscreenThreadReplyKey;
                 const composerActive = isViewerOwner ? !!threadDraftKey : true;
@@ -6926,7 +9277,11 @@ function MainAppInner() {
                         styles.chatInputBar,
                         {
                           paddingTop: keyboardVisible ? 4 : 8,
-                          paddingBottom: composerBottomPadding(insets.bottom, keyboardVisible),
+                          paddingBottom: keyboardComposerBottomPadding(
+                            insets.bottom,
+                            keyboardVisible,
+                            keyboardHeight
+                          ),
                         },
                       ]}
                     >
@@ -7024,98 +9379,20 @@ function MainAppInner() {
 
       {showHome ? (
         <View style={[styles.homeColumn, { paddingTop: safeTop }]}>
-          <View style={styles.homeTopBar}>
-            <View style={styles.homeTopLeftIcons}>
-              <Pressable
-                onPress={openSettingsScreen}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.settings ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Settings"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.settings ? "settings" : "settings-outline"}
-                  size={22}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={openMyProfile}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.myProfile ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="My profile"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-                  size={24}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={openFriendsListFromHome}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.friendsList ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Friends list"
-                accessibilityHint="Opens your friends list. You can also swipe right on the chat list."
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.friendsList ? "people" : "people-outline"}
-                  size={22}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={() => setHomeTab("chats")}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.chats ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Open chats"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-                  size={21}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={() => setHomeTab("feed")}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.feed ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Open feed"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.feed ? "newspaper" : "newspaper-outline"}
-                  size={21}
-                  color={theme.accent}
-                />
-              </Pressable>
-              <Pressable
-                onPress={openAddFriendFromHome}
-                style={[
-                  styles.iconButton,
-                  homeNavIconHighlight.addFriend ? styles.homeModeIconActive : null,
-                ]}
-                accessibilityLabel="Add friend"
-              >
-                <Ionicons
-                  name={homeNavIconHighlight.addFriend ? "person-add" : "person-add-outline"}
-                  size={22}
-                  color={theme.accent}
-                />
-              </Pressable>
-            </View>
-            <Pressable onPress={confirmLogout} style={styles.iconButton} accessibilityLabel="Logout">
-              <Ionicons name="log-out-outline" size={22} color={theme.accent} />
-            </Pressable>
-          </View>
+          <HomeTopNavBar
+            theme={theme}
+            styles={styles}
+            highlight={homeNavIconHighlight}
+            badges={homeNavBadges}
+            onOpenCreatePost={openPostComposer}
+            onOpenSettings={openSettingsScreen}
+            onOpenMyProfile={openMyProfile}
+            onOpenFriendsList={openFriendsListFromHome}
+            onOpenHomeChats={openHomeChatsFromNav}
+            onOpenHomeFeed={openHomeFeedFromNav}
+            onOpenAddFriend={openAddFriendFromHome}
+            onLogout={confirmLogout}
+          />
 
           {homeTab === "chats" ? (
             <View style={styles.homeMainSwipeLayer} {...homeSwipeOpenFriendsPan.panHandlers}>
@@ -7174,6 +9451,7 @@ function MainAppInner() {
                   const avatarLetter = isGroup ? "^" : counterpartPd?.letter ?? "^";
                   const avatarUri = !isGroup ? counterpartPd?.profilePictureUrl : undefined;
                   const itemTitle = resolvedStoredChatListTitle(item);
+                  const isUnread = unreadChatIdSet.has(item.id);
                   return (
                     <View
                       style={[
@@ -7228,6 +9506,7 @@ function MainAppInner() {
                                 style={[
                                   item.kind === "broadcast" ? styles.broadcastChatTitle : styles.chatName,
                                   styles.chatTitleTextFlex,
+                                  isUnread ? styles.chatNameUnread : null,
                                 ]}
                                 numberOfLines={1}
                               >
@@ -7243,20 +9522,31 @@ function MainAppInner() {
                                 />
                               ) : null}
                             </View>
-                            <Text style={styles.chatPreview} numberOfLines={1}>
+                            <Text
+                              style={[styles.chatPreview, isUnread ? styles.chatPreviewUnread : null]}
+                              numberOfLines={1}
+                            >
                               {buildHomeChatPreview(
                                 item,
                                 lastMessage,
                                 friendMap,
                                 unfriendedIds,
                                 serverFriendUidsForDisplay,
-                                identityLockedChatIdsSet
+                                identityLockedChatIdsSet,
+                                localAcceptedFriendIds
                               )}
                             </Text>
                           </View>
                           <Text style={styles.chatTimestamp}>
-                            {formatDayTime((lastMessage?.createdAt ?? item.updatedAt) as number)}
+                            {formatDayTime(
+                              chatListSortTimestampMs(
+                                item,
+                                lastMessage,
+                                visibleThreadMessagesByChatId[item.id] ?? []
+                              )
+                            )}
                           </Text>
+                          {isUnread ? <View style={styles.chatUnreadDot} /> : null}
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -7313,8 +9603,12 @@ function MainAppInner() {
             <>
               <FlatListUntilScroll
                 style={[styles.chatListFlex, styles.feedListFullBleed]}
-                data={feedPosts}
+                data={displayedFeedPosts}
                 keyExtractor={(item) => item.id}
+                initialNumToRender={FEED_UI_INITIAL_COUNT}
+                maxToRenderPerBatch={2}
+                windowSize={5}
+                removeClippedSubviews
                 contentContainerStyle={[
                   styles.feedList,
                   { paddingBottom: homeBottomActionClearance(insets.bottom) },
@@ -7323,13 +9617,14 @@ function MainAppInner() {
                   <RefreshControl
                     refreshing={feedRefreshing}
                     onRefresh={() => {
+                      setFeedDisplayLimit(FEED_UI_INITIAL_COUNT);
                       setFeedRefreshing(true);
                       setFeedPullNonce((n) => n + 1);
                     }}
                     tintColor={theme.accent}
                   />
                 }
-                onEndReached={() => loadMoreFeedPosts()}
+                onEndReached={onFeedEndReached}
                 onEndReachedThreshold={0.35}
                 ListFooterComponent={
                   feedLoadingMore ? (
@@ -7337,160 +9632,145 @@ function MainAppInner() {
                   ) : null
                 }
                 onViewableItemsChanged={({ viewableItems }: { viewableItems: ViewToken[] }) => {
-                  const videoVisible = viewableItems.find(
-                    (v) => v.isViewable && (v.item as Post)?.videoUri
-                  );
-                  setPlayingFeedVideoPostId(
-                    videoVisible ? (videoVisible.item as Post).id : null
-                  );
                   const visiblePosts = viewableItems
                     .filter((v) => v.isViewable && v.item)
                     .map((v) => v.item as Post);
                   if (visiblePosts.length > 0) {
+                    markFeedPostsForMediaResolve(visiblePosts.map((post) => post.id));
                     if (feedViewableHydrateTimerRef.current) {
                       clearTimeout(feedViewableHydrateTimerRef.current);
                     }
                     feedViewableHydrateTimerRef.current = setTimeout(() => {
-                      for (const visiblePost of visiblePosts.slice(0, 6)) {
+                      for (const visiblePost of visiblePosts.slice(0, 3)) {
                         void hydratePrivateThreadForPost(visiblePost);
                       }
-                    }, 250);
+                    }, 500);
                   }
                 }}
-                viewabilityConfig={feedVideoViewabilityConfig}
+                viewabilityConfig={feedViewabilityConfig}
                 ItemSeparatorComponent={() => <View style={styles.feedSeparator} />}
                 ListEmptyComponent={<Text style={styles.feedEmpty}>No posts from friends yet.</Text>}
                 renderItem={({ item }) => (
                   <FeedPostCard
                     {...feedPostCardShared}
+                    {...feedPostGalleryProps(item)}
                     post={item}
-                    videoShouldPlay={playingFeedVideoPostId === item.id}
+                    resolveMediaEnabled={feedMediaResolveIds.has(item.id)}
                     onToggleReaction={(emoji) => togglePostReaction(item, emoji)}
                     onOpenViewer={() => openPostViewerFromFeed(item)}
                   />
                 )}
               />
-              <Pressable
-                style={[styles.feedFabButton, { bottom: fabBottomOffset(insets.bottom) }]}
-                onPress={openPostComposer}
-              >
-                <Ionicons name="create-outline" size={22} color="#FFFFFF" />
-                <Text style={styles.startChatButtonText}>New post</Text>
-              </Pressable>
             </>
           )}
         </View>
       ) : null}
 
-      {view.screen === "friendProfile" && friendMap[view.friendId] ? (
+      {view.screen === "friendProfile" && resolveFriendProfileCard(view.friendId) ? (
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 20 }]}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={safeTop}
         >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
-            <View style={styles.homeTopBar}>
-              <View style={styles.homeTopLeftIcons}>
-                <Pressable
-                  onPress={openSettingsScreen}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.settings ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Settings"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.settings ? "settings" : "settings-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable onPress={openMyProfile} style={styles.iconButton} accessibilityLabel="My profile">
-                  <Ionicons name="person-circle-outline" size={24} color={theme.accent} />
-                </Pressable>
-                <Pressable onPress={openFriendsListFromHome} style={styles.iconButton} accessibilityLabel="Friends list">
-                  <Ionicons name="people-outline" size={22} color={theme.accent} />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("chats");
-                    setView({ screen: "home" });
-                  }}
-                  style={styles.iconButton}
-                  accessibilityLabel="Open chats"
-                >
-                  <Ionicons name="chatbubbles-outline" size={21} color={theme.accent} />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("feed");
-                    setView({ screen: "home" });
-                  }}
-                  style={styles.iconButton}
-                  accessibilityLabel="Open feed"
-                >
-                  <Ionicons name="newspaper-outline" size={21} color={theme.accent} />
-                </Pressable>
-                <Pressable onPress={openAddFriendFromHome} style={styles.iconButton} accessibilityLabel="Add friend">
-                  <Ionicons name="person-add-outline" size={22} color={theme.accent} />
-                </Pressable>
-              </View>
-              <Pressable onPress={confirmLogout} style={styles.iconButton} accessibilityLabel="Logout">
-                <Ionicons name="log-out-outline" size={22} color={theme.accent} />
-              </Pressable>
-            </View>
+            <HomeTopNavBar
+              theme={theme}
+              styles={styles}
+              highlight={homeNavIconHighlight}
+              badges={homeNavBadges}
+              onOpenCreatePost={openPostComposer}
+              onOpenSettings={openSettingsScreen}
+              onOpenMyProfile={openMyProfile}
+              onOpenFriendsList={openFriendsListFromHome}
+              onOpenHomeChats={openHomeChatsFromNav}
+              onOpenHomeFeed={openHomeFeedFromNav}
+              onOpenAddFriend={openAddFriendFromHome}
+              onLogout={confirmLogout}
+            />
             <ScrollViewUntilScroll
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
-              contentContainerStyle={styles.friendProfileScroll}
+              contentContainerStyle={[
+                styles.friendProfileScroll,
+                keyboardHeight > 0 ? { paddingBottom: keyboardScrollPadding(keyboardHeight) } : null,
+              ]}
             >
               <View style={styles.friendHeroImageFrame}>
                 <Image
-                  source={{ uri: friendMap[view.friendId].profilePictureUrl }}
+                  source={{ uri: resolveFriendProfileCard(view.friendId)?.profilePictureUrl }}
                   style={styles.friendHeroImageFill}
                   resizeMode="cover"
                 />
               </View>
-              <Text style={styles.friendHeroName}>{friendMap[view.friendId].displayName}</Text>
-              {friendMap[view.friendId].bio.trim().length > 0 ? (
-                <Text style={styles.friendHeroBio}>{friendMap[view.friendId].bio}</Text>
+              <Text style={styles.friendHeroName}>
+                {resolveFriendProfileCard(view.friendId)?.displayName}
+              </Text>
+              {(resolveFriendProfileCard(view.friendId)?.bio ?? "").trim().length > 0 ? (
+                <Text style={styles.friendHeroBio}>
+                  {resolveFriendProfileCard(view.friendId)?.bio}
+                </Text>
               ) : null}
               <Text style={styles.friendHeroStatus}>
-                {friendMap[view.friendId].online ? "Online" : "Offline"}
+                {!isOnline
+                  ? "Not connected to internet"
+                  : resolveFriendProfileCard(view.friendId)?.online
+                    ? "Online"
+                    : "Offline"}
               </Text>
-              {friendProfileMediaPosts.length > 0 ? (
+              {!isOnline && friendProfilePosts.length === 0 && friendProfileMediaPosts.length === 0 ? (
                 <View style={styles.profilePostsSection}>
-                  {chunkBy(friendProfileMediaPosts, 3).map((row, ri) => (
-                    <View
-                      key={`fp-row-${ri}`}
-                      style={[styles.postGridRow, { marginBottom: postGridLayout.gap }]}
-                    >
-                      {row.map((p, ci) => (
-                        <Pressable
-                          key={p.id}
-                          onPress={() => openPostViewerFromFeed(p)}
-                          style={{
-                            marginRight: ci < row.length - 1 ? postGridLayout.gap : 0,
-                          }}
+                  <Text style={styles.feedEmpty}>
+                    Not connected to internet — posts and media can&apos;t be loaded right now.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  {friendProfileMediaPosts.length > 0 ? (
+                    <View style={styles.profilePostsSection}>
+                      {chunkBy(friendProfileMediaPosts, 3).map((row, ri) => (
+                        <View
+                          key={`fp-row-${ri}`}
+                          style={[styles.postGridRow, { marginBottom: postGridLayout.gap }]}
                         >
-                          {renderPostGridCell(p)}
-                        </Pressable>
+                          {row.map((p, ci) => (
+                            <Pressable
+                              key={p.id}
+                              onPress={() => openPostViewerFromFeed(p)}
+                              style={{
+                                marginRight: ci < row.length - 1 ? postGridLayout.gap : 0,
+                              }}
+                            >
+                              {renderPostGridCell(p)}
+                            </Pressable>
+                          ))}
+                        </View>
                       ))}
                     </View>
-                  ))}
-                </View>
-              ) : null}
-              <View style={styles.profilePostsSection}>
-                {friendProfilePosts.map((post) => (
-                  <FeedPostCard
-                    {...feedPostCardShared}
-                    key={`friend-post-${post.id}`}
-                    post={post}
-                    onToggleReaction={(emoji) => togglePostReaction(post, emoji)}
-                    onOpenViewer={() => openPostViewerFromFeed(post)}
-                  />
-                ))}
-              </View>
+                  ) : null}
+                  <View style={[styles.profilePostsSection, styles.profilePostsFeedList]}>
+                    {visibleFriendProfileFeedPosts.map((post) => (
+                      <FeedPostCard
+                        {...feedPostCardShared}
+                        {...feedPostGalleryProps(post)}
+                        key={`friend-post-${post.id}`}
+                        post={post}
+                        onToggleReaction={(emoji) => togglePostReaction(post, emoji)}
+                        onOpenViewer={() => openPostViewerFromFeed(post)}
+                      />
+                    ))}
+                    {friendProfileFeedHasMore ? (
+                      <Pressable
+                        style={styles.profileFeedLoadMoreBtn}
+                        onPress={loadMoreProfileFeedPosts}
+                        accessibilityLabel="Load more posts"
+                      >
+                        <Text style={styles.profileFeedLoadMoreText}>Load more posts</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </>
+              )}
             </ScrollViewUntilScroll>
             <View style={[styles.profileBottomBar, { paddingBottom: stickyFooterPadding(insets.bottom) }]}>
               <Pressable
@@ -7509,111 +9789,35 @@ function MainAppInner() {
       {view.screen === "myProfile" ? (
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 20 }]}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={safeTop}
         >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
-            <View style={styles.homeTopBar}>
-              <View style={styles.homeTopLeftIcons}>
-                <Pressable
-                  onPress={openSettingsScreen}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.settings ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Settings"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.settings ? "settings" : "settings-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openMyProfile}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.myProfile ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="My profile"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-                    size={24}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openFriendsListFromHome}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.friendsList ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Friends list"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.friendsList ? "people" : "people-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("chats");
-                    setView({ screen: "home" });
-                  }}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.chats ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Open chats"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-                    size={21}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("feed");
-                    setView({ screen: "home" });
-                  }}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.feed ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Open feed"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.feed ? "newspaper" : "newspaper-outline"}
-                    size={21}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openAddFriendFromHome}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.addFriend ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Add friend"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.addFriend ? "person-add" : "person-add-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-              </View>
-              <Pressable onPress={confirmLogout} style={styles.iconButton} accessibilityLabel="Logout">
-                <Ionicons name="log-out-outline" size={22} color={theme.accent} />
-              </Pressable>
-            </View>
+            <HomeTopNavBar
+              theme={theme}
+              styles={styles}
+              highlight={homeNavIconHighlight}
+              badges={homeNavBadges}
+              onOpenCreatePost={openPostComposer}
+              onOpenSettings={openSettingsScreen}
+              onOpenMyProfile={openMyProfile}
+              onOpenFriendsList={openFriendsListFromHome}
+              onOpenHomeChats={openHomeChatsFromNav}
+              onOpenHomeFeed={openHomeFeedFromNav}
+              onOpenAddFriend={openAddFriendFromHome}
+              onLogout={confirmLogout}
+            />
             <ScrollViewUntilScroll
+              ref={myProfileScrollRef}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
-              contentContainerStyle={styles.friendProfileScroll}
+              onScroll={myProfileBioPin.onScroll}
+              scrollEventThrottle={16}
+              contentContainerStyle={[
+                styles.friendProfileScroll,
+                keyboardHeight > 0 ? { paddingBottom: keyboardScrollPadding(keyboardHeight) } : null,
+              ]}
             >
               <Pressable onPress={pickProfileImage}>
                 {myProfilePictureUrl ? (
@@ -7637,6 +9841,7 @@ function MainAppInner() {
                     setMyBioTextEntryOpen(true);
                     setTimeout(() => {
                       bioInputRef.current?.focus();
+                      myProfileBioPin.pinOnFocus();
                     }, 80);
                   }}
                   delayLongPress={450}
@@ -7646,24 +9851,25 @@ function MainAppInner() {
                 </Pressable>
               ) : (
                 <TextInput
-                  ref={bioInputRef}
-                  value={myBio}
-                  onChangeText={(t) => setMyBio(t)}
-                  placeholder="Enter bio here..."
-                  placeholderTextColor={theme.subtleText}
-                  style={[styles.searchInput, styles.bioInput]}
-                  multiline
-                  inputAccessoryViewID={Platform.OS === "ios" ? "bioInputAccessory" : undefined}
-                  returnKeyType={Platform.OS === "android" ? "done" : "default"}
-                  blurOnSubmit={false}
-                  onSubmitEditing={() => {
-                    if (Platform.OS === "android") Keyboard.dismiss();
-                  }}
-                  onBlur={() => {
-                    if (myBio.trim().length > 0) {
-                      setMyBioTextEntryOpen(false);
-                    }
-                  }}
+                    ref={bioInputRef}
+                    value={myBio}
+                    onChangeText={(t) => setMyBio(t)}
+                    placeholder="Enter bio here..."
+                    placeholderTextColor={theme.subtleText}
+                    style={[styles.searchInput, styles.bioInput]}
+                    multiline
+                    inputAccessoryViewID={Platform.OS === "ios" ? "bioInputAccessory" : undefined}
+                    returnKeyType={Platform.OS === "android" ? "done" : "default"}
+                    blurOnSubmit={false}
+                    onFocus={myProfileBioPin.pinOnFocus}
+                    onSubmitEditing={() => {
+                      if (Platform.OS === "android") Keyboard.dismiss();
+                    }}
+                    onBlur={() => {
+                      if (myBio.trim().length > 0) {
+                        setMyBioTextEntryOpen(false);
+                      }
+                    }}
                 />
               )}
               {myProfileMediaPosts.length > 0 ? (
@@ -7690,16 +9896,26 @@ function MainAppInner() {
                   ))}
                 </View>
               ) : null}
-              <View style={styles.profilePostsSection}>
-                {myProfilePosts.map((post) => (
+              <View style={[styles.profilePostsSection, styles.profilePostsFeedList]}>
+                {visibleMyProfileFeedPosts.map((post) => (
                   <FeedPostCard
                     {...feedPostCardShared}
+                    {...feedPostGalleryProps(post)}
                     key={`my-post-${post.id}`}
                     post={post}
                     onToggleReaction={(emoji) => togglePostReaction(post, emoji)}
                     onOpenViewer={() => openPostViewerFromFeed(post)}
                   />
                 ))}
+                {myProfileFeedHasMore ? (
+                  <Pressable
+                    style={styles.profileFeedLoadMoreBtn}
+                    onPress={loadMoreProfileFeedPosts}
+                    accessibilityLabel="Load more posts"
+                  >
+                    <Text style={styles.profileFeedLoadMoreText}>Load more posts</Text>
+                  </Pressable>
+                ) : null}
               </View>
             </ScrollViewUntilScroll>
           </View>
@@ -7708,7 +9924,7 @@ function MainAppInner() {
 
       {view.screen === "addFriend" ? (
         <View
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.accent, zIndex: 26 }]}
+          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 26 }]}
         >
           <AddFriendScreen
             theme={theme}
@@ -7716,29 +9932,29 @@ function MainAppInner() {
             safeTop={safeTop}
             bottomInset={stickyFooterPadding(insets.bottom)}
             navHighlight={homeNavIconHighlight}
+            navBadges={homeNavBadges}
             styles={styles}
+            onOpenCreatePost={openPostComposer}
             onOpenSettings={openSettingsScreen}
             onOpenMyProfile={openMyProfile}
             onOpenFriendsList={openFriendsListFromHome}
             onOpenAddFriend={openAddFriendFromHome}
-            onOpenHomeChats={() => {
-              setHomeTab("chats");
-              setView({ screen: "home" });
-            }}
-            onOpenHomeFeed={() => {
-              setHomeTab("feed");
-              setView({ screen: "home" });
-            }}
+            onOpenHomeChats={openHomeChatsFromNav}
+            onOpenHomeFeed={openHomeFeedFromNav}
             onLogout={confirmLogout}
             pairingBackendReady={backendSessionReady}
             onPairingRegisterPinWithRetry={pairingRegisterPinWithRetryParent}
             onPairingAwaitPinRedeem={pairingAwaitPinRedeemParent}
             onPairingConfirmPinRead={pairingConfirmPinReadParent}
+            onPairingConfirmRedeemerDualConfirm={pairingConfirmRedeemerDualConfirmParent}
             onPairingAwaitIssuerFinalConfirm={pairingAwaitIssuerFinalConfirmParent}
             onPairingFinalizePinOffer={pairingFinalizePinOfferParent}
             onEnsurePairingLocationPermission={ensurePairingLocationPermission}
+            onEnsurePairingCameraPermission={ensurePairingCameraPermission}
             onPairingCancelPinOffer={pairingCancelPinOfferParent}
             onPairingPollOfferStillPresent={pairingPollOfferStillPresentParent}
+            onPairingGetOfferStatus={pairingGetOfferStatusParent}
+            onRegisterPairingAbort={registerAddFriendPairingAbort}
           />
         </View>
       ) : null}
@@ -7770,12 +9986,56 @@ function MainAppInner() {
                 <Text style={styles.subtleText}>No photos or videos in this chat yet.</Text>
               }
               renderItem={({ item: m }) => (
+                <ChatMessageMediaResolver
+                  message={m}
+                  resolveEnabled={!m.mediaEncrypted || videoPrepareRequestedIds.has(m.id)}
+                >
+                  {(resolvedUri, resolving) => {
+                    if (m.kind === "video" && m.mediaEncrypted && !resolvedUri) {
+                      return (
+                        <Pressable
+                          onPress={() => {
+                            setVideoPrepareRequestedIds((prev) => {
+                              if (prev.has(m.id)) return prev;
+                              const next = new Set(prev);
+                              next.add(m.id);
+                              return next;
+                            });
+                          }}
+                          style={{ width: postGridLayout.cell, height: postGridLayout.cell }}
+                        >
+                          <View
+                            style={[
+                              styles.postGridCell,
+                              { width: postGridLayout.cell, height: postGridLayout.cell },
+                            ]}
+                          >
+                            {resolving ? (
+                              <ActivityIndicator color={theme.accent} style={styles.postGridImage} />
+                            ) : (
+                              <View
+                                style={[
+                                  styles.postGridImage,
+                                  { backgroundColor: "#1a1a1a", alignItems: "center", justifyContent: "center" },
+                                ]}
+                              >
+                                <Ionicons name="play" size={28} color="#fff" />
+                              </View>
+                            )}
+                          </View>
+                        </Pressable>
+                      );
+                    }
+                    if (!resolvedUri) {
+                      return <View style={{ height: 1 }} />;
+                    }
+                    return (
                 <Pressable
                   onPress={() =>
-                    setFullscreenMedia({
-                      uri: m.mediaUri!,
-                      kind: m.kind === "video" ? "video" : m.kind === "gif" ? "gif" : "photo",
-                    })
+                    openFullscreenMedia(
+                      resolvedUri,
+                      m.kind === "video" ? "video" : m.kind === "gif" ? "gif" : "photo"
+                    )
                   }
                   style={{ width: postGridLayout.cell, height: postGridLayout.cell }}
                 >
@@ -7786,27 +10046,36 @@ function MainAppInner() {
                         { width: postGridLayout.cell, height: postGridLayout.cell },
                       ]}
                     >
-                      <Video
-                        source={{ uri: m.mediaUri! }}
-                        style={styles.postGridImage}
-                        resizeMode={ResizeMode.COVER}
-                        shouldPlay={false}
-                      />
+                      <View
+                        style={[
+                          styles.postGridImage,
+                          { backgroundColor: "#1a1a1a", alignItems: "center", justifyContent: "center" },
+                        ]}
+                      >
+                        <Ionicons name="videocam" size={22} color="rgba(255,255,255,0.65)" />
+                      </View>
                       <View style={styles.postGridPlayBadge}>
                         <Ionicons name="play" size={18} color="#fff" />
                       </View>
                     </View>
                   ) : (
-                    <Image
-                      source={{ uri: m.mediaUri! }}
+                    <View
                       style={[
-                        styles.postGridImage,
+                        styles.postGridCell,
                         { width: postGridLayout.cell, height: postGridLayout.cell },
                       ]}
-                      resizeMode="cover"
-                    />
+                    >
+                      <Image
+                        source={{ uri: resolvedUri }}
+                        style={styles.postGridImage}
+                        resizeMode="cover"
+                      />
+                    </View>
                   )}
                 </Pressable>
+                    );
+                  }}
+                </ChatMessageMediaResolver>
               )}
             />
           </View>
@@ -7816,27 +10085,38 @@ function MainAppInner() {
       {view.screen === "publishPost" ? (
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 27 }]}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={safeTop}
         >
           <View style={{ flex: 1, paddingTop: safeTop, paddingHorizontal: 16, minHeight: 0 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
-              <Pressable onPress={closePublishPostScreen} style={styles.iconButton} accessibilityLabel="Back">
-                <Ionicons name="arrow-back" size={22} color={theme.text} />
-              </Pressable>
-              <Text style={[styles.chatScreenTitle, { flex: 1, textAlign: "center", marginRight: 38 }]}>
-                New post
-              </Text>
-            </View>
+            <HomeTopNavBar
+              theme={theme}
+              styles={styles}
+              highlight={homeNavIconHighlight}
+              badges={homeNavBadges}
+              onOpenCreatePost={openPostComposer}
+              onOpenSettings={openSettingsScreen}
+              onOpenMyProfile={openMyProfile}
+              onOpenFriendsList={openFriendsListFromHome}
+              onOpenHomeChats={openHomeChatsFromNav}
+              onOpenHomeFeed={openHomeFeedFromNav}
+              onOpenAddFriend={openAddFriendFromHome}
+              onLogout={confirmLogout}
+            />
 
             <ScrollViewUntilScroll
+              ref={publishPostScrollRef}
               style={{ flex: 1 }}
               contentContainerStyle={{
                 flexGrow: 1,
-                paddingBottom: 12,
+                paddingBottom:
+                  keyboardHeight > 0 ? keyboardScrollPadding(keyboardHeight, 12) : 12,
               }}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
+              onScroll={publishCaptionPin.onScroll}
+              scrollEventThrottle={16}
               nestedScrollEnabled
             >
               <Pressable
@@ -7903,11 +10183,13 @@ function MainAppInner() {
               </View>
 
               <TextInput
+                ref={publishCaptionInputRef}
                 value={postDraftText}
                 onChangeText={setPostDraftText}
                 placeholder="Write something…"
                 placeholderTextColor={theme.subtleText}
                 multiline
+                onFocus={publishCaptionPin.pinOnFocus}
                 style={[
                   styles.publishPostCaption,
                   {
@@ -7928,7 +10210,9 @@ function MainAppInner() {
               style={[
                 styles.publishPostFooterRow,
                 {
-                  paddingBottom: stickyFooterPadding(insets.bottom),
+                  paddingBottom: keyboardVisible
+                    ? keyboardComposerBottomPadding(insets.bottom, keyboardVisible, keyboardHeight)
+                    : stickyFooterPadding(insets.bottom),
                   paddingTop: 8,
                   marginTop: 0,
                   borderTopWidth: StyleSheet.hairlineWidth,
@@ -7953,103 +10237,20 @@ function MainAppInner() {
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 25 }]}
         >
           <View style={[styles.friendsListRoot, { paddingTop: safeTop }]}>
-            <View style={styles.homeTopBar}>
-              <View style={styles.homeTopLeftIcons}>
-                <Pressable
-                  onPress={openSettingsScreen}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.settings ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Settings"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.settings ? "settings" : "settings-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openMyProfile}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.myProfile ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="My profile"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-                    size={24}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openFriendsListFromHome}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.friendsList ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Friends list"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.friendsList ? "people" : "people-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("chats");
-                    setView({ screen: "home" });
-                  }}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.chats ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Open chats"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-                    size={21}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("feed");
-                    setView({ screen: "home" });
-                  }}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.feed ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Open feed"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.feed ? "newspaper" : "newspaper-outline"}
-                    size={21}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openAddFriendFromHome}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.addFriend ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Add friend"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.addFriend ? "person-add" : "person-add-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-              </View>
-              <Pressable onPress={confirmLogout} style={styles.iconButton} accessibilityLabel="Logout">
-                <Ionicons name="log-out-outline" size={22} color={theme.accent} />
-              </Pressable>
-            </View>
+            <HomeTopNavBar
+              theme={theme}
+              styles={styles}
+              highlight={homeNavIconHighlight}
+              badges={homeNavBadges}
+              onOpenCreatePost={openPostComposer}
+              onOpenSettings={openSettingsScreen}
+              onOpenMyProfile={openMyProfile}
+              onOpenFriendsList={openFriendsListFromHome}
+              onOpenHomeChats={openHomeChatsFromNav}
+              onOpenHomeFeed={openHomeFeedFromNav}
+              onOpenAddFriend={openAddFriendFromHome}
+              onLogout={confirmLogout}
+            />
             <TextInput
               value={friendsListSearch}
               onChangeText={setFriendsListSearch}
@@ -8074,12 +10275,19 @@ function MainAppInner() {
                     style={styles.friendsListRow}
                     onPress={() => openFriendProfileFromFriendsList(item.id)}
                     onLongPress={() => handleFriendsListFriendLongPress(item)}
-                    accessibilityLabel={`${item.displayName}. Long press for more options.`}
+                    accessibilityLabel={
+                      mutedInFeed
+                        ? `${item.displayName}. Feed muted. Long press to unmute.`
+                        : `${item.displayName}. Long press for more options.`
+                    }
                   >
                     <View style={styles.friendsListAvatarWrap}>
                       {renderAvatar(item.profilePictureUrl, item.displayName.slice(0, 1), 44)}
                       {mutedInFeed ? (
-                        <View style={styles.feedMuteBadge}>
+                        <View
+                          style={styles.feedMuteBadge}
+                          accessibilityLabel="Feed muted"
+                        >
                           <Ionicons name="volume-mute" size={12} color="#FFFFFF" />
                         </View>
                       ) : null}
@@ -8104,17 +10312,22 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={[styles.chatScreen, { paddingTop: safeTop }]}
           behavior="padding"
-          enabled={keyboardVisible}
+          enabled={keyboardAvoidanceEnabled}
           /** KAV already has `paddingTop: safeTop`; avoid stacking large offsets (gap above keyboard). */
           keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
         >
+          <ChatThreadErrorBoundary
+            backgroundColor={theme.background}
+            accentColor={theme.accent}
+            textColor={theme.text}
+          >
           {Platform.OS === "ios" ? (
             <InputAccessoryView nativeID="chatInputAccessory">
               <View style={styles.inputAccessoryBar}>
                 <Pressable
                   style={styles.inputAccessoryBarButton}
                   onPress={() => {
-                    if (chatInput.trim()) {
+                    if (readComposerTextTrimmed(chatInputTextRef)) {
                       sendMessage();
                     }
                     Keyboard.dismiss();
@@ -8212,15 +10425,20 @@ function MainAppInner() {
           <FlatListUntilScroll
             inverted
             style={{ flex: 1 }}
-            data={invertedChatMessages}
+            data={invertedChatMessagesForList}
             keyExtractor={(item) => item.id}
-            extraData={[replyTargetMessageId, messages, unfriendedIds, readAvatarsForActiveChat]}
+            extraData={[replyTargetMessageId, activeChatListRenderKey, unfriendedIds, readAvatarsForActiveChat]}
+            initialNumToRender={8}
+            maxToRenderPerBatch={6}
+            windowSize={5}
+            removeClippedSubviews={false}
+            updateCellsBatchingPeriod={50}
             contentContainerStyle={styles.messageList}
             keyboardShouldPersistTaps="handled"
-            onEndReached={() => void loadOlderChatMessages()}
-            onEndReachedThreshold={0.2}
+            onEndReached={handleChatListEndReached}
+            onEndReachedThreshold={0.25}
             ListFooterComponent={
-              chatLoadingOlder ? (
+              chatLoadingOlder || chatListCanExpandLocally ? (
                 <ActivityIndicator color={theme.accent} style={{ marginVertical: 8 }} />
               ) : null
             }
@@ -8240,9 +10458,9 @@ function MainAppInner() {
                       letter: "Y",
                     }
                   : {
-                      displayName: peerPd!.displayName,
-                      profilePictureUrl: peerPd!.profilePictureUrl,
-                      letter: peerPd!.letter,
+                      displayName: peerPd?.displayName ?? TOMBSTONE_DISPLAY_NAME,
+                      profilePictureUrl: peerPd?.profilePictureUrl ?? "",
+                      letter: peerPd?.letter ?? "U",
                     };
               const isMine = item.senderId === CURRENT_USER_ID;
               const reactionAlign: "left" | "right" = isMine ? "right" : "left";
@@ -8259,6 +10477,32 @@ function MainAppInner() {
                         ? " • Not sent"
                         : ""
                   : "";
+              const failedMessageActions =
+                isMine && item.deliveryStatus === "failed" && !item.unsentAt ? (
+                  <View
+                    style={[
+                      styles.failedMessageActions,
+                      isMine ? styles.failedMessageActionsMine : null,
+                    ]}
+                  >
+                    <Pressable
+                      style={styles.failedMessageActionBtn}
+                      onPress={() => retryFailedMessage(item)}
+                      accessibilityLabel="Try sending again"
+                    >
+                      <Ionicons name="refresh" size={14} color={theme.accent} />
+                      <Text style={styles.failedMessageActionText}>Try again</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.failedMessageActionBtn}
+                      onPress={() => deleteFailedMessage(item.id)}
+                      accessibilityLabel="Delete message"
+                    >
+                      <Ionicons name="trash-outline" size={14} color={theme.danger} />
+                      <Text style={styles.failedMessageDeleteText}>Delete</Text>
+                    </Pressable>
+                  </View>
+                ) : null;
               const isReplyTarget =
                 replyTargetMessageId !== null && item.id === replyTargetMessageId;
               const replyTargetHighlightStyle = isReplyTarget
@@ -8307,6 +10551,10 @@ function MainAppInner() {
                 <Pressable
                   style={isMine ? styles.messageAvatarMine : styles.messageAvatarOther}
                   onPress={() => {
+                    if (item.senderId === CURRENT_USER_ID) {
+                      openMyProfile();
+                      return;
+                    }
                     if (!senderProfileTapAllowed) return;
                     if (pendingDraft) {
                       openFriendProfile(item.senderId, "chat", {
@@ -8318,11 +10566,22 @@ function MainAppInner() {
                       });
                     }
                   }}
-                  disabled={item.senderId === CURRENT_USER_ID || !senderProfileTapAllowed}
+                  disabled={item.senderId !== CURRENT_USER_ID && !senderProfileTapAllowed}
                 >
                   {renderAvatar(sender.profilePictureUrl, sender.letter, 30)}
                 </Pressable>
               );
+
+              const bubbleCardStyle = item.unsentAt
+                ? [
+                    styles.messageCard,
+                    styles.unsentMessageCard,
+                    isMine ? styles.unsentMessageCardMine : styles.unsentMessageCardOther,
+                  ]
+                : [
+                    styles.messageCard,
+                    isMine ? styles.myMessageCard : styles.otherMessageCard,
+                  ];
 
               const captionBlock = (
                 <>
@@ -8345,7 +10604,7 @@ function MainAppInner() {
                         </Text>
                       ) : null}
                       <Text style={[styles.replyQuoteBody, { color: replyQuotePalette.body }]} numberOfLines={2}>
-                        {messageById[item.replyToMessageId]?.text}
+                        {messageDisplayText(messageById[item.replyToMessageId])}
                       </Text>
                     </View>
                   ) : null}
@@ -8353,18 +10612,26 @@ function MainAppInner() {
                     <Text style={isMine ? styles.messageSystemTextMine : styles.messageSystemText}>
                       {isMine ? "You unsent a message." : "Message removed."}
                     </Text>
-                  ) : item.text.trim() ? (
-                    <Text style={isMine ? styles.messageTextMine : styles.messageText}>{item.text}</Text>
+                  ) : messageDisplayText(item).trim() ? (
+                    <Text style={isMine ? styles.messageTextMine : styles.messageText}>
+                      {messageDisplayText(item)}
+                    </Text>
                   ) : null}
                 </>
               );
 
-              if ((item.kind === "photo" || item.kind === "gif") && item.mediaUri) {
-                const hasPhotoBubbleContent =
-                  !!item.replyToMessageId ||
-                  !!item.unsentAt ||
-                  item.text.trim().length > 0;
+              if ((item.kind === "photo" || item.kind === "gif") && messageHasResolvableMedia(item)) {
                 return (
+                  <ChatMessageMediaResolver message={item}>
+                    {(resolvedUri) => {
+                    if (!resolvedUri) {
+                      return <View style={{ height: 1 }} />;
+                    }
+                    const hasPhotoBubbleContent =
+                        !!item.replyToMessageId ||
+                        !!item.unsentAt ||
+                        messageDisplayText(item).trim().length > 0;
+                      return (
                   <View
                     style={[
                       isMine ? styles.messageRowMine : styles.messageRowOther,
@@ -8386,30 +10653,49 @@ function MainAppInner() {
                       >
                         <Pressable
                           style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
+                          delayLongPress={CHAT_MESSAGE_LONG_PRESS_MS}
                           onLongPress={() => {
                             if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
                             openReactionPickerForMessage(item.id);
                           }}
                           onPress={() => {
-                            if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
-                              setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
-                            } else {
-                              setFullscreenMedia({
-                                uri: item.mediaUri!,
-                                kind: item.kind === "gif" ? "gif" : "photo",
-                              });
-                            }
+                            handleChatMessagePress(item, isMine, () => {
+                              if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
+                                setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
+                              } else {
+                                openFullscreenMedia(
+                                  resolvedUri,
+                                  item.kind === "gif" ? "gif" : "photo"
+                                );
+                              }
+                            });
                           }}
                         >
                           <Image
-                            source={{ uri: item.mediaUri }}
-                            style={[styles.photoMessageImageDetached, getPhotoMessageSize(item)]}
+                            source={{ uri: resolvedUri }}
+                            style={[
+                              styles.photoMessageImageDetached,
+                              isMine ? styles.photoMessageImageDetachedMine : null,
+                              getPhotoMessageSize(item),
+                            ]}
+                            resizeMode="cover"
+                            onLoad={(event) => {
+                              if (item.mediaWidth && item.mediaHeight) return;
+                              const src = event.nativeEvent.source;
+                              const w = Number(src?.width ?? 0);
+                              const h = Number(src?.height ?? 0);
+                              if (!w || !h) return;
+                              setMeasuredChatMediaByMessageId((prev) => {
+                                const cur = prev[item.id];
+                                if (cur?.width === w && cur?.height === h) return prev;
+                                return { ...prev, [item.id]: { width: w, height: h } };
+                              });
+                            }}
                           />
                           {hasPhotoBubbleContent ? (
                             <View
                               style={[
-                                styles.messageCard,
-                                isMine ? styles.myMessageCard : styles.otherMessageCard,
+                                ...bubbleCardStyle,
                                 isMine ? styles.photoCaptionCardMine : styles.photoCaptionCard,
                               ]}
                             >
@@ -8423,21 +10709,80 @@ function MainAppInner() {
                         {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
                         {mineDeliveryLabel}
                       </Text>
+                      {failedMessageActions}
                     </View>
                   </View>
+                      );
+                    }}
+                  </ChatMessageMediaResolver>
                 );
               }
 
-              if (item.kind === "video" && item.mediaUri) {
-                const hasVideoBubbleContent =
-                  !!item.replyToMessageId ||
-                  !!item.unsentAt ||
-                  item.text.trim().length > 0;
-                const videoSize = getPhotoMessageSize(item);
-                const videoIsPlaying = playingVideoMessageId === item.id;
-                const videoHasPlayed = finishedVideoMessageIds.has(item.id);
-                const showVideoPlayButton = !videoIsPlaying && !videoHasPlayed;
+              if (item.kind === "video") {
+                const videoPrepareRequested =
+                  !item.mediaEncrypted || videoPrepareRequestedIds.has(item.id);
+                const videoResolveEnabled =
+                  messageHasResolvableMedia(item) &&
+                  (!item.mediaEncrypted || videoPrepareRequested);
+                const requestVideoPrepare = () => {
+                  if (!item.mediaEncrypted || videoPrepareRequestedIds.has(item.id)) return;
+                  setVideoPrepareRequestedIds((prev) => {
+                    if (prev.has(item.id)) return prev;
+                    const next = new Set(prev);
+                    next.add(item.id);
+                    return next;
+                  });
+                };
+
                 return (
+                  <ChatMessageMediaResolver
+                    message={item}
+                    resolveEnabled={videoResolveEnabled}
+                    resolvePriority={videoPrepareRequested ? "high" : "normal"}
+                  >
+                    {(resolvedUri, resolving) => {
+                  const hasVideoBubbleContent =
+                    !!item.replyToMessageId ||
+                    !!item.unsentAt ||
+                    messageDisplayText(item).trim().length > 0;
+                  const videoSize = getPhotoMessageSize(item);
+                  const videoIsPlaying = playingVideoMessageId === item.id;
+                  const showVideoPlayButton = !videoIsPlaying;
+                  const handleVideoMessagePress = () => {
+                    if (isMine && item.deliveryStatus === "failed" && !item.unsentAt) {
+                      retryFailedMessage(item);
+                      return;
+                    }
+                    if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
+                      setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
+                      return;
+                    }
+                    if (videoIsPlaying) {
+                      if (resolvedUri) {
+                        openFullscreenMedia(resolvedUri, "video", {
+                          mediaWidth: item.mediaWidth,
+                          mediaHeight: item.mediaHeight,
+                        });
+                      }
+                      return;
+                    }
+                    if (!messageHasResolvableMedia(item)) return;
+                    requestVideoPrepare();
+                    if (!resolvedUri) {
+                      setVideoPlayAfterPrepareId(item.id);
+                      return;
+                    }
+                    setPlayingVideoMessageId(item.id);
+                  };
+                  return (
+                  <>
+                  <ChatVideoAutoPlayWhenReady
+                    messageId={item.id}
+                    resolvedUri={resolvedUri}
+                    pendingPlayMessageId={videoPlayAfterPrepareId}
+                    onPlay={setPlayingVideoMessageId}
+                    onClearPending={() => setVideoPlayAfterPrepareId(null)}
+                  />
                   <View
                     style={[
                       isMine ? styles.messageRowMine : styles.messageRowOther,
@@ -8457,56 +10802,37 @@ function MainAppInner() {
                         theme={reactTheme}
                         style={messageReactionHostStyle}
                       >
-                        <Pressable
-                          style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}
-                          onLongPress={() => {
-                            if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
-                            openReactionPickerForMessage(item.id);
-                          }}
-                          onPress={() => {
-                            if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
-                              setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
-                              return;
-                            }
-                            if (videoHasPlayed || videoIsPlaying) return;
-                            setPlayingVideoMessageId(item.id);
-                          }}
-                          accessibilityRole="button"
-                          accessibilityLabel={
-                            videoHasPlayed ? "Video already played" : "Play video message"
-                          }
-                        >
+                        <View style={isMine ? styles.photoMessageStackMine : styles.photoMessageStack}>
                         <View
                           style={[
                             styles.videoMessageWrap,
+                            isMine ? styles.videoMessageWrapMine : null,
                             { width: videoSize.width, height: videoSize.height },
                           ]}
                         >
-                          <Video
-                            source={{ uri: item.mediaUri }}
-                            style={[styles.videoMessageVideo, videoSize]}
-                            resizeMode={ResizeMode.COVER}
-                            shouldPlay={videoIsPlaying}
-                            isLooping={false}
-                            useNativeControls={false}
-                            onPlaybackStatusUpdate={(status) => {
-                              if (!status.isLoaded || !status.didJustFinish) return;
+                          <ChatVideoMessageBubble
+                            resolvedUri={resolvedUri}
+                            resolving={resolving}
+                            preparePending={videoPlayAfterPrepareId === item.id}
+                            width={videoSize.width}
+                            height={videoSize.height}
+                            isSending={item.deliveryStatus === "sending"}
+                            isPlaying={videoIsPlaying}
+                            showPlayOverlay={showVideoPlayButton}
+                            accentColor={theme.accent}
+                            playbackKey={item.id}
+                            onPressSurface={handleVideoMessagePress}
+                            onLongPress={() => {
+                              if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
+                              openReactionPickerForMessage(item.id);
+                            }}
+                            messageId={item.id}
+                            onCancelPrepare={() => cancelVideoPrepare(item.id)}
+                            onPosterDimensions={rememberChatVideoDimensions}
+                            onDidFinish={() => {
                               setPlayingVideoMessageId((cur) => (cur === item.id ? null : cur));
-                              setFinishedVideoMessageIds((prev) => {
-                                if (prev.has(item.id)) return prev;
-                                const next = new Set(prev);
-                                next.add(item.id);
-                                return next;
-                              });
                             }}
                           />
-                          {showVideoPlayButton ? (
-                            <View style={styles.postGridPlayBadge} pointerEvents="none">
-                              <View style={styles.chatVideoPlayButton}>
-                                <Ionicons name="play" size={28} color="#fff" />
-                              </View>
-                            </View>
-                          ) : null}
                           {item.videoTextOverlays?.map((o) => (
                             <Text
                               key={o.id}
@@ -8533,33 +10859,139 @@ function MainAppInner() {
                         {hasVideoBubbleContent ? (
                           <View
                             style={[
-                              styles.messageCard,
-                              isMine ? styles.myMessageCard : styles.otherMessageCard,
+                              ...bubbleCardStyle,
                               isMine ? styles.photoCaptionCardMine : styles.photoCaptionCard,
                             ]}
                           >
                             {captionBlock}
                           </View>
                         ) : null}
-                        </Pressable>
+                        </View>
                       </ReactionBubbleHost>
                       <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
                         {formatDayTime(item.createdAt)}
                         {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
                         {mineDeliveryLabel}
                       </Text>
+                      {failedMessageActions}
                     </View>
                   </View>
+                  </>
+                  );
+                    }}
+                  </ChatMessageMediaResolver>
+                );
+              }
+
+              if (item.kind === "voice") {
+                return (
+                    <View
+                      style={[
+                        isMine ? styles.messageRowMine : styles.messageRowOther,
+                        replyTargetHighlightStyle,
+                      ]}
+                    >
+                      {messageAvatar}
+                      <View style={isMine ? styles.messageColumnMine : styles.messageColumn}>
+                        {showBubbleSenderName ? (
+                          <Text
+                            style={isMine ? styles.messageSenderOutsideMine : styles.messageSenderOutside}
+                          >
+                            {sender.displayName}
+                          </Text>
+                        ) : null}
+                        <ReactionBubbleHost
+                          entries={item.unsentAt ? [] : reactionEntries}
+                          align={reactionAlign}
+                          theme={reactTheme}
+                          style={messageReactionHostStyle}
+                        >
+                          <View
+                            style={[
+                              styles.messageCard,
+                              styles.voiceMessageCard,
+                              isMine ? styles.myMessageCard : styles.otherMessageCard,
+                            ]}
+                          >
+                            {item.replyToMessageId && messageById[item.replyToMessageId] ? (
+                              <View
+                                style={[
+                                  styles.replyQuoteBlock,
+                                  {
+                                    backgroundColor: replyQuotePalette.bg,
+                                    borderLeftColor: replyQuotePalette.border,
+                                  },
+                                ]}
+                              >
+                                {replyQuoteAttributionText ? (
+                                  <Text
+                                    style={[styles.replyQuoteLabel, { color: replyQuotePalette.label }]}
+                                    numberOfLines={1}
+                                  >
+                                    {replyQuoteAttributionText}
+                                  </Text>
+                                ) : null}
+                                <Text
+                                  style={[styles.replyQuoteBody, { color: replyQuotePalette.body }]}
+                                  numberOfLines={2}
+                                >
+                                  {messageById[item.replyToMessageId]?.text}
+                                </Text>
+                              </View>
+                            ) : null}
+                            {item.unsentAt ? (
+                              <Text
+                                style={isMine ? styles.messageSystemTextMine : styles.messageSystemText}
+                              >
+                                {isMine ? "You unsent a message." : "Message removed."}
+                              </Text>
+                            ) : (
+                              <ChatVoiceNoteBubble
+                                durationSec={item.durationSec ?? 0}
+                                isMine={isMine}
+                                isPlaying={playingVoiceMessageId === item.id}
+                                isLoading={voiceLoadingMessageId === item.id}
+                                positionMs={
+                                  voicePlaybackProgress?.messageId === item.id
+                                    ? voicePlaybackProgress.positionMs
+                                    : 0
+                                }
+                                durationMs={
+                                  voicePlaybackProgress?.messageId === item.id
+                                    ? voicePlaybackProgress.durationMs
+                                    : Math.max(1, item.durationSec ?? 1) * 1000
+                                }
+                                theme={theme}
+                                styles={styles}
+                                onPress={() => {
+                                  handleChatMessagePress(item, isMine, () => {
+                                    void toggleVoiceMessagePlayback(item);
+                                  });
+                                }}
+                              />
+                            )}
+                          </View>
+                        </ReactionBubbleHost>
+                        <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
+                          {formatDayTime(item.createdAt)}
+                          {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
+                          {mineDeliveryLabel}
+                        </Text>
+                        {failedMessageActions}
+                      </View>
+                    </View>
                 );
               }
 
               return (
-                <View
-                  style={[
-                    isMine ? styles.messageRowMine : styles.messageRowOther,
-                    replyTargetHighlightStyle,
-                  ]}
-                >
+                <View style={styles.messageBlock}>
+                  <View
+                    style={[
+                      isMine ? styles.messageRowMine : styles.messageRowOther,
+                      styles.messageBlockRow,
+                      replyTargetHighlightStyle,
+                    ]}
+                  >
                   {messageAvatar}
                   <View style={isMine ? styles.messageColumnMine : styles.messageColumn}>
                     {showBubbleSenderName ? (
@@ -8574,18 +11006,18 @@ function MainAppInner() {
                       style={messageReactionHostStyle}
                     >
                     <Pressable
-                      style={[
-                        styles.messageCard,
-                        isMine ? styles.myMessageCard : styles.otherMessageCard,
-                      ]}
+                      style={bubbleCardStyle}
+                      delayLongPress={CHAT_MESSAGE_LONG_PRESS_MS}
                       onLongPress={() => {
-                        if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
+                        if (item.unsentAt || DEMO_OFFLINE_MODE || (!isOnline && !getBackendSession())) return;
                         openReactionPickerForMessage(item.id);
                       }}
                       onPress={() => {
-                        if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
-                          setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
-                        }
+                        handleChatMessagePress(item, isMine, () => {
+                          if (activeChatKind === "broadcast" && item.broadcastThreadFriendId) {
+                            setSelectedBroadcastThreadFriendId(item.broadcastThreadFriendId);
+                          }
+                        });
                       }}
                     >
                       {item.replyToMessageId && messageById[item.replyToMessageId] ? (
@@ -8607,7 +11039,7 @@ function MainAppInner() {
                             </Text>
                           ) : null}
                           <Text style={[styles.replyQuoteBody, { color: replyQuotePalette.body }]} numberOfLines={2}>
-                            {messageById[item.replyToMessageId]?.text}
+                            {messageDisplayText(messageById[item.replyToMessageId])}
                           </Text>
                         </View>
                       ) : null}
@@ -8615,34 +11047,10 @@ function MainAppInner() {
                         <Text style={isMine ? styles.messageSystemTextMine : styles.messageSystemText}>
                           {isMine ? "You unsent a message." : "Message removed."}
                         </Text>
-                      ) : item.kind === "video" ? (
-                        <View style={isMine ? styles.attachmentBubbleMine : styles.attachmentBubble}>
-                          <Text style={isMine ? styles.messageTextMine : styles.messageText}>Video clip</Text>
-                        </View>
-                      ) : item.kind === "voice" ? (
-                        <Pressable
-                          style={isMine ? styles.attachmentBubbleMine : styles.attachmentBubble}
-                          onPress={() => {
-                            void toggleVoiceMessagePlayback(item);
-                          }}
-                        >
-                          <View style={styles.voicePlayRow}>
-                            <Ionicons
-                              name={
-                                playingVoiceMessageId === item.id
-                                  ? "pause-circle-outline"
-                                  : "play-circle-outline"
-                              }
-                              size={20}
-                              color={isMine ? theme.mineBubbleText : theme.accent}
-                            />
-                            <Text style={isMine ? styles.messageTextMine : styles.messageText}>
-                              Voice note ({item.durationSec ?? 0}s)
-                            </Text>
-                          </View>
-                        </Pressable>
                       ) : (
-                        <Text style={isMine ? styles.messageTextMine : styles.messageText}>{item.text}</Text>
+                        <Text style={isMine ? styles.messageTextMine : styles.messageText}>
+                          {messageDisplayText(item)}
+                        </Text>
                       )}
                     </Pressable>
                     </ReactionBubbleHost>
@@ -8651,30 +11059,37 @@ function MainAppInner() {
                       {item.editedAt ? ` • Edited ${formatDayTime(item.editedAt)}` : ""}
                       {mineDeliveryLabel}
                     </Text>
-                    {readAvatarUids.length > 0 ? (
-                      <View style={styles.readReceiptAvatarRow}>
-                        {readAvatarUids.map((uid) => {
-                          const pd =
-                            uid === CURRENT_USER_ID
-                              ? {
-                                  profilePictureUrl: myProfilePictureUrl,
-                                  letter: "Y",
-                                }
-                              : {
-                                  profilePictureUrl:
-                                    friendMap[uid]?.profilePictureUrl ?? "",
-                                  letter: friendMap[uid]?.displayName?.slice(0, 1) ?? "?",
-                                };
-                          return (
-                            <View key={`${item.id}:${uid}`}>
-                              {renderAvatar(pd.profilePictureUrl, pd.letter, 22)}
-                            </View>
-                          );
-                        })}
-                      </View>
-                    ) : null}
+                    {failedMessageActions}
                   </View>
                 </View>
+                {readAvatarUids.length > 0 ? (
+                  <View
+                    style={[
+                      styles.readReceiptAvatarRow,
+                      isMine ? styles.readReceiptAvatarRowMine : styles.readReceiptAvatarRowOther,
+                    ]}
+                  >
+                    {readAvatarUids.map((uid) => {
+                      const pd =
+                        uid === CURRENT_USER_ID
+                          ? {
+                              profilePictureUrl: myProfilePictureUrl,
+                              letter: "Y",
+                            }
+                          : {
+                              profilePictureUrl:
+                                friendMap[uid]?.profilePictureUrl ?? "",
+                              letter: friendMap[uid]?.displayName?.slice(0, 1) ?? "?",
+                            };
+                      return (
+                        <View key={`${item.id}:${uid}`}>
+                          {renderAvatar(pd.profilePictureUrl, pd.letter, 22)}
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
+              </View>
               );
             }}
             ListEmptyComponent={
@@ -8724,9 +11139,9 @@ function MainAppInner() {
                   ]}
                 >
                   <Text style={[styles.replyBannerText, { color: theme.text }]} numberOfLines={4}>
-                    {
-                      "Broadcast: send from the field to post for everyone (you will be asked to confirm). Tap a friend's message to reply in that private thread only — others cannot see those replies."
-                    }
+                    {isActiveBroadcastCreator
+                      ? "Broadcast mode: tap a friend's message to reply in that private thread. Send from the field below to post for everyone."
+                      : "You see general broadcasts and the broadcaster's direct replies to you. Long-press any of those messages and choose Reply to respond privately."}
                   </Text>
                 </View>
               ) : null}
@@ -8747,9 +11162,49 @@ function MainAppInner() {
                     </>
                   ) : (
                     <Text style={[styles.replyBannerText, { color: theme.text, flex: 1 }]}>
-                      Voice note — tap the mic button to record, then tap stop to send
+                      Voice note — tap the mic to record, then stop to preview before sending
                     </Text>
                   )}
+                </View>
+              ) : null}
+
+              {pendingVoiceNote ? (
+                <View
+                  style={[
+                    styles.replyBanner,
+                    { borderBottomColor: theme.divider, backgroundColor: theme.replyBannerQuotingOtherBg },
+                  ]}
+                >
+                  <Text style={[styles.replyBannerText, { color: theme.text, flex: 1 }]}>
+                    Voice note ready ({pendingVoiceNote.durationSec}s)
+                  </Text>
+                  <View style={styles.voicePreviewActions}>
+                    <Pressable
+                      style={styles.attachButton}
+                      onPress={() => void togglePendingVoicePreview()}
+                      accessibilityLabel={previewVoicePlaying ? "Pause preview" : "Play preview"}
+                    >
+                      <Ionicons
+                        name={previewVoicePlaying ? "pause-outline" : "play-outline"}
+                        size={18}
+                        color={theme.accent}
+                      />
+                    </Pressable>
+                    <Pressable
+                      style={styles.attachButton}
+                      onPress={() => void discardPendingVoiceNote()}
+                      accessibilityLabel="Discard voice note"
+                    >
+                      <Ionicons name="trash-outline" size={18} color={theme.danger} />
+                    </Pressable>
+                    <Pressable
+                      style={styles.sendButton}
+                      onPress={() => void sendPendingVoiceNote()}
+                      accessibilityLabel="Send voice note"
+                    >
+                      <Ionicons name="send" size={16} color="#FFFFFF" />
+                    </Pressable>
+                  </View>
                 </View>
               ) : null}
 
@@ -8779,22 +11234,23 @@ function MainAppInner() {
                       keyboardShouldPersistTaps="handled"
                       showsVerticalScrollIndicator
                     >
-                      {(() => {
-                        const oneToOne =
-                          activeChatKind === "standard" && activeCounterpartIds.length === 1;
-                        if (oneToOne) return null;
-                        const sid = replyTargetMessage.senderId;
-                        const meta =
-                          sid === CURRENT_USER_ID
+                      <ChatReplyTargetPreview
+                        message={replyTargetMessage}
+                        textColor={theme.text}
+                        subtleTextColor={theme.subtleText}
+                        accentColor={theme.accent}
+                        bodyStyle={styles.replyPreviewBody}
+                        metaStyle={styles.replyPreviewMeta}
+                        metaText={(() => {
+                          const oneToOne =
+                            activeChatKind === "standard" && activeCounterpartIds.length === 1;
+                          if (oneToOne) return null;
+                          const sid = replyTargetMessage.senderId;
+                          return sid === CURRENT_USER_ID
                             ? "Replying to you"
                             : `Replying to ${friendMap[sid]?.displayName ?? "Unknown"}`;
-                        return (
-                          <Text style={[styles.replyPreviewMeta, { color: theme.subtleText }]}>{meta}</Text>
-                        );
-                      })()}
-                      <Text style={[styles.replyPreviewBody, { color: theme.text }]}>
-                        {getMessagePreviewBody(replyTargetMessage)}
-                      </Text>
+                        })()}
+                      />
                     </ScrollViewUntilScroll>
                     <Pressable
                       onPress={() => setReplyTargetMessageId(null)}
@@ -8818,11 +11274,15 @@ function MainAppInner() {
                         : keyboardVisible
                           ? 4
                           : 8,
-                      paddingBottom: composerBottomPadding(insets.bottom, keyboardVisible),
+                      paddingBottom: keyboardComposerBottomPadding(
+                        insets.bottom,
+                        keyboardVisible,
+                        keyboardHeight
+                      ),
                     },
                   ]}
                 >
-                  {!showCompactComposer ? (
+                  {!showCompactComposer && !broadcastRecipientComposerLocked ? (
                     <>
                       <Pressable
                         style={[
@@ -8862,11 +11322,19 @@ function MainAppInner() {
                     ref={chatInputRef}
                     value={chatInput}
                     onChangeText={handleChatInputChange}
-                    placeholder={editingMessage ? "Edit message..." : "Message..."}
+                    placeholder={
+                      editingMessage
+                        ? "Edit message..."
+                        : broadcastRecipientComposerLocked
+                          ? "Reply to the broadcaster to respond…"
+                          : "Message..."
+                    }
                     placeholderTextColor={theme.subtleText}
+                    editable={!broadcastRecipientComposerLocked}
                     style={[
                       styles.chatInputMultiline,
                       showCompactComposer && styles.chatInputMultilineCompact,
+                      broadcastRecipientComposerLocked ? { opacity: 0.55 } : null,
                     ]}
                     multiline
                     textAlignVertical="top"
@@ -8875,7 +11343,7 @@ function MainAppInner() {
                     blurOnSubmit={false}
                     inputAccessoryViewID={Platform.OS === "ios" ? "chatInputAccessory" : undefined}
                     onSubmitEditing={() => {
-                      if (chatInput.trim()) {
+                      if (readComposerTextTrimmed(chatInputTextRef)) {
                         sendMessage();
                       }
                     }}
@@ -8886,8 +11354,10 @@ function MainAppInner() {
                       voiceNoteMode && voiceRecordStartedAt
                         ? { backgroundColor: theme.danger }
                         : null,
+                      broadcastRecipientComposerLocked ? { opacity: 0.45 } : null,
                     ]}
                     onPress={onComposerPrimaryPress}
+                    disabled={broadcastRecipientComposerLocked}
                     accessibilityLabel={
                       voiceNoteMode
                         ? voiceRecordStartedAt
@@ -8912,16 +11382,28 @@ function MainAppInner() {
               </View>
             </>
           )}
+          </ChatThreadErrorBoundary>
         </KeyboardAvoidingView>
       ) : null}
 
       <Modal visible={chatComposerOpen} animationType="slide" onRequestClose={closeComposer}>
         <KeyboardAvoidingView
           style={{ flex: 1, backgroundColor: theme.background }}
-          behavior={Platform.OS === "ios" ? "padding" : "padding"}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top + 8}
         >
-        <View style={[styles.modalScreen, { paddingTop: insets.top + 8, paddingBottom: stickyFooterPadding(insets.bottom) }]}>
+        <View
+          style={[
+            styles.modalScreen,
+            {
+              paddingTop: insets.top + 8,
+              paddingBottom: keyboardVisible
+                ? keyboardComposerBottomPadding(insets.bottom, keyboardVisible, keyboardHeight)
+                : stickyFooterPadding(insets.bottom),
+            },
+          ]}
+        >
           <View style={styles.modalHeader}>
             <Text style={styles.chatScreenTitle}>Start Chat</Text>
             <Pressable onPress={closeComposer} style={styles.iconButton}>
@@ -8979,10 +11461,21 @@ function MainAppInner() {
       <Modal visible={broadcastPickerOpen} animationType="slide" onRequestClose={closeBroadcastPicker}>
         <KeyboardAvoidingView
           style={{ flex: 1, backgroundColor: theme.background }}
-          behavior={Platform.OS === "ios" ? "padding" : "padding"}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top + 8}
         >
-        <View style={[styles.modalScreen, { paddingTop: insets.top + 8, paddingBottom: stickyFooterPadding(insets.bottom) }]}>
+        <View
+          style={[
+            styles.modalScreen,
+            {
+              paddingTop: insets.top + 8,
+              paddingBottom: keyboardVisible
+                ? keyboardComposerBottomPadding(insets.bottom, keyboardVisible, keyboardHeight)
+                : stickyFooterPadding(insets.bottom),
+            },
+          ]}
+        >
           <View style={styles.modalHeader}>
             <Pressable
               style={styles.chatHeaderTitlePressable}
@@ -9137,7 +11630,8 @@ function MainAppInner() {
       >
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : "padding"}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top}
         >
           <View style={styles.settingsOverlay}>
@@ -9184,7 +11678,8 @@ function MainAppInner() {
       >
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : "padding"}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top}
         >
           <View style={styles.settingsOverlay}>
@@ -9296,7 +11791,8 @@ function MainAppInner() {
       <Modal visible={editChatMetaOpen} transparent animationType="fade" onRequestClose={() => setEditChatMetaOpen(false)}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top}
         >
         <View style={styles.settingsOverlay}>
@@ -9330,7 +11826,8 @@ function MainAppInner() {
       >
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top}
         >
         <View style={styles.settingsOverlay}>
@@ -9357,34 +11854,6 @@ function MainAppInner() {
       </Modal>
 
       <Modal
-        visible={messageActionsOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setMessageActionsOpen(false)}
-      >
-        <Pressable style={styles.settingsOverlay} onPress={() => setMessageActionsOpen(false)}>
-          <Pressable style={styles.menuCard} onPress={() => {}}>
-            <Pressable style={styles.menuRow} onPress={startReplyToMessage}>
-              <Feather name="corner-up-left" size={18} color={theme.text} />
-              <Text style={styles.menuRowText}>Reply</Text>
-            </Pressable>
-            {messageActionTarget?.senderId === CURRENT_USER_ID && !messageActionTarget.unsentAt ? (
-              <>
-                <Pressable style={styles.menuRow} onPress={startEditMessage}>
-                  <Feather name="edit-2" size={18} color={theme.text} />
-                  <Text style={styles.menuRowText}>Edit</Text>
-                </Pressable>
-                <Pressable style={styles.menuRow} onPress={unsendTargetMessage}>
-                  <Feather name="trash-2" size={18} color={theme.danger} />
-                  <Text style={[styles.menuRowText, { color: theme.danger }]}>Unsend</Text>
-                </Pressable>
-              </>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal
         visible={reactionPickerOpen}
         transparent
         animationType="fade"
@@ -9392,6 +11861,7 @@ function MainAppInner() {
           setReactionPickerOpen(false);
           setPostReactionTargetId(null);
           setCommentReactionTarget(null);
+          setReactionTargetMessageId(null);
         }}
       >
         <Pressable
@@ -9400,133 +11870,125 @@ function MainAppInner() {
             setReactionPickerOpen(false);
             setPostReactionTargetId(null);
             setCommentReactionTarget(null);
+            setReactionTargetMessageId(null);
           }}
         >
           <Pressable style={styles.settingsCard} onPress={() => {}}>
-            <Text style={styles.chatScreenTitle}>React</Text>
-            <View style={styles.reactionPickerRow}>
-              {REACTION_EMOJIS.map((emoji) => (
-                <Pressable key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
-                  <Text style={styles.reactionChipText}>{emoji}</Text>
-                </Pressable>
-              ))}
-            </View>
+            <Text style={styles.chatScreenTitle}>
+              {messageActionTarget && !postReactionTargetId && !commentReactionTarget
+                ? "Message"
+                : "React"}
+            </Text>
             {messageActionTarget && !postReactionTargetId && !commentReactionTarget ? (
-              <Pressable
-                style={[styles.menuRow, { marginTop: 12 }]}
-                onPress={() => {
-                  setReactionPickerOpen(false);
-                  setMessageActionsOpen(true);
-                }}
-              >
-                <Feather name="more-horizontal" size={18} color={theme.text} />
-                <Text style={styles.menuRowText}>Reply, edit, and more…</Text>
-              </Pressable>
-            ) : null}
+              <>
+                {!(
+                  activeChatKind === "broadcast" &&
+                  resolvedChat &&
+                  !canReplyToBroadcastMessage(messageActionTarget, resolvedChat, CURRENT_USER_ID)
+                ) ? (
+                <Pressable
+                  style={styles.menuRow}
+                  onPress={() => {
+                    setReactionPickerOpen(false);
+                    startReplyToMessage();
+                  }}
+                >
+                  <Feather name="corner-up-left" size={18} color={theme.text} />
+                  <Text style={styles.menuRowText}>Reply</Text>
+                </Pressable>
+                ) : null}
+                {messageActionTarget.senderId === CURRENT_USER_ID && !messageActionTarget.unsentAt ? (
+                  <>
+                    <Pressable
+                      style={styles.menuRow}
+                      onPress={() => {
+                        setReactionPickerOpen(false);
+                        startEditMessage();
+                      }}
+                    >
+                      <Feather name="edit-2" size={18} color={theme.text} />
+                      <Text style={styles.menuRowText}>Edit</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.menuRow}
+                      onPress={() => {
+                        setReactionPickerOpen(false);
+                        unsendTargetMessage();
+                      }}
+                    >
+                      <Feather name="trash-2" size={18} color={theme.danger} />
+                      <Text style={[styles.menuRowText, { color: theme.danger }]}>Unsend</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+                {reactionPickerActiveEmoji ? (
+                  <Pressable style={styles.menuRow} onPress={removeActiveReaction}>
+                    <Feather name="x-circle" size={18} color={theme.danger} />
+                    <Text style={[styles.menuRowText, { color: theme.danger }]}>
+                      {`Remove reaction (${reactionPickerActiveEmoji})`}
+                    </Text>
+                  </Pressable>
+                ) : null}
+                <View style={[styles.reactionPickerRow, { marginTop: 12 }]}>
+                  {REACTION_EMOJIS.map((emoji) => (
+                    <Pressable key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
+                      <Text style={styles.reactionChipText}>{emoji}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : (
+              <>
+                {reactionPickerActiveEmoji ? (
+                  <Pressable style={styles.menuRow} onPress={removeActiveReaction}>
+                    <Feather name="x-circle" size={18} color={theme.danger} />
+                    <Text style={[styles.menuRowText, { color: theme.danger }]}>
+                      {`Remove reaction (${reactionPickerActiveEmoji})`}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              <View style={styles.reactionPickerRow}>
+                {REACTION_EMOJIS.map((emoji) => (
+                  <Pressable key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
+                    <Text style={styles.reactionChipText}>{emoji}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              </>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
 
+      {view.screen === "openSourceLicenses" ? (
+        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 30 }]}>
+          <OpenSourceLicensesScreen
+            theme={theme}
+            styles={styles}
+            safeTop={safeTop}
+            bottomPadding={scrollPageBottomPadding(insets.bottom, 24)}
+            onBack={() => setView({ screen: "settings" })}
+          />
+        </View>
+      ) : null}
+
       {view.screen === "settings" ? (
         <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 30 }]}>
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
-            <View style={styles.homeTopBar}>
-              <View style={styles.homeTopLeftIcons}>
-                <Pressable
-                  onPress={openSettingsScreen}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.settings ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Settings"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.settings ? "settings" : "settings-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openMyProfile}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.myProfile ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="My profile"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-                    size={24}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openFriendsListFromHome}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.friendsList ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Friends list"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.friendsList ? "people" : "people-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("chats");
-                    setView({ screen: "home" });
-                  }}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.chats ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Open chats"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-                    size={21}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setHomeTab("feed");
-                    setView({ screen: "home" });
-                  }}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.feed ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Open feed"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.feed ? "newspaper" : "newspaper-outline"}
-                    size={21}
-                    color={theme.accent}
-                  />
-                </Pressable>
-                <Pressable
-                  onPress={openAddFriendFromHome}
-                  style={[
-                    styles.iconButton,
-                    homeNavIconHighlight.addFriend ? styles.homeModeIconActive : null,
-                  ]}
-                  accessibilityLabel="Add friend"
-                >
-                  <Ionicons
-                    name={homeNavIconHighlight.addFriend ? "person-add" : "person-add-outline"}
-                    size={22}
-                    color={theme.accent}
-                  />
-                </Pressable>
-              </View>
-              <Pressable onPress={confirmLogout} style={styles.iconButton} accessibilityLabel="Logout">
-                <Ionicons name="log-out-outline" size={22} color={theme.accent} />
-              </Pressable>
-            </View>
+            <HomeTopNavBar
+              theme={theme}
+              styles={styles}
+              highlight={homeNavIconHighlight}
+              badges={homeNavBadges}
+              onOpenCreatePost={openPostComposer}
+              onOpenSettings={openSettingsScreen}
+              onOpenMyProfile={openMyProfile}
+              onOpenFriendsList={openFriendsListFromHome}
+              onOpenHomeChats={openHomeChatsFromNav}
+              onOpenHomeFeed={openHomeFeedFromNav}
+              onOpenAddFriend={openAddFriendFromHome}
+              onLogout={confirmLogout}
+            />
             <ScrollViewUntilScroll
               style={{ flex: 1 }}
               contentContainerStyle={{
@@ -9546,6 +12008,16 @@ function MainAppInner() {
                   trackColor={{ false: "#95A1A8", true: theme.accent }}
                 />
               </View>
+              <Pressable
+                style={[styles.settingsRow, { paddingVertical: 12 }]}
+                onPress={() => setView({ screen: "openSourceLicenses" })}
+              >
+                <Text style={styles.chatName}>Open source licences</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={styles.settingsRowHint}>MIT &amp; others</Text>
+                  <Ionicons name="chevron-forward" size={18} color={theme.subtleText} />
+                </View>
+              </Pressable>
               <Pressable
                 style={[styles.settingsRow, { paddingVertical: 12 }]}
                 onPress={() => {
@@ -9758,7 +12230,8 @@ function MainAppInner() {
       >
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : "padding"}
+          behavior="padding"
+          enabled={keyboardAvoidanceEnabled}
           keyboardVerticalOffset={insets.top}
         >
           <View style={styles.settingsOverlay}>
@@ -9811,60 +12284,58 @@ function MainAppInner() {
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal
-        visible={fullscreenMedia !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setFullscreenMedia(null)}
-      >
-        <Pressable
-          style={[
-            styles.settingsOverlay,
-            {
-              justifyContent: "center",
-              paddingTop: insets.top,
-              paddingBottom: stickyFooterPadding(insets.bottom),
-            },
-          ]}
-          onPress={() => setFullscreenMedia(null)}
-        >
-          <Pressable style={{ width: "100%", maxHeight: "90%" }} onPress={() => {}}>
-            {fullscreenMedia?.kind === "video" ? (
-              <Video
-                source={{ uri: fullscreenMedia.uri }}
-                style={{ width: "100%", height: 360 }}
-                useNativeControls
-                resizeMode={ResizeMode.CONTAIN}
-                shouldPlay
-              />
-            ) : fullscreenMedia ? (
-              <Image
-                source={{ uri: fullscreenMedia.uri }}
-                style={{ width: "100%", height: "100%", minHeight: 280 }}
-                resizeMode="contain"
-              />
-            ) : null}
-          </Pressable>
-          <Pressable
-            style={[styles.iconButton, { position: "absolute", top: insets.top + 8, right: 16 }]}
-            onPress={() => setFullscreenMedia(null)}
-            accessibilityLabel="Close fullscreen"
-          >
-            <Ionicons name="close" size={28} color="#fff" />
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <FullscreenMediaViewer
+        item={fullscreenMedia}
+        backgroundColor="#000000"
+        onClose={() => setFullscreenMedia(null)}
+        onGalleryIndexChange={(index, postId) => {
+          if (postId) setPostMediaGalleryIndex(postId, index);
+        }}
+      />
+
+      <ImageCropModal
+        visible={imageCropVisible}
+        imageUri={imageCropUri}
+        fixedAspectRatio={imageCropAspect}
+        theme={theme}
+        onComplete={handleImageCropComplete}
+        onCancel={cancelImageCropFlow}
+      />
+
+      <VideoPostThumbnailModal
+        visible={videoThumbnailModalOpen}
+        defaultPosterUri={videoThumbnailDefaultPosterUri}
+        loadingPreview={videoThumbnailPreviewLoading}
+        theme={theme}
+        onUseFirstFrame={() => {
+          closeVideoThumbnailModal();
+          void finalizeVideoPosterAndPublish("skip");
+        }}
+        onChooseCustom={() => {
+          closeVideoThumbnailModal();
+          void finalizeVideoPosterAndPublish("pick");
+        }}
+        onCancel={closeVideoThumbnailModal}
+      />
 
       {photoEditorOpen ? (
         <PhotoEditorModal
           visible={photoEditorOpen}
           onClose={cancelPhotoEditor}
+          onCropModeChange={setPhotoEditorInCrop}
+          cropExitTick={photoEditorCropExitTick}
           onComplete={completePhotoEditor}
           assetUri={photoEditorAsset?.uri ?? null}
           assetWidth={photoEditorAsset?.width ?? 0}
           assetHeight={photoEditorAsset?.height ?? 0}
           mediaType={photoEditorMediaType}
-          previewSubmitLabel={photoEditorTarget === "profile" ? "Use photo" : "Post"}
+          previewSubmitLabel={
+            photoEditorTarget === "profile"
+              ? "Use photo"
+              : photoEditorTarget === "chat"
+                ? "Send"
+                : "Post"
+          }
           theme={{
             accent: theme.accent,
             background: theme.background,

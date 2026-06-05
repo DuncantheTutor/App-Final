@@ -1,7 +1,7 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
+import { storageGetItem, storageSetItem } from "./app/lib/encryptedLocalStorage";
 import { callEmulatorFunction } from "./backendBridge";
 
 const TELEMETRY_DEVICE_KEY = "app.telemetry.device.v1";
@@ -31,7 +31,7 @@ function randomTelemetryDeviceId(): string {
 async function ensureLocalTelemetryDeviceId(): Promise<string> {
   if (telemetryLocalDeviceId) return telemetryLocalDeviceId;
   try {
-    const existing = (await AsyncStorage.getItem(TELEMETRY_DEVICE_KEY))?.trim();
+    const existing = (await storageGetItem(TELEMETRY_DEVICE_KEY))?.trim();
     if (existing) {
       telemetryLocalDeviceId = existing;
       return existing;
@@ -42,7 +42,7 @@ async function ensureLocalTelemetryDeviceId(): Promise<string> {
   const next = randomTelemetryDeviceId();
   telemetryLocalDeviceId = next;
   try {
-    await AsyncStorage.setItem(TELEMETRY_DEVICE_KEY, next);
+    await storageSetItem(TELEMETRY_DEVICE_KEY, next);
   } catch {
     /* ignore */
   }

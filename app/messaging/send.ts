@@ -3,7 +3,10 @@ import { Alert } from "react-native";
 import { callEmulatorFunction } from "../../backendBridge";
 import { firebaseAuth } from "../../firebaseAuthClient";
 import { logAppError, logAppEvent } from "../../telemetry";
-import { uploadSharedMediaIfNeeded } from "../../mediaStorageUpload";
+import { buildChatMessagePushCopy } from "../lib/pushPreview";
+import { yieldToUi } from "../lib/yieldToUi";
+import { prepareMessageMediaForEncrypt } from "../lib/tierBMedia/messageMedia";
+import { tierBRefFromPayloadFields } from "../lib/tierBMedia/types";
 import { ensureLocalKeyBundle, encryptPayloadForRecipients } from "../../e2eeCrypto";
 import {
   CURRENT_USER_LOCAL_ID,
@@ -66,6 +69,7 @@ export type DeliverOutgoingMessagesParams = {
   recipientKeyCacheRef: { current: Record<string, string> };
   persistFriendKeyCacheNow: () => void;
   resolveConversationId: (chat: Chat) => string;
+  getSenderDisplayName: () => string;
   setChats: (updater: (current: Chat[]) => Chat[]) => void;
   setMessages: (updater: (current: Message[]) => Message[]) => void;
   onDelivered: () => void;
@@ -85,6 +89,7 @@ export async function deliverOutgoingMessages(
     recipientKeyCacheRef,
     persistFriendKeyCacheNow,
     resolveConversationId,
+    getSenderDisplayName,
     setChats,
     setMessages,
     onDelivered,
@@ -182,7 +187,26 @@ export async function deliverOutgoingMessages(
 
   for (const message of outgoingForState) {
     try {
-      const remoteMediaUri = await uploadSharedMediaIfNeeded(message.mediaUri, authUid);
+      await yieldToUi();
+      const mediaFields = await prepareMessageMediaForEncrypt(message.mediaUri, authUid, {
+        mediaKind:
+          message.kind === "voice" || message.kind === "video" || message.kind === "gif"
+            ? message.kind
+            : message.kind === "photo"
+              ? "photo"
+              : undefined,
+      });
+      const uploadedTierB = tierBRefFromPayloadFields(mediaFields);
+      if (uploadedTierB) {
+        const uploadedMessageId = message.id;
+        setMessages((current) =>
+          current.map((row) =>
+            row.id === uploadedMessageId
+              ? { ...row, mediaUri: undefined, mediaEncrypted: uploadedTierB }
+              : row
+          )
+        );
+      }
       const encrypted = await encryptPayloadForRecipients(
         session.uid,
         {
@@ -191,19 +215,31 @@ export async function deliverOutgoingMessages(
           text: message.text,
           createdAt: message.createdAt,
           kind: message.kind ?? "text",
-          mediaUri: remoteMediaUri ?? null,
+          ...mediaFields,
+          mediaWidth: message.mediaWidth ?? null,
+          mediaHeight: message.mediaHeight ?? null,
           durationSec: message.durationSec ?? null,
           replyToMessageId: message.replyToMessageId ?? null,
           broadcastThreadFriendId: message.broadcastThreadFriendId ?? null,
+          isBroadcast: chatForSend.kind === "broadcast" ? true : null,
+          broadcastTitle: chatForSend.kind === "broadcast" ? chatForSend.name : null,
         },
         keyMap
       );
+      const pushCopy = buildChatMessagePushCopy({
+        chat: chatForSend,
+        message,
+        currentUserLocalId: CURRENT_USER_LOCAL_ID,
+        senderDisplayName: getSenderDisplayName(),
+      });
       await callEmulatorFunction("sendEncryptedMessage", {
         uid: session.uid,
         deviceId: session.deviceId,
         conversationId,
         participantUids: uniqueParticipantUids,
         messageId: message.id,
+        notificationTitle: pushCopy.title,
+        notificationBody: pushCopy.body,
         ...encrypted,
       });
       deliveredIds.push(message.id);
@@ -303,7 +339,14 @@ export async function updateOutgoingMessageContent(params: {
   if (!authUid) {
     throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
   }
-  const remoteMediaUri = await uploadSharedMediaIfNeeded(message.mediaUri, authUid);
+  const mediaFields = await prepareMessageMediaForEncrypt(message.mediaUri, authUid, {
+    mediaKind:
+      message.kind === "voice" || message.kind === "video" || message.kind === "gif"
+        ? message.kind
+        : message.kind === "photo"
+          ? "photo"
+          : undefined,
+  });
   const encrypted = await encryptPayloadForRecipients(
     session.uid,
     {
@@ -312,10 +355,14 @@ export async function updateOutgoingMessageContent(params: {
       text: message.text,
       createdAt: message.createdAt,
       kind: message.kind ?? "text",
-      mediaUri: remoteMediaUri ?? null,
+      ...mediaFields,
+      mediaWidth: message.mediaWidth ?? null,
+      mediaHeight: message.mediaHeight ?? null,
       durationSec: message.durationSec ?? null,
       replyToMessageId: message.replyToMessageId ?? null,
       broadcastThreadFriendId: message.broadcastThreadFriendId ?? null,
+      isBroadcast: chat.kind === "broadcast" ? true : null,
+      broadcastTitle: chat.kind === "broadcast" ? chat.name : null,
     },
     keyMap
   );
@@ -334,5 +381,5 @@ export async function updateOutgoingMessageContent(params: {
 export function alertOutgoingDeliveryFailure(err: unknown, onFailed: (ids: Set<string>) => void, ids: Set<string>): void {
   onFailed(ids);
   const message = err instanceof Error ? err.message : "Could not deliver message.";
-  Alert.alert("Message not delivered", message);
+  Alert.alert("Message not delivered", `${message}\n\nYou can try again or delete the message from the chat.`);
 }

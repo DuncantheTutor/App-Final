@@ -9,6 +9,10 @@ buildscript {
     classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
     classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+    // FCM push notifications: parses google-services.json. The plugin is only
+    // *applied* in app/build.gradle when that file is present, so builds
+    // without push credentials still succeed.
+    classpath('com.google.gms:google-services:4.4.2')
   }
 }
 

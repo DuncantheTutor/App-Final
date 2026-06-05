@@ -29,6 +29,10 @@ export function mergeSyncedMessages(
       currentById[message.id] = existing
         ? {
             ...message,
+            createdAt:
+              existing.deliveryStatus === "sending" && isOwnOutgoingMessage(message)
+                ? existing.createdAt
+                : message.createdAt,
             reactions: mergeMessageReactions(existing.reactions, message.reactions),
             editedAt: message.editedAt ?? existing.editedAt,
             unsentAt: message.unsentAt ?? existing.unsentAt,
@@ -52,6 +56,10 @@ export function mergeSyncedMessages(
     currentById[message.id] = existing
       ? {
           ...message,
+          createdAt:
+            existing.deliveryStatus === "sending" && isOwnOutgoingMessage(message)
+              ? existing.createdAt
+              : message.createdAt,
           reactions: mergeMessageReactions(existing.reactions, message.reactions),
           editedAt: message.editedAt ?? existing.editedAt,
           unsentAt: message.unsentAt ?? existing.unsentAt,
@@ -70,10 +78,29 @@ export function mergeSyncedMessages(
   });
 }
 
+export type MergeSyncedPostsOptions = {
+  incremental: boolean;
+  optimisticWindowMs: number;
+  /** Locally deleted post ids — never re-merge from server or cloud snapshot. */
+  suppressedPostIds?: ReadonlySet<string>;
+};
+
+function isSuppressedPostId(postId: string, suppressed?: ReadonlySet<string>): boolean {
+  return suppressed != null && suppressed.has(postId);
+}
+
+function isPostVisibleAfterMerge(post: Post, suppressed?: ReadonlySet<string>): boolean {
+  return !post.deletedAt && !isSuppressedPostId(post.id, suppressed);
+}
+
+function filterVisibleMergedPosts(posts: Post[], suppressed?: ReadonlySet<string>): Post[] {
+  return posts.filter((post) => isPostVisibleAfterMerge(post, suppressed));
+}
+
 export function mergeSyncedPosts(
   current: Post[],
   decoded: Post[],
-  options: { incremental: boolean; optimisticWindowMs: number }
+  options: MergeSyncedPostsOptions
 ): Post[] {
   const now = Date.now();
   const currentById = Object.fromEntries(current.map((post) => [post.id, post] as const));
@@ -81,6 +108,7 @@ export function mergeSyncedPosts(
 
   if (options.incremental) {
     for (const post of decoded) {
+      if (isSuppressedPostId(post.id, options.suppressedPostIds)) continue;
       const existing = currentById[post.id];
       currentById[post.id] = existing
         ? {
@@ -92,6 +120,10 @@ export function mergeSyncedPosts(
         : post;
     }
     for (const post of current) {
+      if (isSuppressedPostId(post.id, options.suppressedPostIds)) {
+        delete currentById[post.id];
+        continue;
+      }
       if (
         !decodedIds.has(post.id) &&
         post.authorId === CURRENT_USER_ID &&
@@ -100,24 +132,35 @@ export function mergeSyncedPosts(
         currentById[post.id] = post;
       }
     }
-    return Object.values(currentById).sort((a, b) => b.createdAt - a.createdAt);
+    return filterVisibleMergedPosts(Object.values(currentById), options.suppressedPostIds).sort(
+      (a, b) => b.createdAt - a.createdAt
+    );
   }
 
-  const mergedDecoded = decoded.map((post) => {
-    const existing = currentById[post.id];
-    if (!existing) return post;
-    return {
-      ...post,
-      comments: existing.comments,
-      feedReactions: post.feedReactions ?? existing.feedReactions,
-      deletedAt: existing.deletedAt,
-    };
-  });
+  const mergedDecoded = decoded
+    .filter((post) => !isSuppressedPostId(post.id, options.suppressedPostIds))
+    .map((post) => {
+      const existing = currentById[post.id];
+      if (!existing) return post;
+      return {
+        ...post,
+        comments: existing.comments,
+        feedReactions: post.feedReactions ?? existing.feedReactions,
+        deletedAt: existing.deletedAt,
+      };
+    });
   const optimisticLocalOnly = current.filter(
     (post) =>
-      !decodedIds.has(post.id) && post.authorId === CURRENT_USER_ID && now - post.createdAt < options.optimisticWindowMs
+      !decodedIds.has(post.id) &&
+      !post.deletedAt &&
+      post.authorId === CURRENT_USER_ID &&
+      now - post.createdAt < options.optimisticWindowMs
   );
-  return [...mergedDecoded, ...optimisticLocalOnly].sort((a, b) => b.createdAt - a.createdAt);
+  // Full catalog replace: drop friend posts removed on server (deleteEncryptedPost).
+  return filterVisibleMergedPosts(
+    [...mergedDecoded, ...optimisticLocalOnly],
+    options.suppressedPostIds
+  ).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export function maxCreatedAtMs<T extends { createdAt: number }>(items: T[]): number {

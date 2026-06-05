@@ -28,7 +28,7 @@ export function mapServerReactionsToLocal(
   for (const [uid, emoji] of Object.entries(reactions)) {
     const trimmed = String(emoji ?? "").trim();
     if (!trimmed) continue;
-    if (uid === sessionAppUid) {
+    if (uid === sessionAppUid || uid === CURRENT_USER_LOCAL_ID) {
       out[CURRENT_USER_LOCAL_ID] = trimmed;
       continue;
     }
@@ -60,14 +60,17 @@ export function overlayMessageDocMetadata<T extends { reactions?: Record<string,
   sessionAppUid: string,
   uidToFriendId: Record<string, string>
 ): T {
-  const reactions = mapServerReactionsToLocal(doc.reactions, sessionAppUid, uidToFriendId);
+  const mappedReactions =
+    doc.reactions !== undefined
+      ? mapServerReactionsToLocal(doc.reactions, sessionAppUid, uidToFriendId)
+      : undefined;
   const editedAt =
     doc.editedAt != null && Number.isFinite(Number(doc.editedAt)) ? Number(doc.editedAt) : undefined;
   const unsentAt =
     doc.unsentAt != null && Number.isFinite(Number(doc.unsentAt)) ? Number(doc.unsentAt) : undefined;
   return {
     ...message,
-    ...(reactions !== undefined ? { reactions } : {}),
+    ...(doc.reactions !== undefined ? { reactions: mappedReactions } : {}),
     ...(editedAt !== undefined ? { editedAt } : {}),
     ...(unsentAt !== undefined
       ? { unsentAt, text: "", mediaUri: undefined, durationSec: undefined }

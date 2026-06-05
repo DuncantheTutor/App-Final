@@ -59,8 +59,8 @@ export function sanitizePersistedFriendsFromStorage(value: unknown): Friend[] {
 
 /** Cold start: hide auth/main UI until Firebase initial auth resolves and this minimum elapses. */
 export const APP_BOOT_SPLASH_MIN_MS = 500;
-/** Shown on the boot splash under the tBH mark until you wire a real product name. */
-export const PLACEHOLDER_APP_PRODUCT_NAME = "Your network name";
+/** Product name shown on the boot splash under the wordmark. */
+export const PLACEHOLDER_APP_PRODUCT_NAME = "Erdos";
 
 export function lastViewStorageKey(email: string): string {
   return `app:lastView:v1:${email.trim().toLowerCase()}`;
@@ -121,6 +121,7 @@ export function parseStoredViewState(raw: string, chatIds: Set<string>): ViewSta
   if (screen === "home") return { screen: "home" };
   if (screen === "myProfile") return { screen: "myProfile" };
   if (screen === "settings") return { screen: "settings" };
+  if (screen === "openSourceLicenses") return { screen: "settings" };
   if (screen === "addFriend") return { screen: "addFriend" };
   if (screen === "publishPost") return { screen: "home" };
   if (screen === "chatSharedMedia") {

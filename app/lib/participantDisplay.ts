@@ -23,15 +23,22 @@ function tombstone(): ParticipantDisplay {
 
 function isServerAcceptedFriend(
   friend: Friend,
-  serverAcceptedFriendBackendUids: ReadonlySet<string> | null | undefined
+  serverAcceptedFriendBackendUids: ReadonlySet<string> | null | undefined,
+  localAcceptedFriendIds?: ReadonlySet<string> | null
 ): boolean {
   /** `null` = roster still loading (demo offline or pre–`initialServerSyncDone`). */
   if (serverAcceptedFriendBackendUids === null) return true;
   const backendUid = friend.backendUid?.trim();
   if (!backendUid?.startsWith("u_")) return false;
   if (!serverAcceptedFriendBackendUids) return false;
-  if (serverAcceptedFriendBackendUids.size === 0) return false;
-  return serverAcceptedFriendBackendUids.has(backendUid);
+  if (serverAcceptedFriendBackendUids.has(backendUid)) return true;
+  /**
+   * Trust the local undirected friend graph while the server roster catches up
+   * (recent Add Friend, `listMyFriends` lag, or friendships listener delay).
+   * Unfriend clears the local edge and sets `unfriendedIds` before this runs.
+   */
+  if (localAcceptedFriendIds?.has(friend.id)) return true;
+  return false;
 }
 
 /**
@@ -52,7 +59,10 @@ export function resolveParticipantDisplay(
   friendMap: Record<string, Friend | undefined>,
   unfriendedIds: string[],
   serverAcceptedFriendBackendUids?: ReadonlySet<string> | null,
-  options?: ResolveParticipantDisplayOptions
+  options?: ResolveParticipantDisplayOptions & {
+    /** Friend ids with a local undirected edge to the current user (roster fallback). */
+    localAcceptedFriendIds?: ReadonlySet<string> | null;
+  }
 ): ParticipantDisplay {
   if (
     options?.chatId &&
@@ -64,7 +74,9 @@ export function resolveParticipantDisplay(
   if (unfriendedIds.includes(friendId)) return tombstone();
   const f = friendMap[friendId];
   if (!f) return tombstone();
-  if (!isServerAcceptedFriend(f, serverAcceptedFriendBackendUids)) return tombstone();
+  if (!isServerAcceptedFriend(f, serverAcceptedFriendBackendUids, options?.localAcceptedFriendIds)) {
+    return tombstone();
+  }
   const dn = f.displayName?.trim();
   if (!dn) return tombstone();
   return {

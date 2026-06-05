@@ -16,10 +16,35 @@ export function stickyFooterPadding(insetsBottom: number): number {
   return androidNavInset(insetsBottom) + FOOTER_EXTRA;
 }
 
+/** Photo/video editor primary CTAs (Continue / Post) — extra lift on gesture-nav Android. */
+export function photoEditorFooterPadding(insetsBottom: number): number {
+  const nav = androidNavInset(insetsBottom);
+  const extra = Platform.OS === "android" ? 22 : 14;
+  return nav + extra;
+}
+
 /** Composer / input bar bottom inset when keyboard is closed. */
 export function composerBottomPadding(insetsBottom: number, keyboardVisible: boolean): number {
   if (keyboardVisible) return 4;
   return stickyFooterPadding(insetsBottom);
+}
+
+/**
+ * Bottom inset for fixed bottom composers (chat, post comment) while the keyboard is open.
+ * iOS usually relies on KeyboardAvoidingView; Android edge-to-edge + absolute overlays need
+ * explicit lift from `keyboardHeight`.
+ */
+export function keyboardComposerBottomPadding(
+  insetsBottom: number,
+  keyboardVisible: boolean,
+  keyboardHeight: number
+): number {
+  if (!keyboardVisible) return stickyFooterPadding(insetsBottom);
+  if (Platform.OS === "android" && keyboardHeight > 0) {
+    const nav = androidNavInset(insetsBottom);
+    return Math.max(4, keyboardHeight - nav);
+  }
+  return composerBottomPadding(insetsBottom, true);
 }
 
 /** Spacer height below fixed home bars (Chats **Start Chat** dead zone). */

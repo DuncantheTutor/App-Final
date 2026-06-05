@@ -1,4 +1,5 @@
 import type { VideoTextOverlayData } from "../../PhotoEditorModal";
+import type { EncryptedMediaRef } from "../lib/tierBMedia/types";
 
 export type Friend = {
   id: string;
@@ -59,6 +60,8 @@ export type Message = {
   createdAt: number;
   kind?: "text" | "photo" | "video" | "voice" | "gif";
   mediaUri?: string;
+  /** Tier B ciphertext blob reference (decrypt to local file for display). */
+  mediaEncrypted?: EncryptedMediaRef;
   mediaWidth?: number;
   mediaHeight?: number;
   durationSec?: number;
@@ -85,6 +88,10 @@ export type Post = {
   videoUri?: string;
   /** For video posts: chosen thumbnail or default first-frame poster. */
   videoPosterUri?: string;
+  /** Tier B encrypted blobs (Phase 1). */
+  imageEncryptedMedia?: EncryptedMediaRef[];
+  videoEncryptedMedia?: EncryptedMediaRef;
+  videoPosterEncryptedMedia?: EncryptedMediaRef;
   deletedAt?: number;
   /** userId → emoji; only friends (and you) are shown in the feed UI. */
   feedReactions?: Record<string, string>;
@@ -98,6 +105,8 @@ export type PostComment = {
   createdAt: number;
   reactions?: Record<string, string>;
   thread?: PostCommentThreadMessage[];
+  /** Optimistic private-comment delivery state (client-only until server confirms). */
+  syncState?: "posting" | "posted" | "failed";
 };
 
 export type PostCommentThreadMessage = {
@@ -167,6 +176,7 @@ export type ViewState =
     }
   | { screen: "myProfile" }
   | { screen: "settings" }
+  | { screen: "openSourceLicenses" }
   | {
       screen: "friendsList";
       returnTo: "home" | "chat";

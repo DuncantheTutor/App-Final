@@ -50,14 +50,29 @@ function parseSinceMs(raw: unknown): number | null {
 
 async function assertAcceptedFriendship(uid: string, otherUid: string): Promise<void> {
   if (uid === otherUid) return;
-  const snap = await firestoreDb().collection("friendships").doc(friendshipId(uid, otherUid)).get();
-  if (!snap.exists) {
-    throw new HttpsError("permission-denied", "Friendship required.");
-  }
-  const data = snap.data() as { status?: string } | undefined;
-  if (data?.status !== "accepted") {
+  const canonicalSnap = await firestoreDb()
+    .collection("friendships")
+    .doc(friendshipId(uid, otherUid))
+    .get();
+  if (canonicalSnap.exists) {
+    const data = canonicalSnap.data() as { status?: string } | undefined;
+    if (data?.status === "accepted") return;
     throw new HttpsError("permission-denied", "Friendship not accepted.");
   }
+  const querySnap = await firestoreDb()
+    .collection("friendships")
+    .where("participants", "array-contains", uid)
+    .where("status", "==", "accepted")
+    .get();
+  for (const doc of querySnap.docs) {
+    const participants = (doc.data().participants ?? []) as string[];
+    for (const raw of participants) {
+      if (raw === uid) continue;
+      const normalized = raw === otherUid ? otherUid : await normalizeParticipantToAppUid(raw);
+      if (normalized === otherUid) return;
+    }
+  }
+  throw new HttpsError("permission-denied", "Friendship required.");
 }
 
 async function resolveParticipantAuthUids(uids: string[]): Promise<string[]> {
@@ -157,15 +172,42 @@ function assertParticipant(conv: ConversationData, uid: string): void {
   }
 }
 
+async function resolveChatMessagePushTitle(args: {
+  senderUid: string;
+  participantUids: string[];
+  clientTitle?: string;
+}): Promise<string> {
+  const participants = [...new Set(args.participantUids.filter(Boolean))];
+  const clientTitle = String(args.clientTitle ?? "").trim();
+
+  if (participants.length === 2) {
+    const senderSnap = await firestoreDb().collection("users").doc(args.senderUid).get();
+    const username =
+      String(senderSnap.data()?.username ?? "").trim() ||
+      `User ${args.senderUid.slice(0, 6)}`;
+    return `New message from ${username}`;
+  }
+
+  return clientTitle || "New message";
+}
+
 /** Sends FCM to other participants (best-effort). */
 export async function notifyConversationParticipantsPush(args: {
   senderUid: string;
   conversationId: string;
   participantUids: string[];
-  previewText?: string;
+  title?: string;
+  body?: string;
 }): Promise<void> {
   const recipients = args.participantUids.filter((id) => id !== args.senderUid);
   if (recipients.length === 0) return;
+
+  const pushTitle = await resolveChatMessagePushTitle({
+    senderUid: args.senderUid,
+    participantUids: args.participantUids,
+    clientTitle: args.title,
+  });
+  const pushBody = String(args.body ?? "").trim() || "Sent a message";
 
   const convSnap = await firestoreDb().collection("conversations").doc(args.conversationId).get();
   const mutedBy = (convSnap.data()?.mutedBy ?? {}) as Record<string, boolean>;
@@ -193,11 +235,12 @@ export async function notifyConversationParticipantsPush(args: {
         body: JSON.stringify(
           expoTokens.map((to) => ({
             to,
-            title: "New message",
-            body: args.previewText?.trim() || "You have a new message",
+            title: pushTitle,
+            body: pushBody,
             data: { type: "chat_message", conversationId: args.conversationId },
             sound: "default",
             priority: "high",
+            channelId: "messages",
           }))
         ),
       });
@@ -211,14 +254,161 @@ export async function notifyConversationParticipantsPush(args: {
       await admin.messaging().sendEachForMulticast({
         tokens: fcmTokens,
         notification: {
-          title: "New message",
-          body: args.previewText?.trim() || "You have a new message",
+          title: pushTitle,
+          body: pushBody,
         },
         data: {
           type: "chat_message",
           conversationId: args.conversationId,
         },
-        android: { priority: "high" },
+        android: {
+          priority: "high",
+          notification: { channelId: "messages", sound: "default" },
+        },
+      });
+    } catch {
+      /* push is best-effort */
+    }
+  }
+}
+
+/** Notifies friends when someone publishes a new encrypted post (best-effort). */
+export async function notifyPostRecipientsPush(args: {
+  authorUid: string;
+  authorName: string;
+  recipientUids: string[];
+  postId: string;
+}): Promise<void> {
+  const recipients = args.recipientUids.filter((id) => id !== args.authorUid);
+  if (recipients.length === 0) return;
+
+  const name = args.authorName.trim() || "Someone";
+  const pushTitle = `New post from ${name}`;
+  const pushBody = `${name} shared a new post`;
+
+  const tokenSnaps = await Promise.all(
+    recipients.map(async (uid) => {
+      const snap = await firestoreDb().collection("users").doc(uid).collection("pushTokens").get();
+      return snap.docs
+        .map((d) => String(d.data().token ?? "").trim())
+        .filter(Boolean);
+    })
+  );
+  const tokens = [...new Set(tokenSnaps.flat())];
+  if (tokens.length === 0) return;
+
+  const expoTokens = tokens.filter((t) => t.startsWith("ExponentPushToken"));
+  const fcmTokens = tokens.filter((t) => !t.startsWith("ExponentPushToken"));
+
+  if (expoTokens.length > 0) {
+    try {
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          expoTokens.map((to) => ({
+            to,
+            title: pushTitle,
+            body: pushBody,
+            data: { type: "new_post", postId: args.postId, authorUid: args.authorUid },
+            sound: "default",
+            priority: "high",
+            channelId: "messages",
+          }))
+        ),
+      });
+    } catch {
+      /* push is best-effort */
+    }
+  }
+
+  if (fcmTokens.length > 0) {
+    try {
+      await admin.messaging().sendEachForMulticast({
+        tokens: fcmTokens,
+        notification: { title: pushTitle, body: pushBody },
+        data: {
+          type: "new_post",
+          postId: args.postId,
+          authorUid: args.authorUid,
+        },
+        android: {
+          priority: "high",
+          notification: { channelId: "messages", sound: "default" },
+        },
+      });
+    } catch {
+      /* push is best-effort */
+    }
+  }
+}
+
+/** Notifies the post owner when a friend reacts (best-effort). */
+export async function notifyPostOwnerReactionPush(args: {
+  ownerUid: string;
+  reactorUid: string;
+  postId: string;
+  emoji: string;
+}): Promise<void> {
+  const ownerUid = args.ownerUid.trim();
+  const reactorUid = args.reactorUid.trim();
+  const emoji = args.emoji.trim();
+  const postId = args.postId.trim();
+  if (!ownerUid || !reactorUid || !postId || !emoji) return;
+  if (ownerUid === reactorUid) return;
+
+  const reactorSnap = await firestoreDb().collection("users").doc(reactorUid).get();
+  const reactorName = String(reactorSnap.data()?.username ?? "").trim() || "Someone";
+  const pushTitle = `${reactorName} reacted to your post`;
+  const pushBody = emoji;
+
+  const snap = await firestoreDb().collection("users").doc(ownerUid).collection("pushTokens").get();
+  const tokens = [
+    ...new Set(
+      snap.docs.map((d) => String(d.data().token ?? "").trim()).filter(Boolean)
+    ),
+  ];
+  if (tokens.length === 0) return;
+
+  const expoTokens = tokens.filter((t) => t.startsWith("ExponentPushToken"));
+  const fcmTokens = tokens.filter((t) => !t.startsWith("ExponentPushToken"));
+
+  if (expoTokens.length > 0) {
+    try {
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          expoTokens.map((to) => ({
+            to,
+            title: pushTitle,
+            body: pushBody,
+            data: { type: "post_reaction", postId, reactorUid },
+            sound: "default",
+            priority: "high",
+            channelId: "messages",
+          }))
+        ),
+      });
+    } catch {
+      /* push is best-effort */
+    }
+  }
+
+  if (fcmTokens.length > 0) {
+    try {
+      await admin.messaging().sendEachForMulticast({
+        tokens: fcmTokens,
+        notification: { title: pushTitle, body: pushBody },
+        data: {
+          type: "post_reaction",
+          postId,
+          reactorUid,
+        },
+        android: {
+          priority: "high",
+          notification: { channelId: "messages", sound: "default" },
+        },
       });
     } catch {
       /* push is best-effort */
@@ -467,6 +657,15 @@ export const setEncryptedPostReaction = onCall(async (req) => {
       { merge: true }
     );
   });
+  const ownerUid = String(post.ownerUid ?? "").trim();
+  if (emoji && ownerUid && ownerUid !== uid) {
+    void notifyPostOwnerReactionPush({
+      ownerUid,
+      reactorUid: uid,
+      postId,
+      emoji,
+    });
+  }
   return { ok: true };
 });
 
@@ -486,12 +685,37 @@ export const updateEncryptedPost = onCall(async (req) => {
   if (data.ownerUid !== uid) {
     throw new HttpsError("permission-denied", "Only the post owner can edit.");
   }
-  const recipientAuthUids = await resolveParticipantAuthUids(data.recipientUids ?? []);
+
+  const envelopeRecipientUids = Object.keys(envelopes).filter(Boolean);
+  const requestedRecipientUids = Array.isArray(req.data?.recipientUids)
+    ? (req.data.recipientUids as unknown[])
+        .map((x) => String(x ?? "").trim())
+        .filter((x) => x.length > 0)
+    : [];
+  const recipientUids = [
+    ...new Set(
+      (requestedRecipientUids.length > 0 ? requestedRecipientUids : envelopeRecipientUids).filter(Boolean)
+    ),
+  ];
+  if (recipientUids.length === 0) {
+    throw new HttpsError("invalid-argument", "At least one recipient is required.");
+  }
+  if (!recipientUids.includes(uid)) {
+    recipientUids.unshift(uid);
+  }
+  await Promise.all(
+    recipientUids.map((recipientUid) =>
+      recipientUid === uid ? Promise.resolve() : assertAcceptedFriendship(uid, recipientUid)
+    )
+  );
+
+  const recipientAuthUids = await resolveParticipantAuthUids(recipientUids);
   await postRef.set(
     {
       ciphertext,
       nonce,
       envelopes,
+      recipientUids,
       recipientAuthUids,
       editedAt: admin.firestore.FieldValue.serverTimestamp(),
     },

@@ -22,6 +22,7 @@ import {
 } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 
+import { HomeTopNavBar, type HomeNavBadges, type HomeNavHighlight } from "../components/HomeTopNavBar";
 import {
   cancelInPersonPairingHardware,
 } from "../../addFriend/inPersonPairingGateway";
@@ -29,15 +30,16 @@ import {
   readAddFriendNdefPayload,
   writeAddFriendNdefPayload,
 } from "../../addFriend/nfc/handshake";
-import { encodeNfcPinPairNdefPayload, parsePinFromNfcPairPlaintext } from "../../addFriend/nfcPinTransport/pinPairProtocol";
+import {
+  encodeNfcPairOfferNdefPayload,
+  encodeQrPairOfferPayload,
+  parseNfcPairOfferPlaintext,
+  parseQrPairOfferPlaintext,
+} from "../../addFriend/nfcPinTransport/pairOfferProtocol";
 
 import type { Friend, InPersonPairingRole, ThemePalette } from "../domain/types";
-import {
-  multiplyHexColor,
-  blendAccentTowardWhite,
-} from "../lib/colorMath";
 import { logAppError, logAppEvent } from "../../telemetry";
-import { ADD_FRIEND_DUAL_CONFIRM_TIMEOUT_MS, ADD_FRIEND_HOLD_MS } from "../theme/preludeConstants";
+import { ADD_FRIEND_HOLD_MS } from "../theme/preludeConstants";
 
 /** Background link delay (no dedicated handshake UI). */
 const ADD_FRIEND_HANDSHAKE_MS = 750;
@@ -67,15 +69,10 @@ export function AddFriendScreen(props: {
   isDarkMode: boolean;
   safeTop: number;
   bottomInset: number;
-  navHighlight: {
-    settings: boolean;
-    chats: boolean;
-    feed: boolean;
-    myProfile: boolean;
-    friendsList: boolean;
-    addFriend: boolean;
-  };
+  navHighlight: HomeNavHighlight;
+  navBadges?: HomeNavBadges;
   styles: Record<string, object>;
+  onOpenCreatePost: () => void;
   onOpenSettings: () => void;
   onOpenMyProfile: () => void;
   onOpenFriendsList: () => void;
@@ -91,16 +88,26 @@ export function AddFriendScreen(props: {
   onPairingAwaitPinRedeem: (pin: string) => Promise<Friend | null>;
   /** Joiner: QR scan — validates PIN + proximity (`confirmNfcPinPairOffer`), returns hydrated issuer for dual-confirm UI. */
   onPairingConfirmPinRead: (pin: string) => Promise<Friend | null>;
-  /** Joiner: after confirming, wait until issuer performs their explicit confirm. */
+  /** Joiner: explicit dual-confirm tap (`confirmRedeemerNfcPinPairOffer`) after phase 1 scan. */
+  onPairingConfirmRedeemerDualConfirm: (pin: string) => Promise<boolean>;
+  /** Joiner: after redeemer confirm, wait until issuer finalizes friendship. */
   onPairingAwaitIssuerFinalConfirm: (pin: string) => Promise<Friend | null>;
   /** Issuer: explicit confirm that finalizes friendship after scanner confirmed. */
   onPairingFinalizePinOffer: (pin: string) => Promise<Friend | null>;
-  /** Read QR flow: request/confirm foreground location permission for GPS proximity path. */
-  onEnsurePairingLocationPermission: () => Promise<boolean>;
+  /** Requires precise (fine/full) foreground location; re-prompts if approximate-only. */
+  onEnsurePairingLocationPermission: (options?: { showAlerts?: boolean }) => Promise<boolean>;
+  /** Requires camera for Read QR; re-prompts when denied. */
+  onEnsurePairingCameraPermission: (options?: { showAlerts?: boolean }) => Promise<boolean>;
   /** Issuer cancel: release server PIN reservation (issuer anytime; scanner too after phase 1). */
   onPairingCancelPinOffer: (pin: string) => Promise<void>;
   /** Poll while on dual-confirm UI; false when session was deleted (other user cancelled). */
   onPairingPollOfferStillPresent: (pin: string) => Promise<boolean>;
+  /** Server pairing phase for idle-timeout (neither side tapped Confirm yet). */
+  onPairingGetOfferStatus: (
+    pin: string
+  ) => Promise<"pending" | "awaiting_redeemer_confirm" | "awaiting_issuer_confirm" | "joined" | "gone">;
+  /** Parent registers this to cancel PIN / background work when leaving the screen (Android back, etc.). */
+  onRegisterPairingAbort?: (abort: () => void) => void;
 }) {
   const {
     theme,
@@ -108,7 +115,9 @@ export function AddFriendScreen(props: {
     safeTop,
     bottomInset,
     navHighlight,
+    navBadges,
     styles,
+    onOpenCreatePost,
     onOpenSettings,
     onOpenMyProfile,
     onOpenFriendsList,
@@ -120,24 +129,34 @@ export function AddFriendScreen(props: {
     onPairingRegisterPinWithRetry,
     onPairingAwaitPinRedeem,
     onPairingConfirmPinRead,
+    onPairingConfirmRedeemerDualConfirm,
     onPairingAwaitIssuerFinalConfirm,
     onPairingFinalizePinOffer,
     onEnsurePairingLocationPermission,
+    onEnsurePairingCameraPermission,
     onPairingCancelPinOffer,
     onPairingPollOfferStillPresent,
+    onPairingGetOfferStatus,
+    onRegisterPairingAbort,
   } = props;
-  const onAccentLabel = isDarkMode ? "rgba(0,0,0,0.90)" : "rgba(255,255,255,0.96)";
-  const onAccentMuted = isDarkMode ? "rgba(0,0,0,0.58)" : "rgba(255,255,255,0.72)";
-  const onAccentActivePill = isDarkMode ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.22)";
-  const switchTrackOff = isDarkMode
-    ? multiplyHexColor(theme.accent, 0.42)
-    : blendAccentTowardWhite(theme.accent, 0.38);
-  const switchTrackOn = isDarkMode
-    ? multiplyHexColor(theme.accent, 0.58)
-    : blendAccentTowardWhite(theme.accent, 0.52);
-  const switchThumbSolid = isDarkMode ? "#111111" : "#FFFFFF";
+  const iconColor = theme.accent;
+  const textColor = theme.text;
+  const mutedColor = theme.subtleText;
+  /** Dark mode: light neutral rail on black; light mode uses muted accent wash. */
+  const switchTrackMutedHex = isDarkMode ? "rgba(255,255,255,0.32)" : `${theme.accent}1F`;
+  const switchTrackMuted = useMemo(
+    () => ({ false: switchTrackMutedHex, true: switchTrackMutedHex }),
+    [switchTrackMutedHex]
+  );
   const { height: windowHeight, width: screenWidth } = useWindowDimensions();
-  type Phase = "idle" | "handshake" | "awaitPairing" | "confirmFriend" | "profileOverlay" | "profileSolo";
+  type Phase =
+    | "idle"
+    | "handshake"
+    | "authenticating"
+    | "awaitPairing"
+    | "confirmFriend"
+    | "profileOverlay"
+    | "profileSolo";
   const [phase, setPhase] = useState<Phase>("idle");
   /** Friend shown in the post-ritual profile. */
   const [displayedProfileId, setDisplayedProfileId] = useState<string | null>(null);
@@ -150,15 +169,23 @@ export function AddFriendScreen(props: {
   const [pendingVerifiedPin, setPendingVerifiedPin] = useState<string | null>(null);
   const [pendingVerifiedSource, setPendingVerifiedSource] = useState<"share" | "join" | null>(null);
   const [activeQrPayload, setActiveQrPayload] = useState<string | null>(null);
+  const [qrPreparing, setQrPreparing] = useState(false);
+  const [presenterSessionBusy, setPresenterSessionBusy] = useState(false);
+  const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [scannerBusy, setScannerBusy] = useState(false);
   const scannerBusyRef = useRef(false);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  /** After a valid read: keep camera frame visible, stop further barcode events (like a normal QR app). */
+  const [qrScanFrozen, setQrScanFrozen] = useState(false);
+  const qrScanFrozenRef = useRef(false);
+  const [cameraPermission, , refreshCameraPermission] = useCameraPermissions();
   /** Active 4-digit PIN for issuer (never shown in UI); used for cancel + poll. */
   const hostActivePinRef = useRef<string | null>(null);
   const qrHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qrVoidingForScreenshotRef = useRef(false);
   const hostAwaitSessionRef = useRef(0);
   const qrScanAttemptSeqRef = useRef(0);
+  /** Ignores stale scan async completions when the camera fires duplicate QR reads. */
+  const qrScanGenerationRef = useRef(0);
   const pressStartRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
   const pairingHoldCooldownUntilRef = useRef(0);
@@ -180,22 +207,32 @@ export function AddFriendScreen(props: {
     };
   }, []);
 
+  /** Warm-check precise location when Add Friend opens (no alert until Show/Read QR). */
   useEffect(() => {
-    if (inPersonPairingRole === "join" && !cameraPermission?.granted) {
-      void requestCameraPermission();
-    }
-    if (inPersonPairingRole === "join") {
-      setActiveQrPayload(null);
-    }
-  }, [inPersonPairingRole, cameraPermission?.granted, requestCameraPermission]);
-
-  /** Prompt for GPS when Add Friend opens so scanning is never the first moment we ask. */
-  useEffect(() => {
-    void onEnsurePairingLocationPermission();
+    void (async () => {
+      const ok = await onEnsurePairingLocationPermission({ showAlerts: false });
+      if (!ok) {
+        setPairingStatusLabel(
+          "Turn on Precise location in your phone settings before Show QR or Read QR."
+        );
+      }
+    })();
   }, [onEnsurePairingLocationPermission]);
 
-  const issuerAwaitingRedeemRef = useRef(false);
-  const [issuerAwaitingRedeem, setIssuerAwaitingRedeem] = useState(false);
+  /** Warm-check camera for Read QR (no alert until user switches to scan). */
+  useEffect(() => {
+    void (async () => {
+      const ok = await onEnsurePairingCameraPermission({ showAlerts: false });
+      await refreshCameraPermission();
+      if (!ok) {
+        setPairingStatusLabel((prev) =>
+          prev.trim()
+            ? prev
+            : "Allow camera access before Read QR, or tap Try again on the scanner."
+        );
+      }
+    })();
+  }, [onEnsurePairingCameraPermission, refreshCameraPermission]);
 
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const dimOpacity = useRef(new Animated.Value(0)).current;
@@ -209,14 +246,12 @@ export function AddFriendScreen(props: {
   );
 
   const buttonSize = Math.min(screenWidth - 20, screenWidth * 0.94);
-  const addFriendButtonFill = multiplyHexColor(theme.accent, 0.8);
-  const addFriendButtonBorder = isDarkMode ? multiplyHexColor(theme.accent, 0.62) : "rgba(255,255,255,0.95)";
-  const addFriendButtonChrome = {
-    backgroundColor: addFriendButtonFill,
-    borderWidth: 2,
-    borderColor: addFriendButtonBorder,
-  };
-  const addFriendButtonLabelColor = isDarkMode ? "#111111" : "rgba(255,255,255,0.96)";
+  const outlineButtonStyle = {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.divider,
+    backgroundColor: theme.background,
+  } as const;
 
   const stopHoldLoop = useCallback(() => {
     if (rafRef.current != null) {
@@ -226,16 +261,27 @@ export function AddFriendScreen(props: {
     pressStartRef.current = null;
   }, []);
 
-  const runAfterHandshake = useCallback(() => {
-    const fid = displayedProfileFriend?.id ?? "";
-    if (fid) {
+  const runAfterHandshake = useCallback((opts?: { success?: boolean }) => {
+    if (opts?.success) {
+      // Celebratory haptic — a short happy "ta-da" buzz pattern. iOS/Android both
+      // accept an alternating [wait, vibrate, …] pattern in ms.
+      try {
+        Vibration.vibrate([0, 45, 70, 45, 70, 120]);
+      } catch {
+        // ignore — vibration is best-effort
+      }
       void (async () => {
         try {
+          // Allow the chime to sound even when the ringer is on silent (iOS).
+          await Audio.setAudioModeAsync({
+            playsInSilentModeIOS: true,
+            shouldDuckAndroid: true,
+          }).catch(() => undefined);
           const { sound } = await Audio.Sound.createAsync(
             {
               uri: "https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3",
             },
-            { shouldPlay: true, volume: 0.65 }
+            { shouldPlay: true, volume: 0.7 }
           );
           sound.setOnPlaybackStatusUpdate((status) => {
             if (status.isLoaded && status.didJustFinish) {
@@ -271,7 +317,7 @@ export function AddFriendScreen(props: {
         setPhase("idle");
       }, ADD_FRIEND_PROFILE_SOLO_MS);
     });
-  }, [dimOpacity, friendAddedOpacity, displayedProfileFriend]);
+  }, [dimOpacity, friendAddedOpacity]);
 
   const summarizeHandshakeError = useCallback((err: unknown): string => {
     const raw = err instanceof Error ? err.message : String(err ?? "");
@@ -291,6 +337,77 @@ export function AddFriendScreen(props: {
       qrHideTimerRef.current = null;
     }
   }, []);
+
+  const pendingVerifiedPinRef = useRef(pendingVerifiedPin);
+  pendingVerifiedPinRef.current = pendingVerifiedPin;
+
+  const abortPairingSession = useCallback(
+    async (opts?: {
+      markHandshakeCancelled?: boolean;
+      cancelServerOffer?: boolean;
+      invalidateQrScan?: boolean;
+    }) => {
+    const markHandshakeCancelled = opts?.markHandshakeCancelled !== false;
+    const cancelServerOffer = opts?.cancelServerOffer !== false;
+    const invalidateQrScan = opts?.invalidateQrScan !== false;
+    hostAwaitSessionRef.current = 0;
+    if (invalidateQrScan) qrScanGenerationRef.current += 1;
+    qrScanFrozenRef.current = false;
+    setQrScanFrozen(false);
+    if (markHandshakeCancelled) pairingHandshakeCancelledRef.current = true;
+    clearQrHideTimer();
+    setActiveQrPayload(null);
+    setQrPreparing(false);
+    setPresenterSessionBusy(false);
+    setConfirmSubmitting(false);
+    scannerBusyRef.current = false;
+    setScannerBusy(false);
+    const pin = hostActivePinRef.current ?? pendingVerifiedPinRef.current?.trim() ?? "";
+    hostActivePinRef.current = null;
+    if (cancelServerOffer && pin) await onPairingCancelPinOffer(pin).catch(() => {});
+    await cancelInPersonPairingHardware().catch(() => {});
+    setPendingVerifiedFriend(null);
+    setPendingVerifiedPin(null);
+    setPendingVerifiedSource(null);
+    ritualDoneRef.current = false;
+    setDisplayedProfileId(null);
+    setDisplayedProfileFriend(null);
+    setPhase("idle");
+    setPairingStatusLabel("");
+  },
+    [clearQrHideTimer, onPairingCancelPinOffer]
+  );
+
+  const abortPairingSessionRef = useRef(abortPairingSession);
+  abortPairingSessionRef.current = abortPairingSession;
+
+  useEffect(() => {
+    onRegisterPairingAbort?.(() => {
+      void abortPairingSessionRef.current();
+    });
+    return () => {
+      onRegisterPairingAbort?.(() => {});
+    };
+  }, [onRegisterPairingAbort]);
+
+  useEffect(() => {
+    return () => {
+      void abortPairingSessionRef.current();
+    };
+  }, []);
+
+  const retryPairingCameraPermission = useCallback(async (): Promise<boolean> => {
+    const ok = await onEnsurePairingCameraPermission({ showAlerts: true });
+    await refreshCameraPermission();
+    if (!ok) {
+      setPairingStatusLabel(
+        "Camera access is required to scan QR codes. Allow camera when prompted, or enable it in your phone settings for Erdos."
+      );
+    } else {
+      setPairingStatusLabel("Ready to scan.");
+    }
+    return ok;
+  }, [onEnsurePairingCameraPermission, refreshCameraPermission]);
 
   const voidActiveQrFromScreenshot = useCallback(async () => {
     if (!activeQrPayload || qrVoidingForScreenshotRef.current) return;
@@ -319,12 +436,17 @@ export function AddFriendScreen(props: {
     };
   }, [voidActiveQrFromScreenshot]);
 
-  const parseQrPayloadPin = useCallback((raw: string): string | null => {
-    const t = raw.trim();
-    if (!t) return null;
-    if (/^\d{4}$/.test(t)) return t;
-    const m = t.match(/^AFQR1\|(\d{4})$/i);
-    return m?.[1] ?? null;
+  const parseQrPayloadOffer = useCallback((raw: string): string | null => {
+    return parseQrPairOfferPlaintext(raw);
+  }, []);
+
+  const buildQrDisplayPayload = useCallback((offerCode: string): string => {
+    const encoded = encodeQrPairOfferPayload(offerCode);
+    if (encoded) return encoded;
+    const t = offerCode.trim().replace(/\s+/g, "").toLowerCase();
+    if (/^\d{4}$/.test(t)) return `AFQR1|${t}`;
+    if (/^[0-9a-f]{32}$/i.test(t)) return `AFQR2|${t}`;
+    return "";
   }, []);
 
   const qrPayloadFingerprint = useCallback((raw: string): string => {
@@ -343,58 +465,72 @@ export function AddFriendScreen(props: {
     }
     const hasLocation = await onEnsurePairingLocationPermission();
     if (!hasLocation) {
-      setPairingStatusLabel("Location access is required for in-person pairing.");
-      setPhase("idle");
-      return;
-    }
-
-    setPairingStatusLabel("QR: preparing…");
-    setPhase("awaitPairing");
-    const stale = hostActivePinRef.current;
-    hostActivePinRef.current = null;
-    if (stale) await onPairingCancelPinOffer(stale).catch(() => {});
-    clearQrHideTimer();
-
-    const pin = await onPairingRegisterPinWithRetry();
-    if (!pin) {
-      issuerAwaitingRedeemRef.current = false;
-      setIssuerAwaitingRedeem(false);
-      setPhase("idle");
-      setPairingStatusLabel("QR: could not reserve a code. Check network and try again.");
+      setPairingStatusLabel(
+        "Precise location is required. Enable Precise location for Erdos in your phone settings, then try again."
+      );
       return;
     }
 
     const sessionId = Date.now();
     hostAwaitSessionRef.current = sessionId;
+    const stale = hostActivePinRef.current;
+    hostActivePinRef.current = null;
+    if (stale) await onPairingCancelPinOffer(stale).catch(() => {});
+    clearQrHideTimer();
+    setActiveQrPayload(null);
+
+    setQrPreparing(true);
+    setPairingStatusLabel("QR: preparing…");
+    let pin: string | null = null;
+    try {
+      pin = await onPairingRegisterPinWithRetry();
+    } finally {
+      setQrPreparing(false);
+    }
+    if (hostAwaitSessionRef.current !== sessionId) {
+      setPairingStatusLabel("QR: cancelled.");
+      return;
+    }
+    if (!pin) {
+      setPairingStatusLabel("QR: could not reserve a code. Check network and try again.");
+      return;
+    }
+
+    const qrPayload = buildQrDisplayPayload(pin);
+    if (!qrPayload) {
+      setPairingStatusLabel("QR: invalid pairing code from server. Deploy latest Cloud Functions and try again.");
+      return;
+    }
+
     hostActivePinRef.current = pin;
-    setActiveQrPayload(`AFQR1|${pin}`);
+    setPresenterSessionBusy(true);
+    setActiveQrPayload(qrPayload);
     setPairingStatusLabel("QR visible. Ask your friend to scan now.");
-    setPhase("idle");
-    issuerAwaitingRedeemRef.current = true;
-    setIssuerAwaitingRedeem(true);
     qrHideTimerRef.current = setTimeout(() => {
       setActiveQrPayload(null);
-      setPairingStatusLabel("QR hidden. Waiting for your friend to confirm…");
+      setPairingStatusLabel("QR hidden. Waiting for your friend to scan…");
       qrHideTimerRef.current = null;
     }, ADD_FRIEND_QR_VISIBLE_MS);
 
-    const friend = await onPairingAwaitPinRedeem(pin);
-    issuerAwaitingRedeemRef.current = false;
-    setIssuerAwaitingRedeem(false);
-    if (hostAwaitSessionRef.current !== sessionId) return;
-    hostActivePinRef.current = null;
-    if (friend) {
-      setActiveQrPayload(null);
-      clearQrHideTimer();
-      setPendingVerifiedFriend(friend);
-      setPendingVerifiedPin(pin);
-      setPendingVerifiedSource("share");
-      setPairingStatusLabel("QR verified. Confirm this friend.");
-      setPhase("confirmFriend");
-      return;
-    }
-    setPhase("idle");
-    setPairingStatusLabel("Pairing: no one confirmed before this offer expired. Tap Show QR Code to try again.");
+    void (async () => {
+      const friend = await onPairingAwaitPinRedeem(pin);
+      if (hostAwaitSessionRef.current !== sessionId) return;
+      if (friend) {
+        setActiveQrPayload(null);
+        clearQrHideTimer();
+        setPresenterSessionBusy(false);
+        hostActivePinRef.current = null;
+        setPendingVerifiedFriend(friend);
+        setPendingVerifiedPin(pin);
+        setPendingVerifiedSource("share");
+        setPairingStatusLabel("QR verified. Confirm this friend.");
+        setPhase("confirmFriend");
+        return;
+      }
+      setPairingStatusLabel("Still waiting for a scan, or tap Show QR Code again.");
+      /* Keep hostActivePinRef so flipping to Read QR can call cancelNfcPinPairOffer. */
+      setPresenterSessionBusy(false);
+    })();
   }, [
     pairingBackendReady,
     onPairingCancelPinOffer,
@@ -402,15 +538,14 @@ export function AddFriendScreen(props: {
     onPairingRegisterPinWithRetry,
     onPairingAwaitPinRedeem,
     onEnsurePairingLocationPermission,
+    buildQrDisplayPayload,
   ]);
 
   const onPressShowQrCode = useCallback(() => {
     void beginPresenterQrOffer().catch((err) => {
-      issuerAwaitingRedeemRef.current = false;
-      setIssuerAwaitingRedeem(false);
+      setQrPreparing(false);
       const reason = summarizeHandshakeError(err);
       const detail = err instanceof Error ? err.message.trim() : String(err ?? "");
-      setPhase("idle");
       setPairingStatusLabel(detail && detail.length < 220 ? `QR: ${detail}` : `QR: error (${reason}).`);
       setActiveQrPayload(null);
     });
@@ -430,8 +565,12 @@ export function AddFriendScreen(props: {
         logAppEvent("pairing.qr.scan.ignored", { reason: "wrong_role", payloadFingerprint, phase });
         return;
       }
-      if (scannerBusyRef.current) {
-        logAppEvent("pairing.qr.scan.ignored", { reason: "busy_lock", payloadFingerprint, phase });
+      if (scannerBusyRef.current || qrScanFrozenRef.current) {
+        logAppEvent("pairing.qr.scan.ignored", {
+          reason: qrScanFrozenRef.current ? "frozen" : "busy_lock",
+          payloadFingerprint,
+          phase,
+        });
         return;
       }
       if (phase !== "idle") {
@@ -439,10 +578,13 @@ export function AddFriendScreen(props: {
         return;
       }
       scannerBusyRef.current = true;
+      pairingHandshakeCancelledRef.current = false;
       qrScanAttemptSeqRef.current += 1;
+      const scanGeneration = qrScanGenerationRef.current + 1;
+      qrScanGenerationRef.current = scanGeneration;
       const scanAttemptId = `scan-${Date.now()}-${qrScanAttemptSeqRef.current}`;
       logAppEvent("pairing.qr.scan.lock_acquired", { scanAttemptId, payloadFingerprint });
-      const pin = parseQrPayloadPin(result.data ?? "");
+      const pin = parseQrPayloadOffer(result.data ?? "");
       if (!pin) {
         logAppEvent("pairing.qr.scan.ignored", { reason: "invalid_payload", scanAttemptId, payloadFingerprint });
         setPairingStatusLabel("QR scan: invalid code. Ask your friend to tap Show QR Code and try again.");
@@ -450,18 +592,52 @@ export function AddFriendScreen(props: {
         logAppEvent("pairing.qr.scan.lock_released", { scanAttemptId, reason: "invalid_payload" });
         return;
       }
+      scannerBusyRef.current = true;
       setScannerBusy(true);
-      setPairingStatusLabel("QR scan: processing…");
+      setPairingStatusLabel("");
+      setPhase("authenticating");
       logAppEvent("pairing.qr.scan.ui_processing", { scanAttemptId });
       void (async () => {
+        const isStaleScan = () => qrScanGenerationRef.current !== scanGeneration;
+        const releaseScanLock = () => {
+          scannerBusyRef.current = false;
+          setScannerBusy(false);
+        };
+        const revertScanUiUnlessConfirmed = () => {
+          setPhase((current) => (current === "confirmFriend" ? current : "idle"));
+          releaseScanLock();
+        };
         try {
-          setPhase("awaitPairing");
-          setPairingStatusLabel("Verifying QR and proximity…");
+          const hasCamera = await onEnsurePairingCameraPermission();
+          await refreshCameraPermission();
+          if (!hasCamera) {
+            setPairingStatusLabel(
+              "Camera access is required. Allow camera when prompted, or enable it in your phone settings for Erdos."
+            );
+            revertScanUiUnlessConfirmed();
+            logAppEvent("pairing.qr.scan.camera_denied", { scanAttemptId });
+            return;
+          }
+          const hasPreciseLocation = await onEnsurePairingLocationPermission();
+          if (!hasPreciseLocation) {
+            setPairingStatusLabel(
+              "Precise location is required. Enable Precise location for Erdos in your phone settings, then scan again."
+            );
+            revertScanUiUnlessConfirmed();
+            logAppEvent("pairing.qr.scan.precise_location_denied", { scanAttemptId });
+            return;
+          }
           logAppEvent("pairing.qr.scan.proximity.start", { scanAttemptId });
           const scannedFriend = await onPairingConfirmPinRead(pin);
+          if (isStaleScan() || pairingHandshakeCancelledRef.current) {
+            logAppEvent("pairing.qr.scan.cancelled", { scanAttemptId, stale: isStaleScan() });
+            setPhase((current) => (current === "confirmFriend" ? current : "idle"));
+            releaseScanLock();
+            return;
+          }
           if (!scannedFriend) {
             setPairingStatusLabel("Add friend failed");
-            setPhase("idle");
+            revertScanUiUnlessConfirmed();
             logAppEvent("pairing.qr.scan.proximity.miss", { scanAttemptId });
             return;
           }
@@ -469,20 +645,24 @@ export function AddFriendScreen(props: {
           setPendingVerifiedFriend(scannedFriend);
           setPendingVerifiedPin(pin);
           setPendingVerifiedSource("join");
-          setPairingStatusLabel("QR verified. Confirm this friend.");
+          setPairingStatusLabel("");
           setPhase("confirmFriend");
+          releaseScanLock();
         } catch (err) {
+          if (isStaleScan()) {
+            setPhase((current) => (current === "confirmFriend" ? current : "idle"));
+            releaseScanLock();
+            return;
+          }
           const reason = summarizeHandshakeError(err);
           const detail = err instanceof Error ? err.message.trim() : String(err ?? "");
           setPairingStatusLabel(
             detail && detail.length < 180 ? `Add friend failed: ${detail}` : `Add friend failed (${reason}).`
           );
-          setPhase("idle");
+          revertScanUiUnlessConfirmed();
           logAppEvent("pairing.qr.scan.failed", { scanAttemptId, stage: "exception", reason });
         } finally {
-          scannerBusyRef.current = false;
-          setScannerBusy(false);
-          logAppEvent("pairing.qr.scan.lock_released", { scanAttemptId, phaseAfter: phase });
+          logAppEvent("pairing.qr.scan.lock_released", { scanAttemptId, stale: isStaleScan() });
         }
       })();
     },
@@ -490,9 +670,12 @@ export function AddFriendScreen(props: {
       inPersonPairingRole,
       scannerBusy,
       phase,
-      parseQrPayloadPin,
+      parseQrPayloadOffer,
       qrPayloadFingerprint,
       onPairingConfirmPinRead,
+      onEnsurePairingCameraPermission,
+      onEnsurePairingLocationPermission,
+      refreshCameraPermission,
       summarizeHandshakeError,
     ]
   );
@@ -508,8 +691,10 @@ export function AddFriendScreen(props: {
         setPhase("idle");
         return;
       }
+      setConfirmSubmitting(true);
+      setPairingStatusLabel("Confirming…");
       try {
-        setPhase("awaitPairing");
+        setPairingStatusLabel("Waiting for your friend to confirm…");
         const friend = await onPairingFinalizePinOffer(pin);
         if (!friend) {
           setPairingStatusLabel("Add friend failed");
@@ -522,7 +707,7 @@ export function AddFriendScreen(props: {
         setPendingVerifiedPin(null);
         setPendingVerifiedSource(null);
         setPairingStatusLabel("Pairing: friend added.");
-        runAfterHandshake();
+        runAfterHandshake({ success: true });
       } catch (err) {
         const reason = summarizeHandshakeError(err);
         const detail = err instanceof Error ? err.message.trim() : String(err ?? "");
@@ -531,6 +716,8 @@ export function AddFriendScreen(props: {
         );
         logAppError("pairing.confirm.finalize", err, { reason });
         setPhase("idle");
+      } finally {
+        setConfirmSubmitting(false);
       }
       return;
     }
@@ -542,10 +729,17 @@ export function AddFriendScreen(props: {
       setPhase("idle");
       return;
     }
+    setConfirmSubmitting(true);
+    setPairingStatusLabel("Confirming…");
     try {
-      setPhase("awaitPairing");
-      setPairingStatusLabel("Waiting for your friend to confirm…");
       logAppEvent("pairing.qr.scan.confirm.start", { pinFingerprint: `${pin.length}` });
+      const redeemerOk = await onPairingConfirmRedeemerDualConfirm(pin);
+      if (!redeemerOk) {
+        setPairingStatusLabel("Add friend failed");
+        setPhase("idle");
+        return;
+      }
+      setPairingStatusLabel("Waiting for your friend to confirm…");
       const friend = await onPairingAwaitIssuerFinalConfirm(pin);
       if (!friend) {
         setPairingStatusLabel("Add friend failed");
@@ -559,7 +753,7 @@ export function AddFriendScreen(props: {
       setPendingVerifiedFriend(null);
       setPendingVerifiedPin(null);
       setPendingVerifiedSource(null);
-      runAfterHandshake();
+      runAfterHandshake({ success: true });
     } catch (err) {
       const reason = summarizeHandshakeError(err);
       const detail = err instanceof Error ? err.message.trim() : String(err ?? "");
@@ -567,8 +761,11 @@ export function AddFriendScreen(props: {
         detail && detail.length < 180 ? `Add friend failed: ${detail}` : `Add friend failed (${reason}).`
       );
       setPhase("idle");
+    } finally {
+      setConfirmSubmitting(false);
     }
   }, [
+    onPairingConfirmRedeemerDualConfirm,
     onPairingAwaitIssuerFinalConfirm,
     onPairingFinalizePinOffer,
     pendingVerifiedFriend,
@@ -578,8 +775,41 @@ export function AddFriendScreen(props: {
     summarizeHandshakeError,
   ]);
 
+  /** Neither side tapped Confirm/Cancel: auto-cancel after 45s if server still awaiting first confirm. */
   useEffect(() => {
     if (phase !== "confirmFriend") return;
+    if (confirmSubmitting) return;
+    const pin = pendingVerifiedPin?.trim() ?? "";
+    if (!pin) return;
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        const activePin = pendingVerifiedPinRef.current?.trim() ?? "";
+        if (!activePin) return;
+        try {
+          const status = await onPairingGetOfferStatus(activePin);
+          if (status !== "awaiting_redeemer_confirm") return;
+          await onPairingCancelPinOffer(activePin).catch(() => {});
+          setPendingVerifiedFriend(null);
+          setPendingVerifiedPin(null);
+          setPendingVerifiedSource(null);
+          setConfirmSubmitting(false);
+          setPairingStatusLabel("Add friend timed out");
+          setPhase("idle");
+        } catch {
+          /* ignore transient status errors */
+        }
+      })();
+    }, ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [phase, confirmSubmitting, pendingVerifiedPin, onPairingGetOfferStatus, onPairingCancelPinOffer]);
+
+  /** Issuer only: detect remote cancel. Joiner must not poll — a false "gone" races host finalize. */
+  useEffect(() => {
+    if (phase !== "confirmFriend") return;
+    if (pendingVerifiedSource !== "share") return;
+    if (confirmSubmitting) return;
     const pin = pendingVerifiedPin?.trim() ?? "";
     if (!pin) return;
     const tick = async () => {
@@ -599,30 +829,16 @@ export function AddFriendScreen(props: {
     void tick();
     const id = setInterval(() => void tick(), 2800);
     return () => clearInterval(id);
-  }, [phase, pendingVerifiedPin, onPairingPollOfferStillPresent]);
-
-  /** Neither Confirm nor Cancel within window → abort pairing (same outcome as explicit cancel). */
-  useEffect(() => {
-    if (phase !== "confirmFriend") return;
-    const pin = pendingVerifiedPin?.trim() ?? "";
-    if (!pin) return;
-    const id = setTimeout(() => {
-      void onPairingCancelPinOffer(pin).catch(() => {});
-      setPendingVerifiedFriend(null);
-      setPendingVerifiedPin(null);
-      setPendingVerifiedSource(null);
-      setPairingStatusLabel("Add friend cancelled");
-      setPhase("idle");
-    }, ADD_FRIEND_DUAL_CONFIRM_TIMEOUT_MS);
-    return () => clearTimeout(id);
-  }, [phase, pendingVerifiedPin, onPairingCancelPinOffer]);
+  }, [phase, pendingVerifiedPin, pendingVerifiedSource, confirmSubmitting, onPairingPollOfferStillPresent]);
 
   const cancelVerifiedFriend = useCallback(() => {
+    hostAwaitSessionRef.current = 0;
     const pin = pendingVerifiedPin?.trim() ?? "";
     if (pin) void onPairingCancelPinOffer(pin).catch(() => {});
     setPendingVerifiedFriend(null);
     setPendingVerifiedPin(null);
     setPendingVerifiedSource(null);
+    setConfirmSubmitting(false);
     setPairingStatusLabel("Add friend cancelled");
     setPhase("idle");
   }, [onPairingCancelPinOffer, pendingVerifiedPin]);
@@ -678,7 +894,7 @@ export function AddFriendScreen(props: {
           setPairingStatusLabel(
             "Ask your friend to choose Join and hold their phone. Then hold both phones together while this phone sends the pairing signal."
           );
-          const ndefPayload = encodeNfcPinPairNdefPayload(pin);
+          const ndefPayload = encodeNfcPairOfferNdefPayload(pin);
           logAppEvent("pairing.nfc.pin.write.start", {
             nfcAttemptId,
             payloadLen: ndefPayload.length,
@@ -770,9 +986,9 @@ export function AddFriendScreen(props: {
           setPhase("idle");
           return;
         }
-        const pin = plain ? parsePinFromNfcPairPlaintext(plain) : null;
+        const pin = plain ? parseNfcPairOfferPlaintext(plain) : null;
         if (!pin) {
-          setPairingStatusLabel("Pairing: could not read a valid 4-digit code. Try Join again, Receive side first.");
+          setPairingStatusLabel("Pairing: could not read a valid pairing code. Try Join again, Receive side first.");
           setDisplayedProfileId(ADD_FRIEND_HANDSHAKE_FAILURE_ID);
           setDisplayedProfileFriend(null);
           runAfterHandshake();
@@ -871,7 +1087,7 @@ export function AddFriendScreen(props: {
   }, [runAfterHandshake, runInPersonPairingThenCelebrate, scaleAnim]);
 
   const onPressIn = () => {
-    if (phase !== "idle" || ritualDoneRef.current || issuerAwaitingRedeemRef.current) return;
+    if (phase !== "idle" || ritualDoneRef.current) return;
     if (Date.now() < pairingHoldCooldownUntilRef.current) return;
     Animated.spring(scaleAnim, {
       toValue: 0.94,
@@ -912,117 +1128,40 @@ export function AddFriendScreen(props: {
   const showProfileLayer = phase === "profileOverlay" || phase === "profileSolo";
   const showDimAndLabel = phase === "profileOverlay";
   const showMainButton = phase === "idle" || phase === "handshake";
+  const showAuthenticating = phase === "authenticating";
   const showPairingWait = phase === "awaitPairing";
-  const showFriendConfirm = phase === "confirmFriend" && !!pendingVerifiedFriend;
+  /** Do not gate on the QR toggle — host may flip to Read QR while waiting; issuer must still see Confirm. */
+  const showFriendConfirm =
+    phase === "confirmFriend" &&
+    !!pendingVerifiedFriend &&
+    (pendingVerifiedSource === "share" || pendingVerifiedSource === "join");
   const cancelPairingHandshake = useCallback(async () => {
-    pairingHandshakeCancelledRef.current = true;
-    await cancelInPersonPairingHardware();
-    const p = hostActivePinRef.current;
-    hostActivePinRef.current = null;
-    if (p) await onPairingCancelPinOffer(p).catch(() => {});
+    await abortPairingSession();
     setPairingStatusLabel("Pairing: cancelled.");
-    ritualDoneRef.current = false;
-    setDisplayedProfileId(null);
-    setDisplayedProfileFriend(null);
-    setPendingVerifiedFriend(null);
-    setPendingVerifiedPin(null);
-    setPendingVerifiedSource(null);
-    setPhase("idle");
-  }, [onPairingCancelPinOffer]);
+  }, [abortPairingSession]);
 
   return (
     <View
       style={[
         styles.addFriendRoot as object,
-        { paddingTop: safeTop, paddingBottom: bottomInset, backgroundColor: theme.accent },
+        { paddingTop: safeTop, paddingBottom: bottomInset, backgroundColor: theme.background },
       ]}
     >
-      <View style={[styles.homeTopBar as object, { marginBottom: 10 }]}>
-        <View style={styles.homeTopLeftIcons as object}>
-          <Pressable
-            onPress={onOpenSettings}
-            style={[
-              styles.iconButton as object,
-              navHighlight.settings ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Settings"
-          >
-            <Ionicons name={navHighlight.settings ? "settings" : "settings-outline"} size={22} color={onAccentLabel} />
-          </Pressable>
-          <Pressable
-            onPress={onOpenMyProfile}
-            style={[
-              styles.iconButton as object,
-              navHighlight.myProfile ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="My profile"
-          >
-            <Ionicons
-              name={navHighlight.myProfile ? "person-circle" : "person-circle-outline"}
-              size={24}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenFriendsList}
-            style={[
-              styles.iconButton as object,
-              navHighlight.friendsList ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Friends list"
-          >
-            <Ionicons
-              name={navHighlight.friendsList ? "people" : "people-outline"}
-              size={22}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenHomeChats}
-            style={[
-              styles.iconButton as object,
-              navHighlight.chats ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Open chats"
-          >
-            <Ionicons
-              name={navHighlight.chats ? "chatbubbles" : "chatbubbles-outline"}
-              size={21}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenHomeFeed}
-            style={[
-              styles.iconButton as object,
-              navHighlight.feed ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Open feed"
-          >
-            <Ionicons
-              name={navHighlight.feed ? "newspaper" : "newspaper-outline"}
-              size={21}
-              color={onAccentLabel}
-            />
-          </Pressable>
-          <Pressable
-            onPress={onOpenAddFriend}
-            style={[
-              styles.iconButton as object,
-              navHighlight.addFriend ? { backgroundColor: onAccentActivePill } : null,
-            ]}
-            accessibilityLabel="Add friend"
-          >
-            <Ionicons
-              name={navHighlight.addFriend ? "person-add" : "person-add-outline"}
-              size={22}
-              color={onAccentLabel}
-            />
-          </Pressable>
-        </View>
-        <Pressable onPress={onLogout} style={styles.iconButton as object} accessibilityLabel="Logout">
-          <Ionicons name="log-out-outline" size={22} color={onAccentLabel} />
-        </Pressable>
+      <View style={{ marginBottom: 10 }}>
+        <HomeTopNavBar
+          theme={theme}
+          styles={styles}
+          highlight={navHighlight}
+          badges={navBadges}
+          onOpenCreatePost={onOpenCreatePost}
+          onOpenSettings={onOpenSettings}
+          onOpenMyProfile={onOpenMyProfile}
+          onOpenFriendsList={onOpenFriendsList}
+          onOpenHomeChats={onOpenHomeChats}
+          onOpenHomeFeed={onOpenHomeFeed}
+          onOpenAddFriend={onOpenAddFriend}
+          onLogout={onLogout}
+        />
       </View>
 
       <View
@@ -1046,11 +1185,11 @@ export function AddFriendScreen(props: {
           <Ionicons
             name="qr-code-outline"
             size={20}
-            color={inPersonPairingRole === "share" ? onAccentLabel : onAccentMuted}
+            color={inPersonPairingRole === "share" ? iconColor : mutedColor}
           />
           <Text
             style={{
-              color: inPersonPairingRole === "share" ? onAccentLabel : onAccentMuted,
+              color: inPersonPairingRole === "share" ? textColor : mutedColor,
               fontSize: 14,
               fontWeight: "600",
             }}
@@ -1062,13 +1201,42 @@ export function AddFriendScreen(props: {
           accessibilityLabel="Add Friend: show QR or read QR"
           value={inPersonPairingRole === "join"}
           onValueChange={(v) => {
-            void onEnsurePairingLocationPermission();
-            setInPersonPairingRole(v ? "join" : "share");
+            if (phase !== "idle" || qrPreparing || scannerBusy) return;
+            if (v) {
+              void (async () => {
+                const camOk = await onEnsurePairingCameraPermission({ showAlerts: true });
+                await refreshCameraPermission();
+                const locOk = await onEnsurePairingLocationPermission({ showAlerts: true });
+                if (!camOk) {
+                  setPairingStatusLabel(
+                    "Camera access is required for Read QR. Allow camera when prompted, or enable it in your phone settings for Erdos."
+                  );
+                  return;
+                }
+                if (!locOk) {
+                  setPairingStatusLabel(
+                    "Precise location is required for Read QR. Enable Precise location for Erdos in your phone settings."
+                  );
+                  return;
+                }
+                const hadHostPin = !!hostActivePinRef.current;
+                if (hadHostPin) {
+                  await abortPairingSession();
+                }
+                pairingHandshakeCancelledRef.current = false;
+                setInPersonPairingRole("join");
+                setPairingStatusLabel("Ready to scan.");
+              })();
+              return;
+            }
+            pairingHandshakeCancelledRef.current = false;
+            setInPersonPairingRole("share");
+            setPairingStatusLabel("");
           }}
-          disabled={phase !== "idle"}
-          trackColor={{ false: switchTrackOff, true: switchTrackOn }}
-          thumbColor={switchThumbSolid}
-          ios_backgroundColor={switchTrackOff}
+          disabled={phase !== "idle" || qrPreparing || scannerBusy || qrScanFrozen}
+          trackColor={switchTrackMuted}
+          thumbColor={iconColor}
+          ios_backgroundColor={switchTrackMutedHex}
         />
         <View
           style={{
@@ -1080,11 +1248,11 @@ export function AddFriendScreen(props: {
           <Ionicons
             name="scan-outline"
             size={20}
-            color={inPersonPairingRole === "join" ? onAccentLabel : onAccentMuted}
+            color={inPersonPairingRole === "join" ? iconColor : mutedColor}
           />
           <Text
             style={{
-              color: inPersonPairingRole === "join" ? onAccentLabel : onAccentMuted,
+              color: inPersonPairingRole === "join" ? textColor : mutedColor,
               fontSize: 14,
               fontWeight: "600",
             }}
@@ -1099,7 +1267,7 @@ export function AddFriendScreen(props: {
             style={[
               styles.addFriendProfileFullScreen as object,
               styles.addFriendProfileBleed as object,
-              { width: screenWidth, flex: 1, backgroundColor: theme.accent },
+              { width: screenWidth, flex: 1, backgroundColor: theme.background },
             ]}
             pointerEvents="none"
           >
@@ -1107,7 +1275,7 @@ export function AddFriendScreen(props: {
               style={[
                 styles.addFriendProfileImageOnlyWrap as object,
                 {
-                  backgroundColor: theme.accent,
+                  backgroundColor: theme.background,
                   width: screenWidth,
                   flex: 1,
                   minHeight: 0,
@@ -1138,7 +1306,7 @@ export function AddFriendScreen(props: {
                       style={[
                         StyleSheet.absoluteFillObject,
                         styles.addFriendCelebrationBase as object,
-                        { backgroundColor: theme.accent },
+                        { backgroundColor: theme.background },
                       ]}
                     >
                       <View style={styles.addFriendCelebrationHeroInner as object}>
@@ -1181,7 +1349,7 @@ export function AddFriendScreen(props: {
                           style={[
                             styles.addFriendProfileSoloName as object,
                             styles.addFriendCelebrationNameOnAccent as object,
-                            { color: onAccentLabel },
+                            { color: mutedColor },
                           ]}
                           numberOfLines={3}
                         >
@@ -1233,7 +1401,7 @@ export function AddFriendScreen(props: {
                             style={[
                               styles.addFriendNowFriendsTitle as object,
                               {
-                                color: profileFriend ? onAccentLabel : isDarkMode ? "rgba(0,0,0,0.88)" : "#7A1515",
+                                color: profileFriend ? textColor : theme.danger,
                                 opacity: friendAddedOpacity,
                               },
                             ]}
@@ -1250,6 +1418,44 @@ export function AddFriendScreen(props: {
           </View>
         ) : null}
 
+        {showAuthenticating ? (
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              alignItems: "center",
+              paddingHorizontal: 24,
+              backgroundColor: theme.background,
+            }}
+          >
+            <ActivityIndicator size="large" color={iconColor} />
+            <Text
+              style={{
+                marginTop: 18,
+                color: textColor,
+                fontSize: 18,
+                fontWeight: "600",
+                textAlign: "center",
+              }}
+            >
+              Authenticating
+            </Text>
+            <Pressable
+              onPress={() => void cancelPairingHandshake()}
+              style={{
+                marginTop: 28,
+                paddingVertical: 12,
+                paddingHorizontal: 22,
+                ...outlineButtonStyle,
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel pairing"
+            >
+              <Text style={{ color: textColor, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {showPairingWait ? (
           <View
             style={{
@@ -1259,11 +1465,11 @@ export function AddFriendScreen(props: {
               paddingHorizontal: 24,
             }}
           >
-            <ActivityIndicator size="large" color={onAccentLabel} />
+            <ActivityIndicator size="large" color={iconColor} />
             <Text
               style={{
                 marginTop: 18,
-                color: onAccentLabel,
+                color: textColor,
                 fontSize: 18,
                 fontWeight: "600",
                 textAlign: "center",
@@ -1274,7 +1480,7 @@ export function AddFriendScreen(props: {
             <Text
               style={{
                 marginTop: 10,
-                color: onAccentMuted,
+                color: mutedColor,
                 fontSize: 13,
                 textAlign: "center",
                 lineHeight: 19,
@@ -1282,31 +1488,32 @@ export function AddFriendScreen(props: {
             >
               Keep this screen open while we verify your QR add-friend request.
             </Text>
-            <Text
-              style={{
-                marginTop: 10,
-                color: onAccentMuted,
-                fontSize: 12,
-                textAlign: "center",
-              }}
-            >
-              {pairingStatusLabel}
-            </Text>
+            {pairingStatusLabel ? (
+              <Text
+                style={{
+                  marginTop: 12,
+                  color: textColor,
+                  fontSize: 14,
+                  textAlign: "center",
+                  lineHeight: 20,
+                  paddingHorizontal: 8,
+                }}
+              >
+                {pairingStatusLabel}
+              </Text>
+            ) : null}
             <Pressable
               onPress={() => void cancelPairingHandshake()}
               style={{
                 marginTop: 22,
                 paddingVertical: 12,
                 paddingHorizontal: 22,
-                borderRadius: 12,
-                borderWidth: StyleSheet.hairlineWidth,
-                borderColor: onAccentMuted,
-                backgroundColor: isDarkMode ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.2)",
+                ...outlineButtonStyle,
               }}
               accessibilityRole="button"
               accessibilityLabel="Cancel pairing"
             >
-              <Text style={{ color: onAccentLabel, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
+              <Text style={{ color: textColor, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
             </Pressable>
           </View>
         ) : null}
@@ -1314,13 +1521,32 @@ export function AddFriendScreen(props: {
         {showFriendConfirm ? (
           <View
             style={{
-              flex: 1,
+              ...StyleSheet.absoluteFillObject,
+              zIndex: 6,
               justifyContent: "center",
               alignItems: "center",
               paddingHorizontal: 24,
               gap: 16,
+              backgroundColor: theme.background,
             }}
           >
+            {confirmSubmitting ? (
+              <View
+                style={{
+                  ...StyleSheet.absoluteFillObject,
+                  zIndex: 4,
+                  backgroundColor: isDarkMode ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.72)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 10,
+                }}
+              >
+                <ActivityIndicator size="large" color={iconColor} />
+                <Text style={{ color: mutedColor, fontSize: 14, textAlign: "center" }}>
+                  {pairingStatusLabel || "Finishing add friend…"}
+                </Text>
+              </View>
+            ) : null}
             <View
               style={[
                 styles.addFriendCelebrationPhotoFrame as object,
@@ -1340,43 +1566,33 @@ export function AddFriendScreen(props: {
                 />
               ) : (
                 <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                  <Ionicons name="person-circle-outline" size={96} color={onAccentMuted} />
+                  <Ionicons name="person-circle-outline" size={96} color={iconColor} />
                 </View>
               )}
             </View>
-            <Text style={{ color: onAccentLabel, fontSize: 22, fontWeight: "700", textAlign: "center" }}>
+            <Text style={{ color: textColor, fontSize: 22, fontWeight: "700", textAlign: "center" }}>
               {pendingVerifiedFriend?.displayName ?? "Friend"}
             </Text>
-            <Text style={{ color: onAccentMuted, fontSize: 14, textAlign: "center" }}>
-              Do you still want to add this person as a friend?
+            <Text style={{ color: mutedColor, fontSize: 14, textAlign: "center" }}>
+              {`Confirm adding ${pendingVerifiedFriend?.displayName?.trim() || "this person"} as friend?`}
             </Text>
             <View style={{ width: "100%", maxWidth: 420, flexDirection: "row", gap: 10 }}>
               <Pressable
                 onPress={cancelVerifiedFriend}
-                style={{
-                  flex: 1,
-                  borderRadius: 12,
-                  borderWidth: 1.5,
-                  borderColor: addFriendButtonBorder,
-                  paddingVertical: 12,
-                  alignItems: "center",
-                }}
+                disabled={confirmSubmitting}
+                style={[
+                  outlineButtonStyle,
+                  { flex: 1, paddingVertical: 12, alignItems: "center", opacity: confirmSubmitting ? 0.45 : 1 },
+                ]}
               >
-                <Text style={{ color: onAccentLabel, fontSize: 16, fontWeight: "600" }}>Cancel</Text>
+                <Text style={{ color: textColor, fontSize: 16, fontWeight: "600" }}>Cancel</Text>
               </Pressable>
               <Pressable
                 onPress={() => void confirmVerifiedFriend()}
-                style={{
-                  flex: 1,
-                  borderRadius: 12,
-                  borderWidth: 1.5,
-                  borderColor: addFriendButtonBorder,
-                  backgroundColor: addFriendButtonFill,
-                  paddingVertical: 12,
-                  alignItems: "center",
-                }}
+                disabled={confirmSubmitting}
+                style={[styles.primaryButton as object, { flex: 1, opacity: confirmSubmitting ? 0.45 : 1 }]}
               >
-                <Text style={{ color: addFriendButtonLabelColor, fontSize: 16, fontWeight: "700" }}>Confirm</Text>
+                <Text style={styles.primaryButtonText as object}>Confirm</Text>
               </Pressable>
             </View>
           </View>
@@ -1393,14 +1609,16 @@ export function AddFriendScreen(props: {
             }}
           >
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center", width: "100%" }}>
-              {activeQrPayload ? (
+              {qrPreparing ? (
+                <ActivityIndicator size="large" color={iconColor} />
+              ) : activeQrPayload ? (
                 <View
                   style={{
-                    borderRadius: 18,
+                    borderRadius: 12,
                     padding: 14,
-                    backgroundColor: isDarkMode ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.28)",
-                    borderWidth: 2,
-                    borderColor: isDarkMode ? "rgba(0,0,0,0.22)" : "rgba(255,255,255,0.7)",
+                    backgroundColor: theme.background,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: theme.divider,
                   }}
                 >
                   <View style={{ backgroundColor: "#FFFFFF", padding: 10, borderRadius: 12 }}>
@@ -1411,66 +1629,71 @@ export function AddFriendScreen(props: {
             </View>
             <Pressable
               onPress={onPressShowQrCode}
-              disabled={pairingHoldCooldown || phase !== "idle" || issuerAwaitingRedeem}
-              style={{
-                width: "100%",
-                maxWidth: 420,
-                borderRadius: 12,
-                borderWidth: 1.5,
-                borderColor: addFriendButtonBorder,
-                backgroundColor: addFriendButtonFill,
-                paddingVertical: 13,
-                alignItems: "center",
-                opacity: pairingHoldCooldown || phase !== "idle" || issuerAwaitingRedeem ? 0.45 : 1,
-              }}
+              disabled={pairingHoldCooldown || qrPreparing}
+              style={[
+                styles.primaryButton as object,
+                {
+                  width: "100%",
+                  maxWidth: 420,
+                  opacity: pairingHoldCooldown || qrPreparing ? 0.45 : 1,
+                },
+              ]}
             >
-              <Text style={{ color: addFriendButtonLabelColor, fontSize: 16, fontWeight: "700" }}>
-                Show QR Code
+              <Text style={styles.primaryButtonText as object}>
+                {qrPreparing ? "Preparing…" : "Show QR Code"}
               </Text>
             </Pressable>
           </View>
         ) : null}
         {showMainButton && inPersonPairingRole === "join" ? (
           <View style={{ flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 18 }}>
+            {pairingStatusLabel ? (
+              <Text
+                style={{
+                  marginBottom: 10,
+                  color: mutedColor,
+                  fontSize: 13,
+                  textAlign: "center",
+                  lineHeight: 18,
+                  paddingHorizontal: 6,
+                }}
+              >
+                {pairingStatusLabel}
+              </Text>
+            ) : null}
             {!cameraPermission?.granted ? (
               <View
                 style={{
                   width: "100%",
-                  borderRadius: 18,
+                  borderRadius: 12,
                   padding: 18,
-                  backgroundColor: isDarkMode ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.28)",
-                  borderWidth: 1,
-                  borderColor: isDarkMode ? "rgba(0,0,0,0.22)" : "rgba(255,255,255,0.64)",
+                  backgroundColor: theme.background,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: theme.divider,
                   alignItems: "center",
                 }}
               >
-                <Ionicons name="camera-outline" size={34} color={onAccentLabel} />
-                <Text style={{ marginTop: 10, color: onAccentLabel, fontSize: 16, fontWeight: "600" }}>
-                  Camera access needed
+                <Ionicons name="camera-outline" size={34} color={iconColor} />
+                <Text style={{ marginTop: 10, color: textColor, fontSize: 16, fontWeight: "600" }}>
+                  Camera access required
                 </Text>
                 <Text
                   style={{
                     marginTop: 8,
-                    color: onAccentMuted,
+                    color: mutedColor,
                     textAlign: "center",
                     fontSize: 13,
                     lineHeight: 18,
                   }}
                 >
-                  Allow camera access to read your friend&apos;s QR code.
+                  Allow camera when prompted, or enable camera for Erdos in your phone settings, then tap Try
+                  again.
                 </Text>
                 <Pressable
-                  onPress={() => void requestCameraPermission()}
-                  style={{
-                    marginTop: 14,
-                    paddingHorizontal: 14,
-                    paddingVertical: 10,
-                    borderRadius: 12,
-                    borderWidth: StyleSheet.hairlineWidth,
-                    borderColor: onAccentMuted,
-                  }}
+                  onPress={() => void retryPairingCameraPermission()}
+                  style={[styles.primaryButton as object, { marginTop: 14 }]}
                 >
-                  <Text style={{ color: onAccentLabel, fontSize: 15, fontWeight: "600" }}>Allow camera</Text>
+                  <Text style={styles.primaryButtonText as object}>Try again</Text>
                 </Pressable>
               </View>
             ) : (
@@ -1479,18 +1702,18 @@ export function AddFriendScreen(props: {
                   width: "100%",
                   maxWidth: 420,
                   aspectRatio: 0.82,
-                  borderRadius: 22,
+                  borderRadius: 12,
                   overflow: "hidden",
-                  borderWidth: 2,
-                  borderColor: addFriendButtonBorder,
-                  backgroundColor: isDarkMode ? "#0B0B0B" : "#111111",
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: theme.divider,
+                  backgroundColor: "#000000",
                 }}
               >
                 <CameraView
                   style={{ flex: 1 }}
                   facing="back"
                   barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                  onBarcodeScanned={scannerBusy ? undefined : onQrScanned}
+                  onBarcodeScanned={scannerBusy || qrScanFrozen ? undefined : onQrScanned}
                 />
                 <View
                   pointerEvents="none"
@@ -1499,7 +1722,7 @@ export function AddFriendScreen(props: {
                     inset: 0,
                     alignItems: "center",
                     justifyContent: "center",
-                    backgroundColor: "rgba(0,0,0,0.2)",
+                    backgroundColor: qrScanFrozen ? "rgba(0,0,0,0.45)" : "rgba(0,0,0,0.2)",
                   }}
                 >
                   <View
@@ -1512,7 +1735,7 @@ export function AddFriendScreen(props: {
                       backgroundColor: "transparent",
                     }}
                   />
-                  {scannerBusy ? (
+                  {scannerBusy || qrScanFrozen ? (
                     <View
                       style={{
                         marginTop: 18,
@@ -1530,24 +1753,13 @@ export function AddFriendScreen(props: {
                           letterSpacing: 0.2,
                         }}
                       >
-                        Processing scan...
+                        {qrScanFrozen ? "Processing scan…" : "Processing scan..."}
                       </Text>
                     </View>
                   ) : null}
                 </View>
               </View>
             )}
-            <Text
-              style={{
-                marginTop: 8,
-                color: onAccentMuted,
-                fontSize: 12,
-                textAlign: "center",
-                paddingHorizontal: 12,
-              }}
-            >
-              {pairingStatusLabel}
-            </Text>
           </View>
         ) : null}
       </View>

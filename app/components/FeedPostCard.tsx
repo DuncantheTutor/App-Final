@@ -1,20 +1,23 @@
 import { Ionicons } from "@expo/vector-icons";
-import { ResizeMode, Video } from "expo-av";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ResizeMode } from "expo-av";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Image, InteractionManager, Pressable, ScrollView, StyleSheet, Text, View, ActivityIndicator } from "react-native";
 
 import { ScrollViewUntilScroll } from "../../ScrollUntilScroll";
 import type { HoldToReactTheme } from "./HoldToReactButton";
 import { ReactionBubbleHost } from "./ReactionBubbleHost";
+import { VideoWithFadeControls } from "./VideoWithFadeControls";
 import type { Post, PostComment } from "../domain/types";
 import {
   DEFAULT_FEED_IMAGE_ASPECT,
+  feedPostGalleryTallestHeight,
   feedPostImageHeightForAspect,
   feedPostMediaWidth,
   getCachedFeedImageAspect,
   preloadFeedImageAspects,
   rememberFeedImageAspect,
 } from "../lib/feedPostLayout";
+import { useResolvedPostMedia, postHasVideo } from "../hooks/useResolvedPostMedia";
 import type { BackendSession } from "../messaging/types";
 
 export type FeedPostAuthorMeta = { name: string; avatarUri?: string };
@@ -30,7 +33,6 @@ export type FeedPostCardProps = {
   demoOfflineMode: boolean;
   inFullscreenModal?: boolean;
   hideComposers?: boolean;
-  videoShouldPlay?: boolean;
   resolveAuthorMeta: (authorId: string) => FeedPostAuthorMeta;
   resolveCanOpenProfile: (friendId: string) => boolean;
   formatTime: (ms: number) => string;
@@ -45,6 +47,15 @@ export type FeedPostCardProps = {
   canReactToComment: (messageId: string) => boolean;
   onToggleReaction?: (emoji: string) => void;
   onOpenViewer?: () => void;
+  /** Opens a single photo or video full-screen (does not open the post viewer). */
+  onOpenMedia?: (
+    uri: string,
+    kind: "photo" | "video",
+    options?: { galleryUris?: string[]; galleryIndex?: number; postId?: string }
+  ) => void;
+  /** When set with `onMediaGalleryIndexChange`, carousel index is controlled by the parent (e.g. sync with fullscreen gallery). */
+  mediaGalleryIndex?: number;
+  onMediaGalleryIndexChange?: (index: number) => void;
   onOpenThreadReply?: (anchorCommentId: string) => void;
   onOpenFriendProfile: (friendId: string) => void;
   onOpenMyProfile: () => void;
@@ -57,6 +68,8 @@ export type FeedPostCardProps = {
     threadCommentId?: string
   ) => void;
   onOpenReactionDetail: (post: Post) => void;
+  /** When false, skips Tier B decrypt until the card is viewable (feed cold-start). */
+  resolveMediaEnabled?: boolean;
 };
 
 function FeedPostCardView({
@@ -70,7 +83,6 @@ function FeedPostCardView({
   demoOfflineMode,
   inFullscreenModal,
   hideComposers,
-  videoShouldPlay,
   resolveAuthorMeta,
   resolveCanOpenProfile,
   formatTime,
@@ -80,6 +92,9 @@ function FeedPostCardView({
   canReactToComment,
   onToggleReaction,
   onOpenViewer,
+  onOpenMedia,
+  mediaGalleryIndex,
+  onMediaGalleryIndexChange,
   onOpenThreadReply,
   onOpenFriendProfile,
   onOpenMyProfile,
@@ -88,12 +103,35 @@ function FeedPostCardView({
   onOpenReactionPickerForPost,
   onOpenReactionPickerForComment,
   onOpenReactionDetail,
+  resolveMediaEnabled = true,
 }: FeedPostCardProps) {
   const meta = resolveAuthorMeta(post.authorId);
   const canDelete = post.authorId === currentUserId;
-  const mediaUris = post.imageUris ?? [];
+  const hasVideoPost = postHasVideo(post);
+  const [feedVideoDecryptRequested, setFeedVideoDecryptRequested] = useState(false);
+  const resolvedMedia = useResolvedPostMedia(post, {
+    enabled: resolveMediaEnabled,
+    resolveVideo: feedVideoDecryptRequested,
+  });
+  const mediaUris = resolvedMedia.imageUris;
+  const feedVideoUri = resolvedMedia.videoUri;
+  const feedVideoPosterUri = resolvedMedia.videoPosterUri;
+  const feedVideoPreparing =
+    feedVideoDecryptRequested &&
+    !feedVideoUri &&
+    !!post.videoEncryptedMedia &&
+    !post.videoUri?.trim();
+  const [feedVideoInlinePlaying, setFeedVideoInlinePlaying] = useState(false);
+  const [feedVideoFinished, setFeedVideoFinished] = useState(false);
+  const [feedVideoPlaybackKey, setFeedVideoPlaybackKey] = useState(0);
   const mediaUrisKey = mediaUris.join("\0");
-  const [photoIndex, setPhotoIndex] = useState(0);
+  const [internalPhotoIndex, setInternalPhotoIndex] = useState(0);
+  const isGalleryIndexControlled = mediaGalleryIndex != null;
+  const photoIndex = isGalleryIndexControlled ? (mediaGalleryIndex ?? 0) : internalPhotoIndex;
+  const setPhotoIndex = (next: number) => {
+    onMediaGalleryIndexChange?.(next);
+    if (!isGalleryIndexControlled) setInternalPhotoIndex(next);
+  };
   const [imageAspectByUri, setImageAspectByUri] = useState<Record<string, number>>(() => {
     const init: Record<string, number> = {};
     for (const uri of mediaUris) {
@@ -103,6 +141,8 @@ function FeedPostCardView({
     return init;
   });
   const mediaScrollRef = useRef<ScrollView | null>(null);
+  const syncedGalleryIndexRef = useRef<number | null>(null);
+  const photoIndexRef = useRef(0);
   const feedMediaWidth = feedPostMediaWidth(windowWidth);
 
   const friendOnlyReactionEntries = useMemo(() => {
@@ -132,25 +172,199 @@ function FeedPostCardView({
   );
 
   useEffect(() => {
-    setPhotoIndex(0);
+    if (!isGalleryIndexControlled) setInternalPhotoIndex(0);
+    syncedGalleryIndexRef.current = null;
+  }, [post.id, isGalleryIndexControlled]);
+
+  useEffect(() => {
+    setFeedVideoDecryptRequested(false);
+    setFeedVideoInlinePlaying(false);
+    setFeedVideoFinished(false);
+    setFeedVideoPlaybackKey(0);
   }, [post.id]);
 
   useEffect(() => {
+    if (!feedVideoUri || !feedVideoInlinePlaying) return;
+    setFeedVideoFinished(false);
+  }, [feedVideoUri, feedVideoInlinePlaying]);
+
+  useEffect(() => {
+    if (!isGalleryIndexControlled || mediaGalleryIndex == null || mediaUris.length <= 1) return;
+    const clamped = Math.max(0, Math.min(mediaGalleryIndex, mediaUris.length - 1));
+    if (clamped !== mediaGalleryIndex) {
+      onMediaGalleryIndexChange?.(clamped);
+      return;
+    }
+    if (clamped < (syncedGalleryIndexRef.current ?? 0)) return;
+    if (syncedGalleryIndexRef.current === clamped) return;
+    syncedGalleryIndexRef.current = clamped;
+    mediaScrollRef.current?.scrollTo({ x: clamped * feedMediaWidth, animated: false });
+  }, [isGalleryIndexControlled, mediaGalleryIndex, mediaUris.length, feedMediaWidth, onMediaGalleryIndexChange]);
+
+  const syncPhotoIndexFromOffset = useCallback(
+    (offsetX: number) => {
+      const next = Math.round(offsetX / feedMediaWidth);
+      const clamped = Math.max(0, Math.min(next, mediaUris.length - 1));
+      syncedGalleryIndexRef.current = clamped;
+      setPhotoIndex(clamped);
+    },
+    [feedMediaWidth, mediaUris.length, setPhotoIndex]
+  );
+
+  useEffect(() => {
     if (mediaUris.length === 0) return;
-    preloadFeedImageAspects(mediaUris, (uri, aspect) => {
-      setImageAspectByUri((current) => {
-        if (current[uri] === aspect) return current;
-        return { ...current, [uri]: aspect };
+    const task = InteractionManager.runAfterInteractions(() => {
+      preloadFeedImageAspects(mediaUris, (uri, aspect) => {
+        setImageAspectByUri((current) => {
+          if (current[uri] === aspect) return current;
+          return { ...current, [uri]: aspect };
+        });
       });
     });
+    return () => task.cancel();
   }, [post.id, mediaUrisKey]);
 
-  const goToPhoto = (nextIndex: number) => {
+  const mediaTallestHeight = useMemo(
+    () => feedPostGalleryTallestHeight(feedMediaWidth, mediaUris, imageAspectByUri),
+    [feedMediaWidth, mediaUris, imageAspectByUri]
+  );
+
+  photoIndexRef.current = photoIndex;
+
+  /** Carousel height changes (aspect preload) must not reset the active slide. */
+  useEffect(() => {
     if (mediaUris.length <= 1) return;
-    const clamped = Math.max(0, Math.min(nextIndex, mediaUris.length - 1));
-    setPhotoIndex(clamped);
-    mediaScrollRef.current?.scrollTo({ x: clamped * feedMediaWidth, animated: true });
-  };
+    const targetIndex = Math.max(0, Math.min(photoIndexRef.current, mediaUris.length - 1));
+    requestAnimationFrame(() => {
+      mediaScrollRef.current?.scrollTo({ x: targetIndex * feedMediaWidth, animated: false });
+    });
+  }, [mediaTallestHeight, feedMediaWidth, mediaUris.length]);
+
+  const goToPhoto = useCallback(
+    (nextIndex: number) => {
+      if (mediaUris.length <= 1) return;
+      const clamped = Math.max(0, Math.min(nextIndex, mediaUris.length - 1));
+      syncedGalleryIndexRef.current = clamped;
+      setPhotoIndex(clamped);
+      mediaScrollRef.current?.scrollTo({ x: clamped * feedMediaWidth, animated: true });
+    },
+    [mediaUris.length, feedMediaWidth, setPhotoIndex]
+  );
+
+  const canHoldToReactOnPost =
+    !inFullscreenModal && !demoOfflineMode && !!getBackendSession();
+
+  const handlePostLongPress = useCallback(() => {
+    if (canHoldToReactOnPost) {
+      onOpenReactionPickerForPost(post.id);
+    } else if (canDelete) {
+      onConfirmDeletePost(post);
+    }
+  }, [
+    canHoldToReactOnPost,
+    canDelete,
+    post,
+    onOpenReactionPickerForPost,
+    onConfirmDeletePost,
+  ]);
+
+  const feedVideoHeight = feedPostImageHeightForAspect(feedMediaWidth, 16 / 9);
+
+  const requestFeedVideoPlayback = useCallback(() => {
+    setFeedVideoFinished(false);
+    setFeedVideoInlinePlaying(true);
+    if (post.videoEncryptedMedia && !post.videoUri?.trim()) {
+      setFeedVideoDecryptRequested(true);
+    }
+  }, [post.videoEncryptedMedia, post.videoUri]);
+
+  const renderFeedVideoSurface = () => (
+    <View style={styles.postFeedVideoWrap as object}>
+      <View
+        style={[
+          styles.postFeedVideo as object,
+          {
+            width: feedMediaWidth,
+            height: feedVideoHeight,
+            borderRadius: 0,
+          },
+        ]}
+      >
+        {feedVideoUri ? (
+          <VideoWithFadeControls
+            uri={feedVideoUri}
+            width={feedMediaWidth}
+            height={feedVideoHeight}
+            posterUri={feedVideoPosterUri}
+            resizeMode={ResizeMode.CONTAIN}
+            shouldPlay={feedVideoInlinePlaying && !feedVideoFinished}
+            showPlayOverlay={!feedVideoInlinePlaying || feedVideoFinished}
+            restartOnPlay
+            playbackKey={`${post.id}:${feedVideoPlaybackKey}`}
+            onPressPlayOverlay={requestFeedVideoPlayback}
+            onOpenFullscreen={() => onOpenMedia?.(feedVideoUri, "video", { postId: post.id })}
+            onLongPress={handlePostLongPress}
+            onDidFinish={() => {
+              setFeedVideoInlinePlaying(false);
+              setFeedVideoFinished(true);
+              setFeedVideoPlaybackKey((key) => key + 1);
+            }}
+          />
+        ) : feedVideoPreparing ? (
+          <View
+            style={{
+              flex: 1,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "#000",
+              gap: 10,
+            }}
+          >
+            <ActivityIndicator color="#FFFFFF" size="large" />
+            <Text style={{ color: "#ccc", fontSize: 13, fontWeight: "600" }}>Preparing video…</Text>
+          </View>
+        ) : (
+          <Pressable
+            style={{ flex: 1, backgroundColor: "#000" }}
+            onPress={requestFeedVideoPlayback}
+            onLongPress={handlePostLongPress}
+            delayLongPress={400}
+            accessibilityRole="button"
+            accessibilityLabel="Play video"
+          >
+            {feedVideoPosterUri ? (
+              <Image
+                source={{ uri: feedVideoPosterUri }}
+                style={{ width: feedMediaWidth, height: feedVideoHeight }}
+                resizeMode="contain"
+              />
+            ) : null}
+            <View
+              style={{
+                ...StyleSheet.absoluteFillObject,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <View
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: 28,
+                  backgroundColor: "rgba(0,0,0,0.55)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  paddingLeft: 4,
+                }}
+              >
+                <Ionicons name="play" size={28} color="#fff" />
+              </View>
+            </View>
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
 
   const renderPrivateCommentStack = (
     entry: {
@@ -160,6 +374,7 @@ function FeedPostCardView({
       createdAt: number;
       reactions?: Record<string, string>;
       parentCommentId: string;
+      syncState?: PostComment["syncState"];
     },
     isRootComment: boolean
   ) => {
@@ -194,6 +409,15 @@ function FeedPostCardView({
             <Text style={styles.privateCommentBody as object}>{entry.text}</Text>
           </ReactionBubbleHost>
         ) : null}
+        {entry.syncState === "posting" ? (
+          <Text style={styles.privateCommentSyncLine as object}>Posting…</Text>
+        ) : entry.syncState === "posted" ? (
+          <Text style={styles.privateCommentSyncLine as object}>Posted</Text>
+        ) : entry.syncState === "failed" ? (
+          <Text style={[styles.privateCommentSyncLine as object, styles.privateCommentSyncFailed as object]}>
+            Could not post
+          </Text>
+        ) : null}
         <Text style={styles.privateCommentTimeLine as object}>{formatTime(entry.createdAt)}</Text>
       </Pressable>
     );
@@ -211,6 +435,7 @@ function FeedPostCardView({
             createdAt: comment.createdAt,
             reactions: comment.reactions,
             parentCommentId: comment.id,
+            syncState: comment.syncState,
           },
           true
         )}
@@ -251,17 +476,11 @@ function FeedPostCardView({
               onOpenViewer?.();
             }
           }}
-          onLongPress={() => {
-            if (onToggleReaction && !demoOfflineMode && getBackendSession()) {
-              onOpenReactionPickerForPost(post.id);
-            } else if (canDelete) {
-              onConfirmDeletePost(post);
-            }
-          }}
+          onLongPress={handlePostLongPress}
           delayLongPress={400}
           disabled={inFullscreenModal}
           accessibilityHint={
-            onToggleReaction
+            canHoldToReactOnPost
               ? "Press and hold to react"
               : canDelete
                 ? "Press and hold to delete"
@@ -302,103 +521,120 @@ function FeedPostCardView({
               <Text style={styles.postFeedBody as object}>{post.text}</Text>
             </View>
           ) : null}
-
-          {mediaUris.length > 0 ? (
-            <View style={styles.postFeedMediaWrap as object}>
-              <ScrollViewUntilScroll
-                ref={mediaScrollRef}
-                horizontal
-                pagingEnabled
-                showsHorizontalScrollIndicator={false}
-                style={styles.postFeedImageStrip as object}
-                onMomentumScrollEnd={({ nativeEvent }) => {
-                  const next = Math.round(nativeEvent.contentOffset.x / feedMediaWidth);
-                  setPhotoIndex(Math.max(0, Math.min(next, mediaUris.length - 1)));
-                }}
-              >
-                {mediaUris.map((uri) => {
-                  const aspect =
-                    imageAspectByUri[uri] ??
-                    getCachedFeedImageAspect(uri) ??
-                    DEFAULT_FEED_IMAGE_ASPECT;
-                  const slideHeight = feedPostImageHeightForAspect(feedMediaWidth, aspect);
-                  return (
-                    <View key={uri} style={{ width: feedMediaWidth, height: slideHeight }}>
-                      <Image
-                        source={{ uri }}
-                        style={{ width: feedMediaWidth, height: slideHeight }}
-                        resizeMode="cover"
-                        onLoad={(event) => {
-                          const src = event.nativeEvent.source;
-                          const w = Number(src?.width ?? 0);
-                          const h = Number(src?.height ?? 0);
-                          if (!w || !h) return;
-                          const stored = rememberFeedImageAspect(uri, w / h);
-                          if (stored == null) return;
-                          setImageAspectByUri((current) => {
-                            if (current[uri] === stored) return current;
-                            if (current[uri] != null) return current;
-                            return { ...current, [uri]: stored };
-                          });
-                        }}
-                      />
-                    </View>
-                  );
-                })}
-              </ScrollViewUntilScroll>
-              {mediaUris.length > 1 ? (
-                <>
-                  <Pressable
-                    style={[
-                      styles.postCarouselChevron as object,
-                      styles.postCarouselChevronLeft as object,
-                    ]}
-                    onPress={() => goToPhoto(photoIndex - 1)}
-                    accessibilityLabel="Previous photo"
-                  >
-                    <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.postCarouselChevron as object,
-                      styles.postCarouselChevronRight as object,
-                    ]}
-                    onPress={() => goToPhoto(photoIndex + 1)}
-                    accessibilityLabel="Next photo"
-                  >
-                    <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-                  </Pressable>
-                  <View style={styles.postCarouselCountBadge as object}>
-                    <Text style={styles.postCarouselCountText as object}>
-                      {photoIndex + 1}/{mediaUris.length}
-                    </Text>
-                  </View>
-                </>
-              ) : null}
-            </View>
-          ) : null}
-
-          {post.videoUri ? (
-            <View style={styles.postFeedVideoWrap as object}>
-              <Video
-                style={[
-                  styles.postFeedVideo as object,
-                  {
-                    width: feedMediaWidth,
-                    height: feedPostImageHeightForAspect(feedMediaWidth, 16 / 9),
-                  },
-                ]}
-                source={{ uri: post.videoUri }}
-                usePoster={!!post.videoPosterUri}
-                posterSource={post.videoPosterUri ? { uri: post.videoPosterUri } : undefined}
-                resizeMode={ResizeMode.COVER}
-                useNativeControls={!videoShouldPlay}
-                isMuted
-                shouldPlay={!!videoShouldPlay}
-              />
-            </View>
-          ) : null}
         </Pressable>
+
+        {mediaUris.length > 0 ? (
+          <View
+            style={[
+              styles.postFeedMediaWrap as object,
+              mediaUris.length > 1 ? { height: mediaTallestHeight } : null,
+            ]}
+          >
+            <ScrollViewUntilScroll
+              ref={mediaScrollRef}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              style={[
+                styles.postFeedImageStrip as object,
+                { borderRadius: 0 },
+                mediaUris.length > 1 ? { height: mediaTallestHeight } : null,
+              ]}
+              onMomentumScrollEnd={({ nativeEvent }) =>
+                syncPhotoIndexFromOffset(nativeEvent.contentOffset.x)
+              }
+              onScrollEndDrag={({ nativeEvent }) =>
+                syncPhotoIndexFromOffset(nativeEvent.contentOffset.x)
+              }
+            >
+              {mediaUris.map((uri, slideIndex) => {
+                const aspect =
+                  imageAspectByUri[uri] ??
+                  getCachedFeedImageAspect(uri) ??
+                  DEFAULT_FEED_IMAGE_ASPECT;
+                const naturalHeight = feedPostImageHeightForAspect(feedMediaWidth, aspect);
+                const slideHeight =
+                  mediaUris.length > 1 ? mediaTallestHeight : naturalHeight;
+                return (
+                  <Pressable
+                    key={`${post.id}-slide-${slideIndex}`}
+                    style={[
+                      styles.postFeedImageSlide as object,
+                      { width: feedMediaWidth, height: slideHeight },
+                    ]}
+                    onPress={() => {
+                      onOpenMedia?.(uri, "photo", {
+                        galleryUris: mediaUris,
+                        galleryIndex: slideIndex,
+                        postId: post.id,
+                      });
+                    }}
+                    onLongPress={handlePostLongPress}
+                    delayLongPress={400}
+                    accessibilityRole="button"
+                    accessibilityLabel="View photo full screen"
+                    accessibilityHint={
+                      canHoldToReactOnPost ? "Press and hold to react" : undefined
+                    }
+                  >
+                    <Image
+                      source={{ uri }}
+                      style={[
+                        styles.postFeedImageFullWidth as object,
+                        { width: feedMediaWidth, height: slideHeight },
+                      ]}
+                      resizeMode="contain"
+                      onLoad={(event) => {
+                        const src = event.nativeEvent.source;
+                        const w = Number(src?.width ?? 0);
+                        const h = Number(src?.height ?? 0);
+                        if (!w || !h) return;
+                        const stored = rememberFeedImageAspect(uri, w / h);
+                        if (stored == null) return;
+                        setImageAspectByUri((current) => {
+                          if (current[uri] === stored) return current;
+                          if (current[uri] != null) return current;
+                          return { ...current, [uri]: stored };
+                        });
+                      }}
+                    />
+                  </Pressable>
+                );
+              })}
+            </ScrollViewUntilScroll>
+            {mediaUris.length > 1 ? (
+              <>
+                <Pressable
+                  style={[
+                    styles.postCarouselChevron as object,
+                    styles.postCarouselChevronLeft as object,
+                  ]}
+                  onPress={() => goToPhoto(photoIndex - 1)}
+                  accessibilityLabel="Previous photo"
+                >
+                  <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.postCarouselChevron as object,
+                    styles.postCarouselChevronRight as object,
+                  ]}
+                  onPress={() => goToPhoto(photoIndex + 1)}
+                  accessibilityLabel="Next photo"
+                >
+                  <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+                </Pressable>
+                <View style={styles.postCarouselCountBadge as object}>
+                  <Text style={styles.postCarouselCountText as object}>
+                    {photoIndex + 1}/{mediaUris.length}
+                  </Text>
+                </View>
+              </>
+            ) : null}
+          </View>
+        ) : null}
+
+        {hasVideoPost ? renderFeedVideoSurface() : null}
       </ReactionBubbleHost>
 
       {inFullscreenModal ? (

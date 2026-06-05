@@ -1,7 +1,7 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
+import { storageGetItem, storageSetItem } from "./app/lib/encryptedLocalStorage";
 import { firebaseAuth } from "./firebaseAuthClient";
 
 const BACKEND_DEVICE_ID_KEY = "app.backend.deviceId.v1";
@@ -38,8 +38,29 @@ function hashInput(input: string): string {
   return `h${(h >>> 0).toString(16)}`;
 }
 
+/**
+ * Collapses mailbox aliases to a single canonical address so the same inbox
+ * cannot register multiple accounts. For Gmail/Googlemail dots in the local
+ * part are insignificant; across all providers a `+tag` suffix is an alias.
+ * Keep this in sync with the server-side `canonicalizeEmail` in
+ * `backend/functions/src/index.ts`.
+ */
+export function canonicalizeEmail(email: string): string {
+  const trimmed = String(email ?? "").trim().toLowerCase();
+  const at = trimmed.lastIndexOf("@");
+  if (at <= 0) return trimmed;
+  let local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  const plus = local.indexOf("+");
+  if (plus >= 0) local = local.slice(0, plus);
+  if (domain === "gmail.com" || domain === "googlemail.com") {
+    local = local.replace(/\./g, "");
+  }
+  return `${local}@${domain}`;
+}
+
 export function backendUidForEmail(email: string): string {
-  return `u_${hashInput(email.trim().toLowerCase())}`;
+  return `u_${hashInput(canonicalizeEmail(email))}`;
 }
 
 export function backendUidForFriendId(friendId: string): string {
@@ -47,10 +68,10 @@ export function backendUidForFriendId(friendId: string): string {
 }
 
 export async function getOrCreateBackendDeviceId(): Promise<string> {
-  const existing = await AsyncStorage.getItem(BACKEND_DEVICE_ID_KEY);
+  const existing = await storageGetItem(BACKEND_DEVICE_ID_KEY);
   if (existing?.trim()) return existing;
   const next = `d_${randomToken(20)}`;
-  await AsyncStorage.setItem(BACKEND_DEVICE_ID_KEY, next);
+  await storageSetItem(BACKEND_DEVICE_ID_KEY, next);
   return next;
 }
 

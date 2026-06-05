@@ -1,5 +1,6 @@
 import { backendUidForFriendId } from "../../backendBridge";
 import { friendDisplayNameFromProfile, pickFriendDisplayName } from "./friendDisplayName";
+import { mergeProfileBio } from "./mergeProfileBio";
 import { mergeProfilePictureUrl } from "./profilePictureUrl";
 import type { Friend } from "../domain/types";
 
@@ -144,6 +145,7 @@ export function upsertRitualFriend(prev: Friend[], friend: Friend): Friend[] {
           [nextFriend.displayName, existing.displayName],
           backendUid
         ),
+        bio: mergeProfileBio(nextFriend.bio, existing.bio),
       };
       const unchanged =
         existing.displayName === merged.displayName &&

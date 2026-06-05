@@ -1,0 +1,46 @@
+---
+description: Every code change gets a minute-precision entry in Planning/DATED_CHANGE_LOG.md
+alwaysApply: true
+---
+
+# Timestamped changelog (required on every code change)
+
+## When this applies
+
+Whenever you **create or modify any file** in this repo under a `(code)` message, in the **same task** before finishing:
+
+1. Append one row to **`Planning/DATED_CHANGE_LOG.md`** (top of the file, under the header block — newest first).
+2. Use a **to-the-minute** timestamp in the user’s local style: `YYYY-MM-DD HH:mm +ZZ:ZZ` (get time via shell `Get-Date -Format "yyyy-MM-dd HH:mm K"` on Windows, or equivalent).
+3. Write a **brief** description (one line): what changed and why, not a file list.
+
+## Row format
+
+```markdown
+## YYYY-MM-DD HH:mm +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| same | Short area | One sentence. |
+```
+
+- **Area:** e.g. Chat, Docs, Rules, Backend, Android.
+- Duplicate the timestamp in the `##` heading and the table `Time` column.
+
+## Also update when behavior changes
+
+- Add or adjust a bullet under **`Planning/CHANGELOG.md` → [Unreleased]** if product/UX/verification behavior changed (Keep a Changelog style).
+- Do **not** rely on CHANGELOG alone for bisect — **DATED_CHANGE_LOG** is the minute trail.
+
+## No code change
+
+- Questions, reviews, or read-only replies without `(code)` → **no** DATED_CHANGE_LOG entry.
+
+## Example
+
+```markdown
+## 2026-06-04 20:02 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 20:02 +01:00 | Rules | Added `(code)` gate and commit-prompt Cursor rules. |
+```

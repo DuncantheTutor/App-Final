@@ -14,6 +14,9 @@ This document captures product requirements, privacy rules, technical scope, and
 - **Git remote:** [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final) — push from this tree when version control is initialized.
 - **Planning and spec Markdown** live in **`Planning/`** inside App Final V3 (same directory as this file). Legacy copies under `Cursor Projects\App V2` or the older OneDrive **`App Final`** folder are historical only; do not treat `App V2 Build*`, `App/mobile`, `App v4`, or other trees as edit targets unless a task explicitly says to migrate from them.
 - **Agent continuity:** Periodically **export chats** from Cursor (chat menu → Export) and save exports under **`Planning/`** (or merge into your latest export). Before long sessions or when opening a **new agent**, skim recent exports so decisions and file paths are not lost.
+- **Cursor coding gate:** Start a message with **`(code)`** on the first line to allow the agent to edit files; without it, chat is read-only (explain/review/plan only). See `.cursor/rules/code-permission-gate.mdc`.
+- **Commits:** After any code change, the agent must **ask** if you want a git commit — it does not commit unless you say yes. See `.cursor/rules/commit-prompt-after-code.mdc`.
+- **Minute change log:** Every code change gets an entry in **`Planning/DATED_CHANGE_LOG.md`** (timestamp to the minute + brief description). See `.cursor/rules/timestamped-changelog.mdc`.
 - **Release hygiene:** Keep `package.json` and `app.json` versions aligned; see **`Planning/RELEASE_NOTES.md`** for internal APK path and tagging.
 
 ---

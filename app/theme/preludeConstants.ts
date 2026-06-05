@@ -1,5 +1,6 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
+
+import { storageGetItem, storageRemoveItem, storageSetItem } from "../lib/encryptedLocalStorage";
 
 import type {
   Chat,
@@ -15,7 +16,8 @@ import { resolveParticipantDisplay } from "../lib/participantDisplay";
 
 export const CURRENT_USER_ID = "me";
 export const DEMO_OFFLINE_MODE = false;
-export const DEMO_USER_A_QR_PIN = "4242";
+/** Demo pairing offer token (32 hex) — encodes as AFQR2 in QR. */
+export const DEMO_USER_A_QR_PIN = "42424242424242424242424242424242";
 /** Primary UI accent — blue-teal. */
 export const ACCENT_GREEN = "#0C8579";
 /** Hot pink accent (paired with same light/dark structure as green). */
@@ -970,7 +972,7 @@ export const postsStorageKeyForEmail = (email: string) => `${POSTS_STORAGE_KEY}:
 /** Local chats + DM history keyed by signed-in email (survives app restarts until backend catches up). */
 export const socialMessagingStorageKeyForEmail = (email: string) =>
   `mvpplus.messaging.v1:${email.trim().toLowerCase()}`;
-export const PRESENCE_HEARTBEAT_MS = 8_000;
+export const PRESENCE_HEARTBEAT_MS = 30_000;
 /** Must exceed heartbeat interval + network skew (server is authoritative). */
 export const PRESENCE_ONLINE_WINDOW_MS = 45_000;
 /**
@@ -984,8 +986,52 @@ export const PRESENCE_ONLINE_WINDOW_MS = 45_000;
  * sub-fetches never resolves. See the boot-sync `useEffect` in `MainApp.tsx`.
  */
 export const INITIAL_SERVER_SYNC_TIMEOUT_MS = 20_000;
-export const ENCRYPTED_POSTS_SYNC_LIMIT = 150;
-export const ENCRYPTED_MESSAGES_SYNC_LIMIT = 400;
+/** Home feed first page + realtime listener cap (keep small for cold-start). */
+export const ENCRYPTED_POSTS_HOME_FEED_LIMIT = 3;
+/** Feed cards mounted on first paint; scroll expands before server pagination. */
+export const FEED_UI_INITIAL_COUNT = 3;
+export const FEED_UI_DISPLAY_PAGE_SIZE = 5;
+/** Profile grids / deeper post surfaces when opened. */
+export const ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT = 80;
+/** Older posts loaded via feed scroll / pagination. */
+export const ENCRYPTED_POSTS_PAGE_SIZE = 30;
+/** Full feed cards shown below the profile media grid on first paint (grid still shows all media). */
+export const PROFILE_FEED_POSTS_INITIAL = 6;
+/** Tap “Load more posts” on profile to reveal this many additional feed cards. */
+export const PROFILE_FEED_POSTS_PAGE_SIZE = 8;
+/** @deprecated Use HOME / PROFILE / PAGE constants — kept for load-more comparisons. */
+export const ENCRYPTED_POSTS_SYNC_LIMIT = ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT;
+/** Realtime posts listener on home feed only (newest-first). */
+export const ENCRYPTED_POSTS_LISTENER_LIMIT = ENCRYPTED_POSTS_HOME_FEED_LIMIT;
+/** Callable pull page size for message history (incremental uses sinceMs). */
+export const ENCRYPTED_MESSAGES_SYNC_LIMIT = 14;
+/** Cross-inbox hint pull when cache already has threads (sinceMs incremental). */
+export const ENCRYPTED_MESSAGES_BOOT_SYNC_LIMIT = 7;
+/** Max visible inbox chats to hydrate on cold start (per-thread pull). */
+export const BOOT_VISIBLE_CHATS_MESSAGE_PULL_MAX = 12;
+/** Messages fetched when opening a chat thread. */
+export const CHAT_INITIAL_MESSAGE_LIMIT = 7;
+/** Scroll-up page size for older chat history (server fetch). */
+export const CHAT_OLDER_MESSAGES_PAGE_SIZE = 15;
+/**
+ * How many loaded messages the chat list mounts at once. Scroll-up expands this
+ * before requesting older pages from the server so hundreds in memory stay smooth.
+ */
+export const CHAT_UI_INITIAL_DISPLAY_COUNT = 7;
+export const CHAT_UI_DISPLAY_PAGE_SIZE = 15;
+/**
+ * Global collection-group listener: recent cross-chat hints only (not full history).
+ * Opening a chat uses per-conversation listener + `listConversationMessages`.
+ */
+export const ENCRYPTED_MESSAGES_LISTENER_LIMIT = 14;
+/** Per-thread listener while a chat is open. */
+export const ENCRYPTED_MESSAGES_CONVERSATION_LISTENER_LIMIT = CHAT_INITIAL_MESSAGE_LIMIT;
+/** @deprecated Message delivery uses Firestore listeners; callable inbox polling removed (Jun 2026). */
+export const ENCRYPTED_MESSAGES_FOREGROUND_PULL_MS = 25_000;
+/** @deprecated Per-chat callable polling removed (Jun 2026). */
+export const ENCRYPTED_MESSAGES_ACTIVE_CHAT_PULL_MS = 12_000;
+/** Friend profile pictures/names refresh (roster listener is primary). */
+export const FRIEND_PROFILE_REFRESH_MS = 5 * 60_000;
 /**
  * Wall-clock threshold after which the next poll-on-open for posts asks for
  * a full backlog instead of an incremental `sinceMs` pull. Belt-and-braces
@@ -1041,6 +1087,11 @@ export function profileUsernameStorageKey(email: string): string {
 /** HTTPS profile picture URL cached for cold start before encrypted profile listener runs. */
 export function profilePictureStorageKey(email: string): string {
   return `app.profile.picture.v1.${email.trim().toLowerCase()}`;
+}
+
+/** Profile bio cached for cold start; canonical server field is `users.bio`. */
+export function profileBioStorageKey(email: string): string {
+  return `app.profile.bio.v1.${email.trim().toLowerCase()}`;
 }
 
 export function emailLocalPartGuess(email: string): string {
@@ -1197,7 +1248,7 @@ export async function revokeMockSessionLedger(email: string): Promise<void> {
 
 export async function readStoredSessionLockToken(email: string): Promise<string> {
   try {
-    const raw = await AsyncStorage.getItem(sessionLockStorageKeyForEmail(email));
+    const raw = await storageGetItem(sessionLockStorageKeyForEmail(email));
     return String(raw ?? "").trim();
   } catch {
     return "";
@@ -1206,7 +1257,7 @@ export async function readStoredSessionLockToken(email: string): Promise<string>
 
 export async function writeStoredSessionLockToken(email: string, token: string): Promise<void> {
   try {
-    await AsyncStorage.setItem(sessionLockStorageKeyForEmail(email), token);
+    await storageSetItem(sessionLockStorageKeyForEmail(email), token);
   } catch {
     /* ignore */
   }
@@ -1214,7 +1265,7 @@ export async function writeStoredSessionLockToken(email: string, token: string):
 
 export async function clearStoredSessionLockToken(email: string): Promise<void> {
   try {
-    await AsyncStorage.removeItem(sessionLockStorageKeyForEmail(email));
+    await storageRemoveItem(sessionLockStorageKeyForEmail(email));
   } catch {
     /* ignore */
   }
@@ -1225,10 +1276,10 @@ export async function readLedgerSessionToken(email: string, canonicalMine: strin
   if (remote === null) return canonicalMine;
   return remote;
 }
+/** Timed feed-mute durations (order = picker top → bottom before “Mute until unmuted”). */
 export const FEED_MUTE_CHOICES = [
   { label: "24 hours", durationMs: 24 * 60 * 60 * 1000 },
   { label: "1 week", durationMs: 7 * 24 * 60 * 60 * 1000 },
-  { label: "1 month", durationMs: 30 * 24 * 60 * 60 * 1000 },
 ] as const;
 
 export const DEMO_SHARED_FRIEND_IDS = Array.from({ length: 40 }, (_, i) => `f${i + 1}`);
@@ -1295,7 +1346,8 @@ export const buildHomeChatPreview = (
   friendLookup: Record<string, Friend>,
   unfriendedIds: string[],
   serverAcceptedFriendBackendUids?: ReadonlySet<string> | null,
-  identityLockedChatIds?: ReadonlySet<string>
+  identityLockedChatIds?: ReadonlySet<string>,
+  localAcceptedFriendIds?: ReadonlySet<string> | null
 ) => {
   const counterpartIds = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
   const showSender = counterpartIds.length > 1 || chat.kind === "broadcast";
@@ -1311,8 +1363,12 @@ export const buildHomeChatPreview = (
             friendLookup,
             unfriendedIds,
             serverAcceptedFriendBackendUids,
-            identityLockedChatIds
-              ? { chatId: chat.id, identityLockedChatIds }
+            identityLockedChatIds || localAcceptedFriendIds
+              ? {
+                  chatId: chat.id,
+                  identityLockedChatIds,
+                  localAcceptedFriendIds,
+                }
               : undefined
           ).displayName}: `;
     return `${prefix}${displayBody}`;
@@ -1341,6 +1397,8 @@ export function chunkBy<T>(arr: T[], size: number): T[][] {
 }
 
 export const REACTION_EMOJIS = ["👍", "❤️", "😂", "😢", "🔥", "👏"];
+/** Long-press on a chat bubble opens react / reply actions. */
+export const CHAT_MESSAGE_LONG_PRESS_MS = 300;
 export const AUTO_REPLY_LINES = [
   "Got it, thanks!",
   "Sounds good to me.",
@@ -1375,4 +1433,5 @@ export const ADD_FRIEND_PROTOCOL_MAX_ATTEMPTS = 3;
 export const ADD_FRIEND_PROTOCOL_RETRY_BASE_MS = 200;
 export const ADD_FRIEND_QR_VISIBLE_MS = 4_000;
 /** Dual-confirm screen: auto-cancel if user taps neither Confirm nor Cancel in time. */
-export const ADD_FRIEND_DUAL_CONFIRM_TIMEOUT_MS = 30_000;
+/** Idle on dual-confirm card when neither side has tapped Confirm (see AddFriendScreen). */
+export const ADD_FRIEND_DUAL_CONFIRM_TIMEOUT_MS = 45_000;

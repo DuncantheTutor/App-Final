@@ -1,6 +1,10 @@
 import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt";
 import { isConversationHiddenForViewer } from "./hiddenConversations";
-import { isAppBackendUid, resolveChatMemberToBackendUid } from "./resolveChatMemberBackendUid";
+import {
+  findActiveDirectChatForFriend,
+  isAppBackendUid,
+  resolveChatMemberToBackendUid,
+} from "./resolveChatMemberBackendUid";
 import type { Chat, Friend } from "../domain/types";
 
 /** Stable local + server thread id for a 1:1 DM between two app accounts. */
@@ -34,6 +38,17 @@ export function allocateLiveDirectChatLocalId(
 
 export function isDirectChatLocalId(chatId: string): boolean {
   return chatId.trim().startsWith("dm_");
+}
+
+/** Broadcast (`bc_*`) or group (`grp_*`) thread — addressed to multiple recipients, not a 1:1 DM. */
+export function isMultiPartyChatLocalId(chatId: string): boolean {
+  const id = chatId.trim();
+  return id.startsWith("bc_") || id.startsWith("grp_");
+}
+
+/** Broadcast thread id (`bc_*`). */
+export function isBroadcastChatLocalId(chatId: string): boolean {
+  return chatId.trim().startsWith("bc_");
 }
 
 export function isLiveDirectChatLocalId(chatId: string): boolean {
@@ -154,6 +169,113 @@ export function isCanonicalDmHiddenForViewer(
   return isCanonicalDmHiddenForFriend(sessionAppUid, friendBackendUid, hiddenServerConversationIds);
 }
 
+export function isDirectChatActiveFriend(params: {
+  friendId: string;
+  friendBackendUid: string | null;
+  unfriendedIds: string[];
+  serverAcceptedFriendBackendUids: ReadonlySet<string>;
+}): boolean {
+  const { friendId, friendBackendUid, unfriendedIds, serverAcceptedFriendBackendUids } = params;
+  if (unfriendedIds.includes(friendId)) return false;
+  const bu = friendBackendUid?.trim();
+  if (!bu?.startsWith("u_")) return false;
+  return serverAcceptedFriendBackendUids.has(bu);
+}
+
+/**
+ * When a friendship is live again, open the active `__live` row instead of a locked or hidden canonical artifact.
+ */
+export function resolveDirectChatOpenTarget(params: {
+  requestedChatId: string;
+  chats: Chat[];
+  sessionAppUid: string;
+  friendMap: Record<string, Friend>;
+  friendIdToBackendUid: Record<string, string>;
+  identityLockedChatIds: ReadonlySet<string>;
+  unfriendedIds: string[];
+  serverAcceptedFriendBackendUids: ReadonlySet<string>;
+  hiddenLocalChatIds: ReadonlySet<string>;
+  hiddenServerConversationIds: ReadonlySet<string>;
+  resolveMemberFriendId: (memberId: string) => string;
+}): { targetChatId: string; allocateLive?: { localId: string; friendId: string } } {
+  const chat = params.chats.find((c) => c.id === params.requestedChatId);
+  if (!chat || (chat.kind ?? "standard") !== "standard") {
+    return { targetChatId: params.requestedChatId };
+  }
+  const others = chat.memberIds.filter((id) => id !== CURRENT_USER_LOCAL_ID);
+  if (others.length !== 1) {
+    return { targetChatId: params.requestedChatId };
+  }
+
+  const friendId = params.resolveMemberFriendId(others[0]);
+  const friendBackendUid =
+    friendBackendUidFromDirectChatLocalId(params.requestedChatId, params.sessionAppUid) ??
+    resolveChatMemberToBackendUid(
+      others[0],
+      params.sessionAppUid,
+      params.friendMap,
+      params.friendIdToBackendUid
+    );
+  if (!friendBackendUid?.startsWith("u_")) {
+    return { targetChatId: params.requestedChatId };
+  }
+
+  const canonicalId = canonicalDirectChatLocalId(params.sessionAppUid, friendBackendUid);
+  const canonicalHidden = isCanonicalDmHiddenForViewer(
+    params.sessionAppUid,
+    friendBackendUid,
+    params.hiddenLocalChatIds,
+    params.hiddenServerConversationIds
+  );
+  const active = isDirectChatActiveFriend({
+    friendId,
+    friendBackendUid,
+    unfriendedIds: params.unfriendedIds,
+    serverAcceptedFriendBackendUids: params.serverAcceptedFriendBackendUids,
+  });
+
+  if (!active) {
+    if (canonicalHidden && params.requestedChatId === canonicalId) {
+      const live = findLiveDirectChatForFriend(
+        params.chats,
+        params.sessionAppUid,
+        friendBackendUid,
+        params.friendMap,
+        params.friendIdToBackendUid
+      );
+      if (live) return { targetChatId: live.id };
+    }
+    return { targetChatId: params.requestedChatId };
+  }
+
+  const shouldRouteToActiveThread =
+    params.identityLockedChatIds.has(params.requestedChatId) ||
+    (canonicalHidden && params.requestedChatId === canonicalId);
+
+  if (!shouldRouteToActiveThread) {
+    return { targetChatId: params.requestedChatId };
+  }
+
+  const existing = findActiveDirectChatForFriend(
+    params.chats,
+    friendId,
+    params.sessionAppUid,
+    params.friendMap,
+    params.friendIdToBackendUid,
+    params.identityLockedChatIds,
+    params.hiddenServerConversationIds,
+    params.hiddenLocalChatIds
+  );
+  if (existing) return { targetChatId: existing.id };
+
+  const localId = allocateLiveDirectChatLocalId(
+    params.sessionAppUid,
+    friendBackendUid,
+    params.identityLockedChatIds
+  );
+  return { targetChatId: localId, allocateLive: { localId, friendId } };
+}
+
 /** Newest `dm_*__live` row for a friend when the canonical thread is hidden. */
 export function findLiveDirectChatForFriend(
   chats: Chat[],
@@ -221,6 +343,29 @@ export function resolveInboundDirectMessageTarget(params: {
   const sender = senderAppUid.trim();
   const rawFromPlain = plainLocalChatId?.trim() ?? "";
   const rawBase = (rawFromPlain || rawLocalChatId).trim();
+
+  // Multi-party threads (broadcast `bc_*` / group `grp_*`) must never collapse
+  // into the 1:1 DM with the sender — they get their own chat card. The id is
+  // stable across messages of the same thread, so it maps back to the same
+  // server conversation for replies.
+  if (isMultiPartyChatLocalId(rawBase)) {
+    if (
+      isConversationHiddenForViewer(
+        conversationId,
+        { raw: rawBase, resolved: rawBase },
+        hiddenLocalChatIds,
+        hiddenServerConversationIds
+      )
+    ) {
+      return { drop: true };
+    }
+    return {
+      conversationIdForHiddenCheck: conversationId,
+      rawLocalChatId: rawBase,
+      resolvedLocalChatId: rawBase,
+    };
+  }
+
   let resolved = resolveIncomingDirectChatId(rawBase, sender, sessionAppUid);
 
   const friendBackendUid =
@@ -335,6 +480,8 @@ export function resolveIncomingDirectChatId(
 ): string {
   const trimmed = rawChatId.trim();
   if (isDirectChatLocalId(trimmed)) return trimmed;
+  // Never fold a multi-party thread into the 1:1 DM.
+  if (isMultiPartyChatLocalId(trimmed)) return trimmed;
   if (
     senderAppUid &&
     senderAppUid !== sessionAppUid &&

@@ -17,6 +17,25 @@ export const makeStyles = (theme: ThemePalette) =>
       backgroundColor: theme.background,
       paddingHorizontal: 14,
     },
+    offlineBanner: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      zIndex: 100001,
+      elevation: 100001,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      backgroundColor: "rgba(180, 60, 40, 0.92)",
+    },
+    offlineBannerText: {
+      color: "#FFFFFF",
+      fontSize: 13,
+      fontWeight: "600",
+    },
     screenRoot: {
       flex: 1,
       paddingHorizontal: 14,
@@ -228,6 +247,8 @@ export const makeStyles = (theme: ThemePalette) =>
       marginBottom: 8,
       backgroundColor: "#000000",
       position: "relative",
+      borderRadius: 0,
+      overflow: "visible",
     },
     feedReactCornerFab: {
       position: "absolute",
@@ -242,12 +263,21 @@ export const makeStyles = (theme: ThemePalette) =>
     postFeedImageFullWidth: {
       width: "100%",
       backgroundColor: "#000000",
+      borderRadius: 0,
+    },
+    postFeedImageSlide: {
+      backgroundColor: "#000000",
+      borderRadius: 0,
+      overflow: "hidden",
+      justifyContent: "center",
     },
     postFeedVideoWrap: {
       position: "relative",
       marginHorizontal: -14,
       marginBottom: 8,
       backgroundColor: "#000000",
+      borderRadius: 0,
+      overflow: "visible",
     },
     postFeedVideo: {
       width: "100%" as const,
@@ -288,8 +318,23 @@ export const makeStyles = (theme: ThemePalette) =>
       flexDirection: "row",
       alignItems: "center",
       gap: 4,
-      marginTop: 4,
-      alignSelf: "flex-end",
+      marginTop: 2,
+      marginBottom: 2,
+      width: "100%",
+    },
+    readReceiptAvatarRowMine: {
+      justifyContent: "flex-end",
+    },
+    readReceiptAvatarRowOther: {
+      justifyContent: "flex-start",
+      paddingLeft: 38,
+    },
+    messageBlock: {
+      width: "100%",
+      marginBottom: 12,
+    },
+    messageBlockRow: {
+      marginBottom: 0,
     },
     feedReactionSummaryChip: {
       flexDirection: "row",
@@ -456,6 +501,14 @@ export const makeStyles = (theme: ThemePalette) =>
       color: theme.subtleText,
       fontSize: 11,
     },
+    privateCommentSyncLine: {
+      color: theme.subtleText,
+      fontSize: 11,
+      fontStyle: "italic",
+    },
+    privateCommentSyncFailed: {
+      color: "#c0392b",
+    },
     privateCommentMeta: {
       color: theme.subtleText,
       fontSize: 11,
@@ -554,10 +607,27 @@ export const makeStyles = (theme: ThemePalette) =>
       alignItems: "flex-start",
     },
     postGridCell: {
-      borderRadius: 4,
+      borderRadius: 10,
       overflow: "hidden",
       backgroundColor: theme.divider,
       position: "relative",
+    },
+    /** Profile / shared-media post list — same full-bleed width as home feed. */
+    profilePostsFeedList: {
+      marginHorizontal: -14,
+      alignSelf: "stretch",
+    },
+    profileFeedLoadMoreBtn: {
+      alignSelf: "center",
+      marginTop: 8,
+      marginBottom: 4,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+    },
+    profileFeedLoadMoreText: {
+      color: theme.accent,
+      fontSize: 14,
+      fontWeight: "600",
     },
     postGridImage: {
       width: "100%",
@@ -786,7 +856,8 @@ export const makeStyles = (theme: ThemePalette) =>
     chatTapCard: {
       flex: 1,
       flexDirection: "row",
-      alignItems: "flex-start",
+      alignItems: "center",
+      gap: 8,
       minHeight: 42,
     },
     chatAvatarWrap: {
@@ -843,9 +914,23 @@ export const makeStyles = (theme: ThemePalette) =>
       fontSize: 15,
       fontWeight: "600",
     },
+    chatNameUnread: {
+      fontWeight: "800",
+    },
     chatPreview: {
       color: theme.subtleText,
       fontSize: 13,
+    },
+    chatPreviewUnread: {
+      color: theme.text,
+      fontWeight: "700",
+    },
+    chatUnreadDot: {
+      width: 9,
+      height: 9,
+      borderRadius: 5,
+      backgroundColor: theme.accent,
+      flexShrink: 0,
     },
     chatTimestamp: {
       color: theme.subtleText,
@@ -1222,11 +1307,22 @@ export const makeStyles = (theme: ThemePalette) =>
       fontStyle: "italic",
     },
     messageSystemTextMine: {
-      color: theme.mineBubbleReplyMuted,
+      color: theme.subtleText,
       fontSize: 14,
       lineHeight: Math.round(14 * 1.35),
       marginBottom: 0,
       fontStyle: "italic",
+    },
+    unsentMessageCard: {
+      backgroundColor: theme.background,
+      borderColor: theme.divider,
+      borderWidth: StyleSheet.hairlineWidth,
+    },
+    unsentMessageCardMine: {
+      alignSelf: "flex-end",
+    },
+    unsentMessageCardOther: {
+      alignSelf: "flex-start",
     },
     replyPreviewLine: {
       color: theme.subtleText,
@@ -1301,10 +1397,47 @@ export const makeStyles = (theme: ThemePalette) =>
       padding: CHAT_XH,
       marginBottom: CHAT_XH_HALF,
     },
+    voiceMessageCard: {
+      minWidth: 248,
+      maxWidth: "88%",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
     voicePlayRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
+      gap: 12,
+      width: "100%",
+    },
+    voiceProgressColumn: {
+      flex: 1,
+      minWidth: 0,
+      gap: 6,
+    },
+    voiceProgressTrack: {
+      height: 5,
+      borderRadius: 3,
+      backgroundColor: theme.divider,
+      overflow: "hidden",
+      width: "100%",
+    },
+    voiceProgressFill: {
+      height: "100%",
+      backgroundColor: theme.accent,
+    },
+    voiceProgressFillMine: {
+      height: "100%",
+      backgroundColor: theme.mineBubbleText,
+    },
+    voiceTimeLabel: {
+      fontSize: 11,
+      fontWeight: "600",
+      color: theme.subtleText,
+    },
+    voiceTimeLabelMine: {
+      fontSize: 11,
+      fontWeight: "600",
+      color: `${theme.mineBubbleText}cc`,
     },
     inlineMediaPreview: {
       width: 130,
@@ -1338,20 +1471,26 @@ export const makeStyles = (theme: ThemePalette) =>
       maxWidth: "100%",
     },
     photoMessageImageDetached: {
-      borderRadius: 12,
-      backgroundColor: theme.divider,
+      borderRadius: 10,
       alignSelf: "flex-start",
       marginBottom: 0,
+      overflow: "hidden",
+    },
+    photoMessageImageDetachedMine: {
+      alignSelf: "flex-end",
     },
     videoMessageWrap: {
       position: "relative",
-      borderRadius: 12,
+      borderRadius: 10,
       overflow: "hidden",
       alignSelf: "flex-start",
-      backgroundColor: theme.divider,
+      backgroundColor: "#000000",
+    },
+    videoMessageWrapMine: {
+      alignSelf: "flex-end",
     },
     videoMessageVideo: {
-      borderRadius: 12,
+      borderRadius: 0,
     },
     videoOverlayText: {
       position: "absolute",
@@ -1431,6 +1570,32 @@ export const makeStyles = (theme: ThemePalette) =>
       marginRight: 4,
       textAlign: "right",
       alignSelf: "stretch",
+    },
+    failedMessageActions: {
+      flexDirection: "row",
+      gap: 12,
+      marginTop: 6,
+      marginLeft: 4,
+    },
+    failedMessageActionsMine: {
+      justifyContent: "flex-end",
+      marginRight: 4,
+      marginLeft: 0,
+    },
+    failedMessageActionBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+    },
+    failedMessageActionText: {
+      color: theme.accent,
+      fontSize: 12,
+      fontWeight: "600",
+    },
+    failedMessageDeleteText: {
+      color: theme.danger,
+      fontSize: 12,
+      fontWeight: "600",
     },
     chatMemberStripWrap: {
       paddingHorizontal: 12,

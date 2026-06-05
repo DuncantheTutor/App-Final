@@ -22,9 +22,13 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { androidNavInset, stickyFooterPadding } from "./app/lib/safeAreaInsets";
+import { ImageCropModal } from "./app/components/ImageCropModal";
+import { probeVideoDisplayDimensions } from "./app/lib/videoDisplayDimensions";
+import { keyboardScrollPadding } from "./app/lib/keyboardInputScroll";
+import { useScrollPinnedInput } from "./app/lib/useScrollPinnedInput";
+import { androidNavInset, photoEditorFooterPadding } from "./app/lib/safeAreaInsets";
 import Svg, { Path } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import Slider from "@react-native-community/slider";
@@ -97,6 +101,10 @@ type Props = {
   mediaType?: "photo" | "video";
   /** Label for the final confirmation on the preview step (default: Post). */
   previewSubmitLabel?: string;
+  /** Fired when crop UI opens or closes (Android hardware back can exit crop first). */
+  onCropModeChange?: (active: boolean) => void;
+  /** Increment to exit crop from the parent (hardware back). */
+  cropExitTick?: number;
 };
 
 const FILTER_LABELS: { id: PhotoFilterId; label: string }[] = [
@@ -217,6 +225,36 @@ function clampCropRect(rect: CropRect, maxW: number, maxH: number): CropRect {
   };
 }
 
+function clampCropRectInFrame(
+  rect: CropRect,
+  frame: { x: number; y: number; w: number; h: number }
+): CropRect {
+  const inner = clampCropRect(
+    { x: rect.x - frame.x, y: rect.y - frame.y, w: rect.w, h: rect.h },
+    frame.w,
+    frame.h
+  );
+  return { x: inner.x + frame.x, y: inner.y + frame.y, w: inner.w, h: inner.h };
+}
+
+/** Map on-screen crop box (letterboxed image frame) to source pixel crop for ImageManipulator. */
+function cropRectToPixelCrop(
+  rect: CropRect,
+  frame: { x: number; y: number; w: number; h: number },
+  imageW: number,
+  imageH: number
+): { originX: number; originY: number; width: number; height: number } {
+  const relX = Math.max(0, Math.min(1, (rect.x - frame.x) / frame.w));
+  const relY = Math.max(0, Math.min(1, (rect.y - frame.y) / frame.h));
+  const relW = Math.max(0, Math.min(1 - relX, rect.w / frame.w));
+  const relH = Math.max(0, Math.min(1 - relY, rect.h / frame.h));
+  const width = Math.max(2, Math.round(relW * imageW));
+  const height = Math.max(2, Math.round(relH * imageH));
+  const originX = Math.max(0, Math.min(imageW - width, Math.round(relX * imageW)));
+  const originY = Math.max(0, Math.min(imageH - height, Math.round(relY * imageH)));
+  return { originX, originY, width, height };
+}
+
 function touchDistance(touches: ReadonlyArray<{ pageX: number; pageY: number }>): number {
   if (touches.length < 2) return 0;
   const dx = touches[0].pageX - touches[1].pageX;
@@ -240,23 +278,33 @@ function IconToolButton({
   icon,
   label,
   active,
+  disabled,
   onPress,
   accent,
   text,
+  divider,
 }: {
   icon: ComponentProps<typeof Feather>["name"];
   label: string;
   active?: boolean;
+  disabled?: boolean;
   onPress: () => void;
   accent: string;
   text: string;
+  divider: string;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      disabled={disabled}
       onPress={onPress}
-      style={[iconToolStyles.btn, active && { borderColor: accent, backgroundColor: `${accent}12` }]}
+      style={[
+        iconToolStyles.btn,
+        { borderColor: divider },
+        active && { borderColor: accent, backgroundColor: `${accent}12` },
+        disabled && { opacity: 0.38 },
+      ]}
     >
       <Feather name={icon} size={20} color={active ? accent : text} />
     </Pressable>
@@ -269,7 +317,6 @@ const iconToolStyles = StyleSheet.create({
     height: 44,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(128,128,128,0.35)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -285,6 +332,8 @@ export function PhotoEditorModal({
   theme,
   mediaType = "photo",
   previewSubmitLabel = "Post",
+  onCropModeChange,
+  cropExitTick = 0,
 }: Props) {
   const isVideo = mediaType === "video";
   const insets = useSafeAreaInsets();
@@ -314,29 +363,147 @@ export function PhotoEditorModal({
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [manipulating, setManipulating] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersStripOpen, setFiltersStripOpen] = useState(false);
+  const [externalCropVisible, setExternalCropVisible] = useState(false);
   const [cropMode, setCropMode] = useState(false);
+  const [canUndo, setCanUndo] = useState(false);
+  const previewScrollRef = useRef<ScrollView>(null);
+  const captionInputRef = useRef<TextInput>(null);
+  const [editorKeyboardHeight, setEditorKeyboardHeight] = useState(0);
+  const editorKeyboardVisible = editorKeyboardHeight > 0;
+
+  useEffect(() => {
+    if (!visible) {
+      setEditorKeyboardHeight(0);
+      return;
+    }
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => setEditorKeyboardHeight(e.endCoordinates.height)
+    );
+    const hide = Keyboard.addListener("keyboardDidHide", () => setEditorKeyboardHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [visible]);
+
+  const captionPin = useScrollPinnedInput({
+    scrollRef: previewScrollRef,
+    inputRef: captionInputRef,
+    keyboardVisible: editorKeyboardVisible,
+    keyboardHeight: editorKeyboardHeight,
+    enabled: visible && step === "preview",
+  });
+
+  type EditorSnapshot = {
+    workingUri: string;
+    naturalW: number;
+    naturalH: number;
+    filter: PhotoFilterId;
+    strokes: Stroke[];
+    textOverlays: TextOverlay[];
+  };
+
+  const undoStackRef = useRef<EditorSnapshot[]>([]);
+  const restoringRef = useRef(false);
+  const editorStateRef = useRef({
+    workingUri: assetUri ?? "",
+    naturalW: assetWidth,
+    naturalH: assetHeight,
+    filter: "none" as PhotoFilterId,
+    strokes: [] as Stroke[],
+    textOverlays: [] as TextOverlay[],
+  });
+
+  useEffect(() => {
+    editorStateRef.current = { workingUri, naturalW, naturalH, filter, strokes, textOverlays };
+  }, [workingUri, naturalW, naturalH, filter, strokes, textOverlays]);
+
+  const cloneEditorSnapshot = useCallback(
+    (s: typeof editorStateRef.current): EditorSnapshot => ({
+      workingUri: s.workingUri,
+      naturalW: s.naturalW,
+      naturalH: s.naturalH,
+      filter: s.filter,
+      strokes: s.strokes.map((st) => ({
+        ...st,
+        points: st.points.map((p) => ({ ...p })),
+      })),
+      textOverlays: s.textOverlays.map((t) => ({ ...t })),
+    }),
+    []
+  );
+
+  const pushUndo = useCallback(() => {
+    if (restoringRef.current) return;
+    undoStackRef.current.push(cloneEditorSnapshot(editorStateRef.current));
+    if (undoStackRef.current.length > 40) undoStackRef.current.shift();
+    setCanUndo(true);
+  }, [cloneEditorSnapshot]);
+
+  const performUndo = useCallback(() => {
+    const snap = undoStackRef.current.pop();
+    if (!snap) {
+      setCanUndo(false);
+      return;
+    }
+    restoringRef.current = true;
+    setWorkingUri(snap.workingUri);
+    setNaturalW(snap.naturalW);
+    setNaturalH(snap.naturalH);
+    setFilter(snap.filter);
+    setStrokes(snap.strokes);
+    setTextOverlays(snap.textOverlays);
+    setCurrentStroke(null);
+    setSelectedTextId(null);
+    restoringRef.current = false;
+    setCanUndo(undoStackRef.current.length > 0);
+  }, []);
+
+  useEffect(() => {
+    onCropModeChange?.(externalCropVisible);
+  }, [externalCropVisible, onCropModeChange]);
+
+  useEffect(() => {
+    if (cropExitTick > 0) setExternalCropVisible(false);
+  }, [cropExitTick]);
   const [cropRect, setCropRect] = useState<CropRect>({ x: 0, y: 0, w: 100, h: 100 });
   const cropRectRef = useRef<CropRect>(cropRect);
   const cropPinchStartRef = useRef<{ distance: number; rect: CropRect } | null>(null);
   const [editToolsH, setEditToolsH] = useState(112);
-  const footerBottomPad = stickyFooterPadding(insets.bottom);
+  const footerBottomPad = photoEditorFooterPadding(insets.bottom);
   const navButtonStyle = theme.background.toLowerCase() === "#ffffff" ? "dark" : "light";
 
   useEffect(() => {
     if (!visible || Platform.OS !== "android") return;
+    void NavigationBar.setVisibilityAsync("visible");
     void NavigationBar.setBackgroundColorAsync(theme.background);
     void NavigationBar.setButtonStyleAsync(navButtonStyle);
+    void NavigationBar.setBorderColorAsync(theme.background).catch(() => undefined);
   }, [visible, theme.background, navButtonStyle]);
 
+  useEffect(() => {
+    if (!visible || !workingUri || isVideo) return;
+    Image.getSize(
+      workingUri,
+      (w, h) => {
+        if (w > 0 && h > 0) {
+          setNaturalW(w);
+          setNaturalH(h);
+        }
+      },
+      () => undefined
+    );
+  }, [visible, workingUri, isVideo]);
+
   const { displayWidth, displayImgH } = useMemo(() => {
-    const horizontalPad = 32;
-    const maxW = Math.min(Math.max(windowW - horizontalPad, 260), 420);
+    const horizontalPad = 24;
+    const maxW = Math.max(windowW - horizontalPad, 260);
     const headerReserve = 52;
     const footerReserve = 64 + footerBottomPad;
     const previewCaptionReserve = step === "preview" ? 88 : 0;
-    const toolsReserve = step === "edit" ? editToolsH + (drawMode && !isVideo ? 88 : 0) : 0;
-    const hintReserve = step === "edit" && drawMode && !isVideo ? 28 : 0;
+    const toolsReserve = step === "edit" ? editToolsH : 0;
     const availableH =
       windowH -
       insets.top -
@@ -344,7 +511,6 @@ export function PhotoEditorModal({
       headerReserve -
       footerReserve -
       toolsReserve -
-      hintReserve -
       previewCaptionReserve -
       24;
     const maxImgH = Math.max(120, Math.min(availableH, 520));
@@ -365,9 +531,24 @@ export function PhotoEditorModal({
     insets.bottom,
     footerBottomPad,
     editToolsH,
-    drawMode,
     isVideo,
   ]);
+
+  /** Letterboxed image bounds when using `contain` — crop maps to these pixels. */
+  const imageFrame = useMemo(() => {
+    if (naturalW <= 0 || naturalH <= 0) {
+      return { x: 0, y: 0, w: displayWidth, h: displayImgH };
+    }
+    const scale = Math.min(displayWidth / naturalW, displayImgH / naturalH);
+    const w = Math.round(naturalW * scale);
+    const h = Math.round(naturalH * scale);
+    return {
+      x: Math.round((displayWidth - w) / 2),
+      y: Math.round((displayImgH - h) / 2),
+      w,
+      h,
+    };
+  }, [naturalW, naturalH, displayWidth, displayImgH]);
 
   useEffect(() => {
     if (!visible) return;
@@ -408,11 +589,14 @@ export function PhotoEditorModal({
     setDrawColor(PRESET_COLORS[0]);
     setTextModalColor(PRESET_COLORS[0]);
     setRgbPickerOpen(false);
-    setFiltersOpen(false);
+    setFiltersStripOpen(false);
+    setExternalCropVisible(false);
     setCropMode(false);
     setManipulating(false);
     setTextModalFontId(FONT_OPTIONS[0].id);
     setTextModalFontSize(18);
+    undoStackRef.current = [];
+    setCanUndo(false);
   }, [visible, assetUri, assetWidth, assetHeight]);
 
   const filterOverlayStyle = useMemo(() => {
@@ -444,6 +628,7 @@ export function PhotoEditorModal({
 
   const rotate90 = useCallback(async () => {
     if (!workingUri || manipulating) return;
+    pushUndo();
     setManipulating(true);
     try {
       const localUri = await ensureLocalManipulatorUri(workingUri);
@@ -452,54 +637,71 @@ export function PhotoEditorModal({
         format: SaveFormat.JPEG,
       });
       await applyWorking(result);
+      setCropMode(false);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       Alert.alert("Could not rotate", detail.slice(0, 120) || "Try again.");
     } finally {
       setManipulating(false);
     }
-  }, [workingUri, manipulating, applyWorking]);
+  }, [workingUri, manipulating, applyWorking, pushUndo]);
 
-  const enterCropMode = useCallback(() => {
+  const exitExclusiveTools = useCallback(() => {
+    setCropMode(false);
+    setDrawMode(false);
+    setFiltersStripOpen(false);
+    setExternalCropVisible(false);
+    setSelectedTextId(null);
+  }, []);
+
+  const openExternalCrop = useCallback(() => {
     if (!workingUri || isVideo || manipulating) return;
     setDrawMode(false);
+    setFiltersStripOpen(false);
     setSelectedTextId(null);
-    const margin = 0.08;
-    const w = displayWidth * (1 - margin * 2);
-    const h = displayImgH * (1 - margin * 2);
-    const next = clampCropRect(
-      { x: displayWidth * margin, y: displayImgH * margin, w, h },
-      displayWidth,
-      displayImgH
-    );
-    cropRectRef.current = next;
-    setCropRect(next);
-    setCropMode(true);
-  }, [workingUri, isVideo, manipulating, displayWidth, displayImgH]);
+    setCropMode(false);
+    setExternalCropVisible(true);
+  }, [workingUri, isVideo, manipulating]);
+
+  const handleExternalCropComplete = useCallback(
+    async (data: { uri: string; width: number; height: number }) => {
+      pushUndo();
+      setWorkingUri(data.uri);
+      setNaturalW(data.width);
+      setNaturalH(data.height);
+      setStrokes([]);
+      setTextOverlays([]);
+      setCurrentStroke(null);
+      setSelectedTextId(null);
+      setExternalCropVisible(false);
+      setCropMode(false);
+    },
+    [pushUndo]
+  );
+
+  const enterCropMode = useCallback(() => {
+    openExternalCrop();
+  }, [openExternalCrop]);
 
   const applyCropFromDisplayRect = useCallback(async () => {
     if (!workingUri || manipulating) return;
     setManipulating(true);
     try {
       const localUri = await ensureLocalManipulatorUri(workingUri);
-      let w = naturalW;
-      let h = naturalH;
-      if (w <= 0 || h <= 0) {
-        const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-          Image.getSize(localUri, (width, height) => resolve({ width, height }), reject);
-        });
-        w = dims.width;
-        h = dims.height;
-        setNaturalW(w);
-        setNaturalH(h);
-      }
+      const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+        Image.getSize(localUri, (width, height) => resolve({ width, height }), reject);
+      });
+      const w = dims.width;
+      const h = dims.height;
+      setNaturalW(w);
+      setNaturalH(h);
       const rect = cropRectRef.current;
-      const scaleX = w / displayWidth;
-      const scaleY = h / displayImgH;
-      const cropW = Math.max(2, Math.floor(rect.w * scaleX));
-      const cropH = Math.max(2, Math.floor(rect.h * scaleY));
-      const originX = Math.max(0, Math.min(w - cropW, Math.floor(rect.x * scaleX)));
-      const originY = Math.max(0, Math.min(h - cropH, Math.floor(rect.y * scaleY)));
+      const { originX, originY, width: cropW, height: cropH } = cropRectToPixelCrop(
+        rect,
+        imageFrame,
+        w,
+        h
+      );
       const result = await manipulateAsync(
         localUri,
         [{ crop: { originX, originY, width: cropW, height: cropH } }],
@@ -513,15 +715,15 @@ export function PhotoEditorModal({
     } finally {
       setManipulating(false);
     }
-  }, [workingUri, naturalW, naturalH, manipulating, applyWorking, displayWidth, displayImgH]);
+  }, [workingUri, naturalW, naturalH, manipulating, applyWorking, imageFrame]);
 
   const updateCropRect = useCallback(
     (next: CropRect) => {
-      const clamped = clampCropRect(next, displayWidth, displayImgH);
+      const clamped = clampCropRectInFrame(next, imageFrame);
       cropRectRef.current = clamped;
       setCropRect(clamped);
     },
-    [displayWidth, displayImgH]
+    [imageFrame]
   );
 
   const cropDragStartRef = useRef<CropRect | null>(null);
@@ -633,11 +835,12 @@ export function PhotoEditorModal({
             return;
           }
           const id = `s-${Date.now()}`;
+          pushUndo();
           setStrokes((s) => [...s, { id, points: pts, color: drawColor, strokeWidth }]);
           setCurrentStroke(null);
         },
       }),
-    [drawMode, drawColor, strokeWidth]
+    [drawMode, drawColor, strokeWidth, pushUndo]
   );
 
   const runExportToPreview = useCallback(async () => {
@@ -681,13 +884,15 @@ export function PhotoEditorModal({
         fontWeight: o.fontWeight,
         fontStyle: o.fontStyle,
       }));
-      onComplete({
-        uri: previewUri,
-        width: naturalW,
-        height: naturalH,
-        caption: caption.trim(),
-        mediaKind: "video",
-        videoTextOverlays,
+      void probeVideoDisplayDimensions(previewUri).then((dims) => {
+        onComplete({
+          uri: previewUri,
+          width: dims?.width ?? naturalW,
+          height: dims?.height ?? naturalH,
+          caption: caption.trim(),
+          mediaKind: "video",
+          videoTextOverlays,
+        });
       });
       return;
     }
@@ -738,6 +943,7 @@ export function PhotoEditorModal({
   const addTextOverlay = () => {
     const t = textDraft.trim();
     if (!t) return;
+    pushUndo();
     const id = `t-${Date.now()}`;
     const w = Math.min(220, displayWidth - 24);
     const fs = textModalFontSize;
@@ -787,6 +993,7 @@ export function PhotoEditorModal({
       onStartShouldSetPanResponder: () => !drawMode,
       onMoveShouldSetPanResponder: () => !drawMode,
       onPanResponderGrant: () => {
+        pushUndo();
         setSelectedTextId(id);
         const o = textOverlaysRef.current.find((x) => x.id === id);
         dragStartRef.current = { ox: o?.x ?? 0, oy: o?.y ?? 0 };
@@ -817,6 +1024,7 @@ export function PhotoEditorModal({
       onStartShouldSetPanResponder: () => !drawMode,
       onMoveShouldSetPanResponder: () => !drawMode,
       onPanResponderGrant: () => {
+        pushUndo();
         setSelectedTextId(id);
         const o = textOverlaysRef.current.find((x) => x.id === id);
         if (!o) return;
@@ -922,7 +1130,7 @@ export function PhotoEditorModal({
         style={[styles.exportBox, { width: displayWidth, height: displayImgH }]}
       >
         <Pressable
-          style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
+          style={StyleSheet.absoluteFillObject}
           onPress={() => {
             if (!drawMode) setSelectedTextId(null);
           }}
@@ -931,8 +1139,8 @@ export function PhotoEditorModal({
             isVideo ? (
               <Video
                 source={{ uri: workingUri }}
-                style={{ width: displayWidth, height: displayImgH, borderRadius: 12, backgroundColor: theme.divider }}
-                resizeMode={ResizeMode.COVER}
+                style={{ width: displayWidth, height: displayImgH, backgroundColor: theme.divider }}
+                resizeMode={ResizeMode.CONTAIN}
                 shouldPlay={false}
                 isLooping={false}
                 useNativeControls={false}
@@ -940,7 +1148,14 @@ export function PhotoEditorModal({
             ) : (
               <Image
                 source={{ uri: workingUri }}
-                style={{ width: displayWidth, height: displayImgH, borderRadius: 12, backgroundColor: theme.divider }}
+                style={{
+                  position: "absolute",
+                  left: imageFrame.x,
+                  top: imageFrame.y,
+                  width: imageFrame.w,
+                  height: imageFrame.h,
+                  backgroundColor: theme.divider,
+                }}
                 resizeMode="cover"
               />
             )
@@ -949,7 +1164,6 @@ export function PhotoEditorModal({
               style={{
                 width: displayWidth,
                 height: displayImgH,
-                borderRadius: 12,
                 backgroundColor: theme.divider,
                 alignItems: "center",
                 justifyContent: "center",
@@ -960,12 +1174,24 @@ export function PhotoEditorModal({
           )}
         </Pressable>
         {!isVideo && filter !== "none" ? (
-          <View pointerEvents="none" style={[StyleSheet.absoluteFillObject, filterOverlayStyle, { borderRadius: 12 }]} />
+          <View
+            pointerEvents="none"
+            style={[
+              {
+                position: "absolute",
+                left: imageFrame.x,
+                top: imageFrame.y,
+                width: imageFrame.w,
+                height: imageFrame.h,
+              },
+              filterOverlayStyle,
+            ]}
+          />
         ) : null}
         <Svg
           width={displayWidth}
           height={displayImgH}
-          style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
+          style={StyleSheet.absoluteFillObject}
           pointerEvents="none"
         >
           {strokes.map((s) => (
@@ -1069,13 +1295,10 @@ export function PhotoEditorModal({
           );
         })}
         {!isVideo && drawMode ? (
-          <View
-            {...panResponderFixed.panHandlers}
-            style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
-          />
+          <View {...panResponderFixed.panHandlers} style={StyleSheet.absoluteFillObject} />
         ) : null}
         {cropMode && !isVideo ? (
-          <View style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]} pointerEvents="box-none">
+          <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
             <View
               pointerEvents="none"
               style={[styles.cropShade, { left: 0, top: 0, width: displayWidth, height: cropRect.y }]}
@@ -1135,11 +1358,21 @@ export function PhotoEditorModal({
   );
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={() => {
+        if (externalCropVisible) {
+          setExternalCropVisible(false);
+          return;
+        }
+        onClose();
+      }}
+    >
       <StatusBar style={navButtonStyle === "light" ? "light" : "dark"} backgroundColor={theme.background} />
       <KeyboardAvoidingView
         style={[styles.shell, { paddingTop: insets.top + 8 }]}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
         keyboardVerticalOffset={insets.top + 8}
       >
         {Platform.OS === "ios" ? (
@@ -1181,18 +1414,12 @@ export function PhotoEditorModal({
         </View>
 
         {step === "edit" ? (
-          <View style={styles.editBody}>
-            <View style={styles.editMain}>
-              {drawMode && !isVideo ? <Text style={styles.hint}>Drawing on — paint with your finger</Text> : null}
-              <View style={styles.canvasArea}>{editorCanvas}</View>
+          <View style={styles.editStepColumn}>
+            <View style={styles.editBody}>
+              <View style={styles.editMain}>
+                <View style={styles.canvasArea}>{editorCanvas}</View>
 
-              <View
-                style={styles.editToolsDock}
-                onLayout={(e) => {
-                  const h = Math.ceil(e.nativeEvent.layout.height);
-                  if (h > 0 && h !== editToolsH) setEditToolsH(h);
-                }}
-              >
+                <View style={styles.editToolsDock}>
                 {isVideo ? (
                   <View style={styles.toolRow}>
                     <IconToolButton
@@ -1201,53 +1428,162 @@ export function PhotoEditorModal({
                       onPress={() => setTextModalOpen(true)}
                       accent={theme.accent}
                       text={theme.text}
+                      divider={theme.divider}
                     />
                   </View>
                 ) : (
                   <>
-                    <View style={styles.toolRow}>
+                    {filtersStripOpen ? (
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.filterStripScroll}
+                        contentContainerStyle={styles.filterStripContent}
+                      >
+                        {FILTER_LABELS.map((f) => {
+                          const previewOverlay = (() => {
+                            switch (f.id) {
+                              case "warm":
+                                return { backgroundColor: "rgba(255, 180, 80, 0.45)" };
+                              case "cool":
+                                return { backgroundColor: "rgba(80, 160, 255, 0.4)" };
+                              case "mono":
+                                return { backgroundColor: "rgba(128, 128, 128, 0.55)" };
+                              case "sepia":
+                                return { backgroundColor: "rgba(160, 120, 60, 0.5)" };
+                              default:
+                                return null;
+                            }
+                          })();
+                          const selected = filter === f.id;
+                          return (
+                            <Pressable
+                              key={f.id}
+                              onPress={() => {
+                                if (filter !== f.id) pushUndo();
+                                setFilter(f.id);
+                              }}
+                              style={styles.filterStripItem}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Filter ${f.label}`}
+                            >
+                              <View
+                                style={[
+                                  styles.filterStripLabelPill,
+                                  selected && styles.filterStripLabelPillActive,
+                                ]}
+                              >
+                                <Text style={styles.filterStripLabelText}>{f.label}</Text>
+                              </View>
+                              <View
+                                style={[
+                                  styles.filterStripThumb,
+                                  { borderColor: selected ? theme.accent : theme.divider },
+                                ]}
+                              >
+                                {previewOverlay ? (
+                                  <View style={[StyleSheet.absoluteFill, previewOverlay]} />
+                                ) : null}
+                                <Feather
+                                  name="image"
+                                  size={18}
+                                  color={selected ? theme.accent : theme.subtleText}
+                                />
+                              </View>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    ) : null}
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={styles.toolRowScroll}
+                      contentContainerStyle={styles.toolRow}
+                      onLayout={(e) => {
+                        const h = Math.ceil(e.nativeEvent.layout.height);
+                        if (h > 0 && h !== editToolsH) setEditToolsH(h);
+                      }}
+                    >
                       <IconToolButton
                         icon="sliders"
                         label="Filters"
-                        active={filter !== "none" || filtersOpen}
-                        onPress={() => setFiltersOpen(true)}
+                        active={filter !== "none" || filtersStripOpen}
+                        onPress={() => {
+                          setCropMode(false);
+                          setDrawMode(false);
+                          setExternalCropVisible(false);
+                          setSelectedTextId(null);
+                          setFiltersStripOpen((open) => !open);
+                        }}
                         accent={theme.accent}
                         text={theme.text}
+                        divider={theme.divider}
                       />
                       <IconToolButton
-                        icon="rotate-cw"
+                        icon="refresh-cw"
                         label="Rotate"
-                        onPress={() => void rotate90()}
+                        onPress={() => {
+                          exitExclusiveTools();
+                          void rotate90();
+                        }}
                         accent={theme.accent}
                         text={theme.text}
+                        divider={theme.divider}
                       />
                       <IconToolButton
                         icon="crop"
                         label="Crop"
-                        active={cropMode}
-                        onPress={enterCropMode}
+                        active={externalCropVisible}
+                        onPress={openExternalCrop}
                         accent={theme.accent}
                         text={theme.text}
+                        divider={theme.divider}
                       />
                       <IconToolButton
                         icon="edit-3"
                         label="Draw"
                         active={drawMode}
-                        onPress={() => setDrawMode((d) => !d)}
+                        onPress={() => {
+                          if (drawMode) {
+                            setDrawMode(false);
+                            return;
+                          }
+                          setCropMode(false);
+                          setFiltersStripOpen(false);
+                          setExternalCropVisible(false);
+                          setSelectedTextId(null);
+                          setDrawMode(true);
+                        }}
                         accent={theme.accent}
                         text={theme.text}
+                        divider={theme.divider}
                       />
                       <IconToolButton
                         icon="type"
                         label="Add text"
-                        onPress={() => setTextModalOpen(true)}
+                        onPress={() => {
+                          exitExclusiveTools();
+                          setTextModalOpen(true);
+                        }}
                         accent={theme.accent}
                         text={theme.text}
+                        divider={theme.divider}
+                      />
+                      <IconToolButton
+                        icon="rotate-ccw"
+                        label="Undo"
+                        disabled={!canUndo || manipulating || externalCropVisible}
+                        onPress={performUndo}
+                        accent={theme.accent}
+                        text={theme.text}
+                        divider={theme.divider}
                       />
                       <IconToolButton
                         icon="trash-2"
                         label="Clear overlays"
                         onPress={() => {
+                          if (strokes.length > 0 || textOverlays.length > 0) pushUndo();
                           setStrokes([]);
                           setTextOverlays([]);
                           setCurrentStroke(null);
@@ -1255,8 +1591,9 @@ export function PhotoEditorModal({
                         }}
                         accent={theme.accent}
                         text={theme.text}
+                        divider={theme.divider}
                       />
-                    </View>
+                    </ScrollView>
 
                     {drawMode ? (
                       <>
@@ -1308,37 +1645,21 @@ export function PhotoEditorModal({
                     ) : null}
                   </>
                 )}
+                </View>
               </View>
             </View>
 
-            <View style={[styles.stickyFooter, { paddingBottom: footerBottomPad }]}>
-              {cropMode ? (
-                <View style={styles.cropFooterRow}>
-                  <Pressable
-                    style={styles.secondaryWide}
-                    onPress={() => setCropMode(false)}
-                    accessibilityLabel="Cancel crop"
-                  >
-                    <Text style={styles.secondaryWideText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.primaryWide,
-                      styles.cropApplyBtn,
-                      manipulating && styles.primaryWideDisabled,
-                    ]}
-                    onPress={() => void applyCropFromDisplayRect()}
-                    disabled={manipulating}
-                    accessibilityLabel="Apply crop"
-                  >
-                    {manipulating ? (
-                      <ActivityIndicator color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.primaryWideText}>OK</Text>
-                    )}
-                  </Pressable>
-                </View>
-              ) : (
+            <SafeAreaView edges={["bottom"]} style={{ backgroundColor: theme.background }}>
+              <View
+                style={[
+                  styles.stickyFooter,
+                  {
+                    paddingTop: 8,
+                    paddingBottom: footerBottomPad,
+                    backgroundColor: theme.background,
+                  },
+                ]}
+              >
                 <Pressable
                   style={[
                     styles.primaryWide,
@@ -1346,122 +1667,130 @@ export function PhotoEditorModal({
                     (exporting || !workingUri || manipulating) && styles.primaryWideDisabled,
                   ]}
                   onPress={() => void runExportToPreview()}
-                  disabled={exporting || !workingUri || manipulating}
+                  disabled={exporting || !workingUri || manipulating || externalCropVisible}
                   accessibilityLabel="Continue to preview"
                 >
                   {exporting ? (
                     <ActivityIndicator color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.primaryWideText}>OK</Text>
+                    <Text style={styles.primaryWideText}>Continue</Text>
                   )}
                 </Pressable>
-              )}
-            </View>
+              </View>
+            </SafeAreaView>
           </View>
         ) : (
           <View style={styles.previewBody}>
-            <View style={styles.previewMain}>
-              {previewUri ? (
-                <View
-                  style={[
-                    styles.previewMediaCard,
-                    {
-                      width: displayWidth,
-                      borderColor: theme.divider,
-                      backgroundColor: theme.background,
-                    },
-                  ]}
-                >
-                  {isVideo ? (
-                    <Video
-                      source={{ uri: previewUri }}
-                      style={[
-                        styles.previewImageAttached,
-                        { width: displayWidth, height: displayImgH, backgroundColor: theme.divider },
-                      ]}
-                      resizeMode={ResizeMode.COVER}
-                      shouldPlay
-                      isLooping
-                      useNativeControls
-                    />
-                  ) : (
-                    <Image
-                      source={{ uri: previewUri }}
-                      style={[
-                        styles.previewImageAttached,
-                        { width: displayWidth, height: displayImgH, backgroundColor: theme.divider },
-                      ]}
-                      resizeMode="cover"
-                    />
-                  )}
-                  <TextInput
-                    value={caption}
-                    onChangeText={setCaption}
-                    placeholder={
-                      isVideo ? "Add a caption for this video…" : "Add a caption for this photo…"
-                    }
-                    placeholderTextColor={theme.subtleText}
+            <ScrollView
+              ref={previewScrollRef}
+              style={{ flex: 1 }}
+              contentContainerStyle={{
+                flexGrow: 1,
+                paddingBottom: editorKeyboardVisible ? keyboardScrollPadding(editorKeyboardHeight, 8) : 8,
+              }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              onScroll={captionPin.onScroll}
+              scrollEventThrottle={16}
+            >
+              <View style={styles.previewMain}>
+                {previewUri ? (
+                  <View
                     style={[
-                      styles.captionInputAttached,
+                      styles.previewMediaCard,
                       {
-                        color: theme.text,
-                        borderTopColor: theme.divider,
+                        width: displayWidth,
+                        borderColor: theme.divider,
                         backgroundColor: theme.background,
                       },
                     ]}
-                    multiline
-                    maxLength={2000}
-                    returnKeyType="done"
-                    inputAccessoryViewID={Platform.OS === "ios" ? "photoCaptionAccessory" : undefined}
-                  />
-                </View>
-              ) : null}
-            </View>
-            <View style={[styles.stickyFooter, styles.previewFooter, { paddingBottom: footerBottomPad }]}>
-              <Pressable
-                style={styles.previewBackBtn}
-                onPress={() => setStep("edit")}
-                accessibilityLabel="Back to edit"
+                  >
+                    {isVideo ? (
+                      <Video
+                        source={{ uri: previewUri }}
+                        style={[
+                          styles.previewImageAttached,
+                          { width: displayWidth, height: displayImgH, backgroundColor: theme.divider },
+                        ]}
+                        resizeMode={ResizeMode.COVER}
+                        shouldPlay
+                        isLooping
+                        useNativeControls
+                      />
+                    ) : (
+                      <Image
+                        source={{ uri: previewUri }}
+                        style={[
+                          styles.previewImageAttached,
+                          { width: displayWidth, height: displayImgH, backgroundColor: theme.divider },
+                        ]}
+                        resizeMode="cover"
+                      />
+                    )}
+                    <TextInput
+                      ref={captionInputRef}
+                      value={caption}
+                      onChangeText={setCaption}
+                      onFocus={captionPin.pinOnFocus}
+                      placeholder={
+                        isVideo ? "Add a caption for this video…" : "Add a caption for this photo…"
+                      }
+                      placeholderTextColor={theme.subtleText}
+                      style={[
+                        styles.captionInputAttached,
+                        {
+                          color: theme.text,
+                          borderTopColor: theme.divider,
+                          backgroundColor: theme.background,
+                        },
+                      ]}
+                      multiline
+                      maxLength={2000}
+                      returnKeyType="done"
+                      inputAccessoryViewID={Platform.OS === "ios" ? "photoCaptionAccessory" : undefined}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            </ScrollView>
+            <SafeAreaView edges={["bottom"]} style={{ backgroundColor: theme.background }}>
+              <View
+                style={[
+                  styles.stickyFooter,
+                  styles.previewFooter,
+                  {
+                    paddingTop: 8,
+                    paddingBottom: footerBottomPad,
+                    backgroundColor: theme.background,
+                  },
+                ]}
               >
-                <Text style={styles.previewBackBtnText}>Back</Text>
-              </Pressable>
-              <Pressable
-                style={styles.previewPostBtn}
-                onPress={confirmPost}
-                accessibilityLabel={previewSubmitLabel}
-              >
-                <Text style={styles.previewPostBtnText}>Send</Text>
-              </Pressable>
-            </View>
+                <Pressable
+                  style={styles.previewBackBtn}
+                  onPress={() => setStep("edit")}
+                  accessibilityLabel="Back to edit"
+                >
+                  <Text style={styles.previewBackBtnText}>Back</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.previewPostBtn}
+                  onPress={confirmPost}
+                  accessibilityLabel={previewSubmitLabel}
+                >
+                  <Text style={styles.previewPostBtnText}>{previewSubmitLabel}</Text>
+                </Pressable>
+              </View>
+            </SafeAreaView>
           </View>
         )}
 
-        <Modal visible={filtersOpen} transparent animationType="fade" onRequestClose={() => setFiltersOpen(false)}>
-          <Pressable style={styles.paletteOverlay} onPress={() => setFiltersOpen(false)}>
-            <Pressable style={styles.filterPickerCard} onPress={() => {}}>
-              <Text style={styles.paletteTitle}>Filters</Text>
-              <View style={styles.filterPickerGrid}>
-                {FILTER_LABELS.map((f) => (
-                  <Pressable
-                    key={f.id}
-                    onPress={() => {
-                      setFilter(f.id);
-                      setFiltersOpen(false);
-                    }}
-                    style={[styles.filterChip, filter === f.id && styles.filterChipActive]}
-                  >
-                    <Text style={[styles.filterChipText, filter === f.id && styles.filterChipTextActive]}>
-                      {f.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Pressable style={styles.rgbPickerPrimaryBtn} onPress={() => setFiltersOpen(false)}>
-                <Text style={styles.rgbPickerPrimaryBtnText}>Done</Text>
-              </Pressable>
-            </Pressable>
-          </Pressable>
-        </Modal>
+        <ImageCropModal
+          visible={externalCropVisible}
+          imageUri={workingUri || null}
+          theme={theme}
+          onComplete={handleExternalCropComplete}
+          onCancel={() => setExternalCropVisible(false)}
+        />
 
         <Modal visible={rgbPickerOpen} transparent animationType="fade" onRequestClose={() => setRgbPickerOpen(false)}>
           <Pressable style={styles.paletteOverlay} onPress={() => setRgbPickerOpen(false)}>
@@ -1537,10 +1866,24 @@ export function PhotoEditorModal({
         <Modal visible={textModalOpen} transparent animationType="fade">
           <KeyboardAvoidingView
             style={{ flex: 1 }}
-            behavior={Platform.OS === "ios" ? "padding" : "padding"}
+            behavior="padding"
             keyboardVerticalOffset={insets.top}
           >
-            <View style={styles.textModalOverlay}>
+            <View
+              style={[
+                styles.textModalOverlay,
+                editorKeyboardVisible ? styles.textModalOverlayKeyboard : null,
+              ]}
+            >
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={[
+                  styles.textModalScrollContent,
+                  editorKeyboardVisible
+                    ? { paddingBottom: keyboardScrollPadding(editorKeyboardHeight, 12) }
+                    : null,
+                ]}
+              >
               <View style={styles.textModalCard}>
                 <Text style={styles.textModalTitle}>Label on photo</Text>
                 <TextInput
@@ -1625,6 +1968,7 @@ export function PhotoEditorModal({
                   </Pressable>
                 </View>
               </View>
+              </ScrollView>
             </View>
           </KeyboardAvoidingView>
         </Modal>
@@ -1649,6 +1993,10 @@ function makeStyles(theme: PhotoEditorTheme) {
     headerBtn: { padding: 8 },
     headerBtnText: { color: theme.accent, fontSize: 16, fontWeight: "600" },
     headerTitle: { color: theme.text, fontSize: 17, fontWeight: "700" },
+    editStepColumn: {
+      flex: 1,
+      minHeight: 0,
+    },
     editBody: {
       flex: 1,
       minHeight: 0,
@@ -1687,19 +2035,20 @@ function makeStyles(theme: PhotoEditorTheme) {
     },
     previewMediaCard: {
       alignSelf: "center",
-      borderRadius: 12,
+      borderRadius: 0,
       borderWidth: 1,
       overflow: "hidden",
     },
     previewImageAttached: {
-      borderTopLeftRadius: 11,
-      borderTopRightRadius: 11,
+      borderTopLeftRadius: 0,
+      borderTopRightRadius: 0,
     },
     previewFooter: {
       flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      gap: 12,
+      alignItems: "stretch",
+      gap: 4,
+      paddingHorizontal: 6,
+      paddingTop: 6,
     },
     filterPickerCard: {
       borderRadius: 14,
@@ -1710,16 +2059,13 @@ function makeStyles(theme: PhotoEditorTheme) {
       alignSelf: "center",
     },
     filterPickerGrid: {
-      flexDirection: "row",
-      flexWrap: "wrap",
       gap: 8,
-      justifyContent: "center",
       marginBottom: 12,
     },
     previewBackBtn: {
-      width: 52,
-      height: 52,
-      borderRadius: 12,
+      flex: 1,
+      minHeight: 64,
+      borderRadius: 8,
       borderWidth: 2,
       borderColor: theme.divider,
       backgroundColor: theme.background,
@@ -1728,20 +2074,20 @@ function makeStyles(theme: PhotoEditorTheme) {
     },
     previewBackBtnText: {
       color: theme.text,
-      fontSize: 17,
-      fontWeight: "600",
+      fontSize: 18,
+      fontWeight: "700",
     },
     previewPostBtn: {
-      width: 52,
-      height: 52,
-      borderRadius: 12,
+      flex: 1,
+      minHeight: 64,
+      borderRadius: 8,
       backgroundColor: theme.accent,
       alignItems: "center",
       justifyContent: "center",
     },
     previewPostBtnText: {
       color: "#FFFFFF",
-      fontSize: 17,
+      fontSize: 18,
       fontWeight: "700",
     },
     accessoryBar: {
@@ -1775,7 +2121,7 @@ function makeStyles(theme: PhotoEditorTheme) {
     },
     exportBox: {
       position: "relative",
-      borderRadius: 12,
+      borderRadius: 0,
       overflow: "hidden",
     },
     cropShade: {
@@ -1802,12 +2148,14 @@ function makeStyles(theme: PhotoEditorTheme) {
     cropSe: { right: -CROP_HANDLE / 2, bottom: -CROP_HANDLE / 2 },
     cropFooterRow: {
       flexDirection: "row",
-      gap: 10,
-      alignItems: "center",
+      gap: 8,
+      alignItems: "stretch",
+      paddingHorizontal: 10,
     },
     cropApplyBtn: {
       flex: 1,
       marginTop: 0,
+      minHeight: 58,
     },
     sectionLabel: {
       color: theme.subtleText,
@@ -1825,13 +2173,14 @@ function makeStyles(theme: PhotoEditorTheme) {
     },
     filterChip: {
       paddingHorizontal: 12,
-      paddingVertical: 8,
-      minHeight: 38,
+      paddingVertical: 10,
+      minHeight: 44,
       justifyContent: "center",
       borderRadius: 10,
       borderWidth: 1,
       borderColor: theme.divider,
       backgroundColor: theme.background,
+      width: "100%",
     },
     filterChipActive: {
       borderColor: theme.accent,
@@ -1839,12 +2188,56 @@ function makeStyles(theme: PhotoEditorTheme) {
     },
     filterChipText: { color: theme.text, fontSize: 13, fontWeight: "600" },
     filterChipTextActive: { color: theme.accent, fontWeight: "700" },
+    filterStripScroll: {
+      marginBottom: 8,
+      maxHeight: 88,
+    },
+    filterStripContent: {
+      flexDirection: "row",
+      alignItems: "flex-end",
+      gap: 10,
+      paddingHorizontal: 4,
+    },
+    filterStripItem: {
+      alignItems: "center",
+      width: 64,
+    },
+    filterStripLabelPill: {
+      backgroundColor: "#000000",
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      marginBottom: 6,
+      minWidth: 52,
+      alignItems: "center",
+    },
+    filterStripLabelPillActive: {
+      borderWidth: 1,
+      borderColor: theme.accent,
+    },
+    filterStripLabelText: {
+      color: "#FFFFFF",
+      fontSize: 11,
+      fontWeight: "700",
+    },
+    filterStripThumb: {
+      width: 48,
+      height: 48,
+      borderRadius: 10,
+      borderWidth: 1,
+      backgroundColor: "#1A1A1A",
+      alignItems: "center",
+      justifyContent: "center",
+      overflow: "hidden",
+    },
+    toolRowScroll: {
+      marginBottom: 8,
+    },
     toolRow: {
       flexDirection: "row",
-      flexWrap: "wrap",
       gap: 8,
-      marginBottom: 8,
-      justifyContent: "center",
+      paddingHorizontal: 4,
+      alignItems: "center",
     },
     toolBtn: {
       paddingHorizontal: 12,
@@ -1913,11 +2306,13 @@ function makeStyles(theme: PhotoEditorTheme) {
     },
     secondaryWide: {
       flex: 1,
+      minHeight: 58,
       paddingVertical: 12,
       borderRadius: 10,
       borderWidth: 1,
       borderColor: theme.divider,
       alignItems: "center",
+      justifyContent: "center",
     },
     secondaryWideText: {
       color: theme.text,
@@ -1925,12 +2320,13 @@ function makeStyles(theme: PhotoEditorTheme) {
       fontWeight: "600",
     },
     primaryWide: {
-      marginTop: 8,
-      minHeight: 52,
-      borderRadius: 12,
+      marginTop: 0,
+      minHeight: 58,
+      borderRadius: 10,
       backgroundColor: theme.accent,
       alignItems: "center",
       justifyContent: "center",
+      flex: 1,
     },
     primaryWideDisabled: { opacity: 0.6 },
     primaryWideText: {
@@ -1956,6 +2352,14 @@ function makeStyles(theme: PhotoEditorTheme) {
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "center",
       padding: 24,
+    },
+    textModalOverlayKeyboard: {
+      justifyContent: "flex-end",
+      paddingBottom: 0,
+    },
+    textModalScrollContent: {
+      flexGrow: 1,
+      justifyContent: "center",
     },
     textModalCard: {
       borderRadius: 14,

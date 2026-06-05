@@ -1,5 +1,5 @@
 ---
-description: Always document project changes
+description: Always document project changes; minute log in DATED_CHANGE_LOG.md
 alwaysApply: true
 ---
 
@@ -9,3 +9,16 @@ alwaysApply: true
 - Planning specs, exports, and parity notes live under **`Planning/`** at the repo root; keep them aligned when product or verification behavior changes.
 - At minimum, review and update the applicable planning docs and test-scenario docs (including root-level `FEATURE_TEST_SCENARIOS.md`, `PRODUCTION_READINESS_CHECKLIST.md`, and `RUN_MVP_LOCALLY_AND_ON_PHONE.md` when relevant).
 - If a new feature or rule is added, document it in the same task by default unless the user explicitly says not to.
+
+## Minute-precision log (mandatory on code changes)
+
+- See **`timestamped-changelog.mdc`**: every `(code)` edit appends **`Planning/DATED_CHANGE_LOG.md`** with a to-the-minute timestamp and brief description.
+- **`Planning/CHANGELOG.md`** remains the human-facing release notes (topic buckets); it does not replace the dated log.
+
+## Cursor workflow (this repo)
+
+| Step | Rule file |
+|------|-----------|
+| User must start message with `(code)` to allow edits | `code-permission-gate.mdc` |
+| After edits, ask if user wants a git commit | `commit-prompt-after-code.mdc` |
+| Append DATED_CHANGE_LOG entry per change batch | `timestamped-changelog.mdc` |

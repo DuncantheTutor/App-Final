@@ -1,0 +1,48 @@
+---
+description: Only edit/create/delete repo files when the user starts the message with (code)
+alwaysApply: true
+---
+
+# Code permission gate — `(code)`
+
+## Rule
+
+The user must start their message with **`(code)`** on the **first line** (case-insensitive; optional space after) to grant permission to change the repository.
+
+| User message starts with | Allowed |
+|--------------------------|---------|
+| `(code)` then request | Create, edit, delete app/config/docs files; run builds that modify artifacts; apply patches |
+| Anything else | **Read-only**: explain, review, plan, search, answer questions, suggest snippets in chat **without** writing files |
+
+## Without `(code)`
+
+- Do **not** use Write, StrReplace, Delete, EditNotebook, or Task/subagents that modify files.
+- Do **not** run commands whose primary purpose is changing the tree (e.g. `git commit`, `npm install` that updates lockfiles for a fix) unless the user only asked for a read-only command.
+- You **may** use Read, Grep, Glob, SemanticSearch, `git log` / `git show` / `git diff` (read-only), typecheck if user asked to verify without fixing.
+
+## With `(code)`
+
+- Normal implementation workflow applies, including other project rules (documentation, commit prompt, dated changelog).
+
+## Examples
+
+```
+(code)
+Fix the chat send crash.
+```
+→ May edit files.
+
+```
+Why does send still crash?
+```
+→ Investigate and explain only; no file edits.
+
+```
+(code)ad
+```
+→ Treat as `(code)` if clearly the same intent (minor typo on same line).
+
+## Conflicts
+
+- If the user says “don’t change code” in a `(code)` message, honor that for scope.
+- User rules that forbid commits without explicit ask still apply; see `commit-prompt-after-code.mdc`.
