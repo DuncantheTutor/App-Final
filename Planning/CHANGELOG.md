@@ -12,8 +12,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed (Jun 2026 — captioned photo bubble layout)
+- **Edge-to-edge media + caption:** Captioned photos/videos at the sender’s crop aspect with a **2px bubble-coloured inset** and **8px rounded** media corners (no grey divider). Caption spans full bubble width below. Narrow crops use min bubble width with bubble-coloured side fill.
+
+### Fixed (Jun 2026 — notification pre-prompt)
+- **Notification pre-prompt:** Shows whenever OS permission is still **undetermined** (ignores old permanent “Not now” flag). **Not now** dismisses until next cold start only; **Allow** opens the OS sheet. Re-checks on app foreground.
+
+### Fixed (Jun 2026 — push notifications regression)
+- **Push registration:** Client syncs `userFirebaseAuthMap` before `registerPushToken`, registers **both** FCM and Expo tokens when available (`pushTokens/{deviceId}-fcm` / `-expo`), and logs `push.token_registered` telemetry events. Backend logs FCM/Expo delivery failures and prunes dead tokens. Optional `EXPO_PUBLIC_EAS_PROJECT_ID` in `.env` enables Expo push on local APK builds.
+
 ### Fixed (Jun 2026 — chat photo caption bubble)
-- **Unified media bubble:** Photos/videos with caption (or reply/unsent text) render in **one bubble** — 2px inset on top/sides around the media, caption full width below. Pending send preview matches as you type.
+- **Unified media bubble:** Photos/videos with caption (or reply/unsent text) render in **one bubble** — 2px inset, 8px rounded media, caption full width below. Pending send preview matches as you type.
 
 ### Fixed (Jun 2026 — chat pagination spinner)
 - **Short threads:** No scroll-up server fetch when the open chat has **7 or fewer** messages in memory; `onEndReached` disabled until the count exceeds the initial display window. Spinner only during an active fetch when pagination is enabled.

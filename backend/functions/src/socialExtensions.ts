@@ -191,6 +191,159 @@ async function resolveChatMessagePushTitle(args: {
   return clientTitle || "New message";
 }
 
+type StoredPushToken = {
+  ownerUid: string;
+  docId: string;
+  token: string;
+};
+
+async function loadPushTokensForUids(
+  uids: string[],
+  skipUid?: (uid: string) => boolean
+): Promise<StoredPushToken[]> {
+  const rows: StoredPushToken[] = [];
+  await Promise.all(
+    uids.map(async (uid) => {
+      if (skipUid?.(uid)) return;
+      const snap = await firestoreDb().collection("users").doc(uid).collection("pushTokens").get();
+      for (const doc of snap.docs) {
+        const token = String(doc.data().token ?? "").trim();
+        if (token) rows.push({ ownerUid: uid, docId: doc.id, token });
+      }
+    })
+  );
+  return rows;
+}
+
+function dedupePushTokens(rows: StoredPushToken[]): StoredPushToken[] {
+  const byToken = new Map<string, StoredPushToken>();
+  for (const row of rows) {
+    if (!byToken.has(row.token)) byToken.set(row.token, row);
+  }
+  return [...byToken.values()];
+}
+
+async function deleteStalePushToken(ownerUid: string, docId: string): Promise<void> {
+  try {
+    await firestoreDb()
+      .collection("users")
+      .doc(ownerUid)
+      .collection("pushTokens")
+      .doc(docId)
+      .delete();
+  } catch (err) {
+    console.warn("push.token.delete_failed", ownerUid, docId, err);
+  }
+}
+
+async function deliverExpoPushNotifications(args: {
+  tokens: StoredPushToken[];
+  title: string;
+  body: string;
+  data: Record<string, string>;
+}): Promise<void> {
+  const expoRows = args.tokens.filter((row) => row.token.startsWith("ExponentPushToken"));
+  if (expoRows.length === 0) return;
+  try {
+    const res = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        expoRows.map((row) => ({
+          to: row.token,
+          title: args.title,
+          body: args.body,
+          data: args.data,
+          sound: "default",
+          priority: "high",
+          channelId: "messages",
+        }))
+      ),
+    });
+    const payload = (await res.json()) as {
+      data?: Array<{ status?: string; message?: string; details?: { error?: string } }>;
+    };
+    const results = payload.data ?? [];
+    for (let i = 0; i < results.length; i += 1) {
+      const row = expoRows[i];
+      const result = results[i];
+      if (!row || !result || result.status === "ok") continue;
+      const errCode = String(result.details?.error ?? "").trim();
+      console.warn("push.expo.failed", {
+        ownerUid: row.ownerUid,
+        docId: row.docId,
+        error: errCode || result.message || "unknown",
+      });
+      if (errCode === "DeviceNotRegistered") {
+        await deleteStalePushToken(row.ownerUid, row.docId);
+      }
+    }
+  } catch (err) {
+    console.warn("push.expo.request_failed", err);
+  }
+}
+
+async function deliverFcmPushNotifications(args: {
+  tokens: StoredPushToken[];
+  title: string;
+  body: string;
+  data: Record<string, string>;
+}): Promise<void> {
+  const fcmRows = args.tokens.filter((row) => !row.token.startsWith("ExponentPushToken"));
+  if (fcmRows.length === 0) return;
+  try {
+    const response = await admin.messaging().sendEachForMulticast({
+      tokens: fcmRows.map((row) => row.token),
+      notification: {
+        title: args.title,
+        body: args.body,
+      },
+      data: args.data,
+      android: {
+        priority: "high",
+        notification: { channelId: "messages", sound: "default" },
+      },
+    });
+    if (response.failureCount > 0) {
+      console.warn("push.fcm.partial_failure", {
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+      });
+    }
+    for (let i = 0; i < response.responses.length; i += 1) {
+      const row = fcmRows[i];
+      const item = response.responses[i];
+      if (!row || !item || item.success) continue;
+      const code = item.error?.code ?? "";
+      console.warn("push.fcm.failed", {
+        ownerUid: row.ownerUid,
+        docId: row.docId,
+        code,
+        message: item.error?.message,
+      });
+      if (
+        code === "messaging/registration-token-not-registered" ||
+        code === "messaging/invalid-registration-token"
+      ) {
+        await deleteStalePushToken(row.ownerUid, row.docId);
+      }
+    }
+  } catch (err) {
+    console.warn("push.fcm.request_failed", err);
+  }
+}
+
+async function deliverPushNotifications(args: {
+  tokens: StoredPushToken[];
+  title: string;
+  body: string;
+  data: Record<string, string>;
+}): Promise<void> {
+  if (args.tokens.length === 0) return;
+  await deliverExpoPushNotifications(args);
+  await deliverFcmPushNotifications(args);
+}
+
 /** Sends FCM to other participants (best-effort). */
 export async function notifyConversationParticipantsPush(args: {
   senderUid: string;
@@ -212,64 +365,23 @@ export async function notifyConversationParticipantsPush(args: {
   const convSnap = await firestoreDb().collection("conversations").doc(args.conversationId).get();
   const mutedBy = (convSnap.data()?.mutedBy ?? {}) as Record<string, boolean>;
 
-  const tokenSnaps = await Promise.all(
-    recipients.map(async (uid) => {
-      if (mutedBy[uid]) return [];
-      const snap = await firestoreDb().collection("users").doc(uid).collection("pushTokens").get();
-      return snap.docs
-        .map((d) => String(d.data().token ?? "").trim())
-        .filter(Boolean);
-    })
+  const tokenRows = dedupePushTokens(
+    await loadPushTokensForUids(recipients, (uid) => Boolean(mutedBy[uid]))
   );
-  const tokens = [...new Set(tokenSnaps.flat())];
-  if (tokens.length === 0) return;
-
-  const expoTokens = tokens.filter((t) => t.startsWith("ExponentPushToken"));
-  const fcmTokens = tokens.filter((t) => !t.startsWith("ExponentPushToken"));
-
-  if (expoTokens.length > 0) {
-    try {
-      await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          expoTokens.map((to) => ({
-            to,
-            title: pushTitle,
-            body: pushBody,
-            data: { type: "chat_message", conversationId: args.conversationId },
-            sound: "default",
-            priority: "high",
-            channelId: "messages",
-          }))
-        ),
-      });
-    } catch {
-      /* push is best-effort */
-    }
+  if (tokenRows.length === 0) {
+    console.warn("push.chat.skipped_no_tokens", {
+      conversationId: args.conversationId,
+      recipients,
+    });
+    return;
   }
 
-  if (fcmTokens.length > 0) {
-    try {
-      await admin.messaging().sendEachForMulticast({
-        tokens: fcmTokens,
-        notification: {
-          title: pushTitle,
-          body: pushBody,
-        },
-        data: {
-          type: "chat_message",
-          conversationId: args.conversationId,
-        },
-        android: {
-          priority: "high",
-          notification: { channelId: "messages", sound: "default" },
-        },
-      });
-    } catch {
-      /* push is best-effort */
-    }
-  }
+  await deliverPushNotifications({
+    tokens: tokenRows,
+    title: pushTitle,
+    body: pushBody,
+    data: { type: "chat_message", conversationId: args.conversationId },
+  });
 }
 
 /** Notifies friends when someone publishes a new encrypted post (best-effort). */
@@ -286,61 +398,18 @@ export async function notifyPostRecipientsPush(args: {
   const pushTitle = `New post from ${name}`;
   const pushBody = `${name} shared a new post`;
 
-  const tokenSnaps = await Promise.all(
-    recipients.map(async (uid) => {
-      const snap = await firestoreDb().collection("users").doc(uid).collection("pushTokens").get();
-      return snap.docs
-        .map((d) => String(d.data().token ?? "").trim())
-        .filter(Boolean);
-    })
-  );
-  const tokens = [...new Set(tokenSnaps.flat())];
-  if (tokens.length === 0) return;
-
-  const expoTokens = tokens.filter((t) => t.startsWith("ExponentPushToken"));
-  const fcmTokens = tokens.filter((t) => !t.startsWith("ExponentPushToken"));
-
-  if (expoTokens.length > 0) {
-    try {
-      await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          expoTokens.map((to) => ({
-            to,
-            title: pushTitle,
-            body: pushBody,
-            data: { type: "new_post", postId: args.postId, authorUid: args.authorUid },
-            sound: "default",
-            priority: "high",
-            channelId: "messages",
-          }))
-        ),
-      });
-    } catch {
-      /* push is best-effort */
-    }
+  const tokenRows = dedupePushTokens(await loadPushTokensForUids(recipients));
+  if (tokenRows.length === 0) {
+    console.warn("push.post.skipped_no_tokens", { postId: args.postId, recipients });
+    return;
   }
 
-  if (fcmTokens.length > 0) {
-    try {
-      await admin.messaging().sendEachForMulticast({
-        tokens: fcmTokens,
-        notification: { title: pushTitle, body: pushBody },
-        data: {
-          type: "new_post",
-          postId: args.postId,
-          authorUid: args.authorUid,
-        },
-        android: {
-          priority: "high",
-          notification: { channelId: "messages", sound: "default" },
-        },
-      });
-    } catch {
-      /* push is best-effort */
-    }
-  }
+  await deliverPushNotifications({
+    tokens: tokenRows,
+    title: pushTitle,
+    body: pushBody,
+    data: { type: "new_post", postId: args.postId, authorUid: args.authorUid },
+  });
 }
 
 /** Notifies the post owner when a friend reacts (best-effort). */
@@ -362,77 +431,46 @@ export async function notifyPostOwnerReactionPush(args: {
   const pushTitle = `${reactorName} reacted to your post`;
   const pushBody = emoji;
 
-  const snap = await firestoreDb().collection("users").doc(ownerUid).collection("pushTokens").get();
-  const tokens = [
-    ...new Set(
-      snap.docs.map((d) => String(d.data().token ?? "").trim()).filter(Boolean)
-    ),
-  ];
-  if (tokens.length === 0) return;
-
-  const expoTokens = tokens.filter((t) => t.startsWith("ExponentPushToken"));
-  const fcmTokens = tokens.filter((t) => !t.startsWith("ExponentPushToken"));
-
-  if (expoTokens.length > 0) {
-    try {
-      await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          expoTokens.map((to) => ({
-            to,
-            title: pushTitle,
-            body: pushBody,
-            data: { type: "post_reaction", postId, reactorUid },
-            sound: "default",
-            priority: "high",
-            channelId: "messages",
-          }))
-        ),
-      });
-    } catch {
-      /* push is best-effort */
-    }
+  const tokenRows = dedupePushTokens(await loadPushTokensForUids([ownerUid]));
+  if (tokenRows.length === 0) {
+    console.warn("push.reaction.skipped_no_tokens", { postId, ownerUid });
+    return;
   }
 
-  if (fcmTokens.length > 0) {
-    try {
-      await admin.messaging().sendEachForMulticast({
-        tokens: fcmTokens,
-        notification: { title: pushTitle, body: pushBody },
-        data: {
-          type: "post_reaction",
-          postId,
-          reactorUid,
-        },
-        android: {
-          priority: "high",
-          notification: { channelId: "messages", sound: "default" },
-        },
-      });
-    } catch {
-      /* push is best-effort */
-    }
-  }
+  await deliverPushNotifications({
+    tokens: tokenRows,
+    title: pushTitle,
+    body: pushBody,
+    data: { type: "post_reaction", postId, reactorUid },
+  });
+}
+
+function pushTokenDocId(deviceId: string, tokenKind: string): string {
+  const kind = tokenKind.trim().toLowerCase();
+  if (kind === "expo" || kind === "fcm") return `${deviceId}-${kind}`;
+  return deviceId;
 }
 
 export const registerPushToken = onCall(async (req) => {
   const { appUid: uid, deviceId } = await assertVerifiedCallableCaller(req);
   const token = String(req.data?.token ?? "").trim();
   const platform = String(req.data?.platform ?? "unknown").trim();
+  const tokenKind = String(req.data?.tokenKind ?? "").trim();
   if (!token) throw new HttpsError("invalid-argument", "token is required.");
+  const docId = pushTokenDocId(deviceId, tokenKind);
   await firestoreDb()
     .collection("users")
     .doc(uid)
     .collection("pushTokens")
-    .doc(deviceId)
+    .doc(docId)
     .set({
       token,
       platform,
       deviceId,
+      tokenKind: tokenKind || null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-  return { ok: true };
+  return { ok: true, docId };
 });
 
 export const listConversationMessages = onCall(async (req) => {

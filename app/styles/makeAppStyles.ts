@@ -1503,7 +1503,7 @@ export const makeStyles = (theme: ThemePalette) =>
       borderTopLeftRadius: 12,
       borderTopRightRadius: 12,
     },
-    /** Single bubble wrapping photo/video + caption — thin inset on top/sides, caption full width below. */
+    /** Single bubble wrapping photo/video + caption — 2px media inset; caption padded below. */
     photoMediaBubble: {
       paddingHorizontal: 0,
       paddingTop: 0,
@@ -1513,11 +1513,17 @@ export const makeStyles = (theme: ThemePalette) =>
     photoMediaBubbleImageInset: {
       paddingTop: 2,
       paddingHorizontal: 2,
+      width: "100%",
+      alignItems: "center",
     },
     photoMediaBubbleImage: {
       borderRadius: 8,
       overflow: "hidden",
-      backgroundColor: theme.divider,
+    },
+    photoMediaBubbleVideo: {
+      borderRadius: 8,
+      overflow: "hidden",
+      alignSelf: "center",
     },
     photoMediaBubbleCaption: {
       alignSelf: "stretch",

@@ -122,13 +122,14 @@ The app already registers a device push token on sign-in (`registerOsPushToken`)
   1. Firebase console → project `nfc-app-7095e` → Project Settings → add/select the Android app with package `com.duncanharper42.appv2build2` → **download `google-services.json`**.
   2. Save it to **`android/app/google-services.json`**.
   3. **Rebuild the release APK** (`npm run apk:release`) — the Google Services plugin only applies when that file exists at build time.
-  4. On **Android 13+**, the app declares **`POST_NOTIFICATIONS`**; grant it when prompted (or in System Settings → Notifications).
+- On **Android 13+**, the app declares **`POST_NOTIFICATIONS`**; grant it when prompted (or in System Settings → Notifications). The in-app **Stay in the loop** screen appears after **sign-in** when OS permission is still undetermined (not on the login screen itself).
   5. Install the new APK on test phones. The client registers a native FCM device token; the backend delivers via `admin.messaging()`.
   (`app.json` `expo.android.googleServicesFile` is also set for any future `expo prebuild`.)
-- **Expo push (alternative):** add an EAS project id so `getExpoPushTokenAsync` can mint a token. Run `eas init` (writes `expo.extra.eas.projectId` into `app.json`) and upload your **FCM server credentials** to Expo (`eas credentials`). The token will start with `ExponentPushToken[...]`.
+- **Expo push (alternative):** add an EAS project id so `getExpoPushTokenAsync` can mint a token. Set **`EXPO_PUBLIC_EAS_PROJECT_ID`** in `.env` (wired through `app.config.js` → `expo.extra.eas.projectId`) or run `eas init` and upload your **FCM server credentials** to Expo (`eas credentials`). The token will start with `ExponentPushToken[...]`. The client now registers **both** native FCM and Expo tokens when available (`users/{uid}/pushTokens/{deviceId}-fcm` and `...-expo`).
 
 Notes:
 - In **Expo Go** push behaves differently and is not representative — test push on a real APK/EAS build.
 - Android shows messages on the high-importance **`messages`** channel (heads-up + sound + vibration), created on first launch.
 - Tapping a chat notification deep-links to the conversation; per-chat mute (`conversations.mutedBy`) suppresses pushes server-side. Message text is **not** included in the payload (E2EE) — the body is a generic "New message".
+- **Troubleshooting (push stopped working):** On each phone, confirm Firestore `users/{app uid}/pushTokens` has fresh docs (open app while signed in with notifications allowed). Check Cloud Functions logs for `push.fcm.failed` / `push.chat.skipped_no_tokens`. After manual Firestore friend edits, verify `userFirebaseAuthMap/{uid}` matches the signed-in Firebase Auth user — stale maps block `registerPushToken` until the app foregrounds and re-registers.
 

@@ -10,7 +10,31 @@
 
 ---
 
-## 2026-06-05 22:11 +01:00
+## 2026-06-06 00:06 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:06 +01:00 | Chat / Media | Restored 2px inset and 8px rounded corners on captioned photo bubbles (no grey fill). |
+
+---
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:04 +01:00 | Chat / Media | Captioned photo bubbles edge-to-edge at crop size; no grey inset; bubble-colour min width. |
+
+---
+
+| Time | Area | Change |
+|------|------|--------|
+| 00:02 +01:00 | Push | Notification pre-prompt shows whenever OS permission undetermined; Not now is session-only. |
+
+---
+
+| Time | Area | Change |
+|------|------|--------|
+| 23:50 +01:00 | Push | Multi-token registration (FCM+Expo), auth-map sync before register, backend push failure logging and stale token cleanup. |
+
+---
 
 | Time | Area | Change |
 |------|------|--------|

@@ -151,11 +151,10 @@ import {
   pushNotificationType,
 } from "./lib/pushNotifications";
 import {
-  markNotificationPrePromptAnswered,
-  readNotificationPrePromptAnswered,
+  markNotificationPrePromptOsRequested,
 } from "./lib/notificationPermissionGate";
 import { inferOutgoingMediaKind } from "./lib/mediaKind";
-import { chatPhotoMessageSize } from "./lib/chatMediaLayout";
+import { chatCaptionedMediaLayout, chatPhotoMessageSize } from "./lib/chatMediaLayout";
 import { probeVideoDisplayDimensions } from "./lib/videoDisplayDimensions";
 import { prepareVoicePlaybackAudioMode, VOICE_RECORDING_OPTIONS } from "./lib/voicePlaybackAudio";
 import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri";
@@ -827,6 +826,28 @@ function MainAppInner() {
   const [showNotificationPrePrompt, setShowNotificationPrePrompt] = useState(false);
   const [notificationPrePromptBusy, setNotificationPrePromptBusy] = useState(false);
   const [osNotificationGranted, setOsNotificationGranted] = useState(false);
+  const notificationPrePromptDismissedSessionRef = useRef(false);
+
+  const refreshNotificationPermissionGate = useCallback(async () => {
+    if (!signedIn || DEMO_OFFLINE_MODE) {
+      setNotificationGateReady(false);
+      setShowNotificationPrePrompt(false);
+      setOsNotificationGranted(false);
+      return;
+    }
+    const email = sessionEmailRef.current?.trim().toLowerCase();
+    if (!email) {
+      setNotificationGateReady(true);
+      setShowNotificationPrePrompt(false);
+      return;
+    }
+    const osStatus = await getOsNotificationPermissionStatus();
+    setOsNotificationGranted(isOsNotificationPermissionGranted(osStatus));
+    setShowNotificationPrePrompt(
+      osStatus === "undetermined" && !notificationPrePromptDismissedSessionRef.current
+    );
+    setNotificationGateReady(true);
+  }, [signedIn]);
 
   useEffect(() => {
     if (initialServerSyncDone) {
@@ -836,6 +857,7 @@ function MainAppInner() {
 
   useEffect(() => {
     if (!signedIn) {
+      notificationPrePromptDismissedSessionRef.current = false;
       setNotificationGateReady(false);
       setShowNotificationPrePrompt(false);
       setOsNotificationGranted(false);
@@ -849,24 +871,18 @@ function MainAppInner() {
     }
     let cancelled = false;
     void (async () => {
-      const email = sessionEmailRef.current?.trim().toLowerCase();
-      if (!email) {
-        if (!cancelled) setNotificationGateReady(true);
-        return;
-      }
-      const [osStatus, answered] = await Promise.all([
-        getOsNotificationPermissionStatus(),
-        readNotificationPrePromptAnswered(email),
-      ]);
+      await refreshNotificationPermissionGate();
       if (cancelled) return;
-      setOsNotificationGranted(isOsNotificationPermissionGranted(osStatus));
-      setShowNotificationPrePrompt(osStatus === "undetermined" && !answered);
-      setNotificationGateReady(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [signedIn]);
+  }, [signedIn, refreshNotificationPermissionGate]);
+
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE || appLifecycleState !== "active") return;
+    void refreshNotificationPermissionGate();
+  }, [signedIn, appLifecycleState, refreshNotificationPermissionGate]);
 
   useEffect(() => {
     return () => {
@@ -4713,19 +4729,16 @@ function MainAppInner() {
     setView({ screen: "chat", chatId: targetChatId });
   };
 
-  const completeNotificationPrePrompt = useCallback(async () => {
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (email) await markNotificationPrePromptAnswered(email);
-    setShowNotificationPrePrompt(false);
-  }, []);
-
   const onAllowNotificationsPrePrompt = useCallback(async () => {
     setNotificationPrePromptBusy(true);
+    notificationPrePromptDismissedSessionRef.current = true;
+    setShowNotificationPrePrompt(false);
     try {
-      await completeNotificationPrePrompt();
       const status = await requestOsNotificationPermission();
       const granted = isOsNotificationPermissionGranted(status);
       setOsNotificationGranted(granted);
+      const email = sessionEmailRef.current?.trim().toLowerCase();
+      if (email) await markNotificationPrePromptOsRequested(email);
       if (granted) {
         const session = (await waitForBackendSession()) ?? getBackendSession();
         if (session) {
@@ -4737,11 +4750,12 @@ function MainAppInner() {
     } finally {
       setNotificationPrePromptBusy(false);
     }
-  }, [completeNotificationPrePrompt, getBackendSession, waitForBackendSession]);
+  }, [getBackendSession, waitForBackendSession]);
 
   const onDeclineNotificationsPrePrompt = useCallback(async () => {
-    await completeNotificationPrePrompt();
-  }, [completeNotificationPrePrompt]);
+    notificationPrePromptDismissedSessionRef.current = true;
+    setShowNotificationPrePrompt(false);
+  }, []);
 
   useEffect(() => {
     if (!signedIn || DEMO_OFFLINE_MODE) return;
@@ -8130,6 +8144,20 @@ function MainAppInner() {
     [windowWidth, measuredChatMediaByMessageId]
   );
 
+  const getCaptionedMediaLayout = useCallback(
+    (message: Message) => {
+      const measured = measuredChatMediaByMessageId[message.id];
+      const fallbackAspect = message.kind === "video" ? 9 / 16 : 4 / 3;
+      return chatCaptionedMediaLayout(
+        windowWidth,
+        message.mediaWidth ?? measured?.width,
+        message.mediaHeight ?? measured?.height,
+        fallbackAspect
+      );
+    },
+    [windowWidth, measuredChatMediaByMessageId]
+  );
+
   const rememberChatVideoDimensions = useCallback((messageId: string, width: number, height: number) => {
     setMeasuredChatMediaByMessageId((prev) => {
       const cur = prev[messageId];
@@ -8930,9 +8958,9 @@ function MainAppInner() {
   const showCompactComposer =
     !!pendingChatMediaAttachment || (keyboardVisible && !!chatInput.trim());
 
-  const pendingChatMediaPreviewSize = useMemo(() => {
+  const pendingChatMediaLayout = useMemo(() => {
     if (!pendingChatMediaAttachment) return null;
-    return chatPhotoMessageSize(
+    return chatCaptionedMediaLayout(
       windowWidth,
       pendingChatMediaAttachment.width,
       pendingChatMediaAttachment.height
@@ -10813,6 +10841,9 @@ function MainAppInner() {
                         !!item.replyToMessageId ||
                         !!item.unsentAt ||
                         messageDisplayText(item).trim().length > 0;
+                      const captionedPhotoLayout = hasPhotoBubbleContent
+                        ? getCaptionedMediaLayout(item)
+                        : null;
                       return (
                   <View
                     style={[
@@ -10840,6 +10871,9 @@ function MainAppInner() {
                                   ...bubbleCardStyle,
                                   styles.photoMediaBubble,
                                   isMine ? styles.photoMessageStackMine : styles.photoMessageStack,
+                                  captionedPhotoLayout
+                                    ? { width: captionedPhotoLayout.bubbleWidth }
+                                    : null,
                                 ]
                               : isMine
                                 ? styles.photoMessageStackMine
@@ -10863,14 +10897,17 @@ function MainAppInner() {
                             });
                           }}
                         >
-                          {hasPhotoBubbleContent ? (
+                          {hasPhotoBubbleContent && captionedPhotoLayout ? (
                             <>
                               <View style={styles.photoMediaBubbleImageInset}>
                                 <Image
                                   source={{ uri: resolvedUri }}
                                   style={[
                                     styles.photoMediaBubbleImage,
-                                    getPhotoMessageSize(item),
+                                    {
+                                      width: captionedPhotoLayout.imageWidth,
+                                      height: captionedPhotoLayout.imageHeight,
+                                    },
                                   ]}
                                   resizeMode="cover"
                                   onLoad={(event) => {
@@ -10956,6 +10993,9 @@ function MainAppInner() {
                     !!item.unsentAt ||
                     messageDisplayText(item).trim().length > 0;
                   const videoSize = getPhotoMessageSize(item);
+                  const captionedVideoLayout = hasVideoBubbleContent
+                    ? getCaptionedMediaLayout(item)
+                    : null;
                   const videoIsPlaying = playingVideoMessageId === item.id;
                   const showVideoPlayButton = !videoIsPlaying;
                   const handleVideoMessagePress = () => {
@@ -11019,27 +11059,34 @@ function MainAppInner() {
                                   ...bubbleCardStyle,
                                   styles.photoMediaBubble,
                                   isMine ? styles.photoMessageStackMine : styles.photoMessageStack,
+                                  captionedVideoLayout
+                                    ? { width: captionedVideoLayout.bubbleWidth }
+                                    : null,
                                 ]
                               : isMine
                                 ? styles.photoMessageStackMine
                                 : styles.photoMessageStack
                           }
                         >
-                        {hasVideoBubbleContent ? (
+                        {hasVideoBubbleContent && captionedVideoLayout ? (
                           <View style={styles.photoMediaBubbleImageInset}>
                             <View
                               style={[
                                 styles.videoMessageWrap,
+                                styles.photoMediaBubbleVideo,
                                 isMine ? styles.videoMessageWrapMine : null,
-                                { width: videoSize.width, height: videoSize.height },
+                                {
+                                  width: captionedVideoLayout.imageWidth,
+                                  height: captionedVideoLayout.imageHeight,
+                                },
                               ]}
                             >
                               <ChatVideoMessageBubble
                                 resolvedUri={resolvedUri}
                                 resolving={resolving}
                                 preparePending={videoPlayAfterPrepareId === item.id}
-                                width={videoSize.width}
-                                height={videoSize.height}
+                                width={captionedVideoLayout.imageWidth}
+                                height={captionedVideoLayout.imageHeight}
                                 isSending={item.deliveryStatus === "sending"}
                                 isPlaying={videoIsPlaying}
                                 showPlayOverlay={showVideoPlayButton}
@@ -11064,11 +11111,14 @@ function MainAppInner() {
                                   style={[
                                     styles.videoOverlayText,
                                     {
-                                      left: o.relX * videoSize.width,
-                                      top: o.relY * videoSize.height,
-                                      width: o.relW * videoSize.width,
-                                      minHeight: o.relH * videoSize.height,
-                                      fontSize: Math.max(10, o.relFontSize * videoSize.width),
+                                      left: o.relX * captionedVideoLayout.imageWidth,
+                                      top: o.relY * captionedVideoLayout.imageHeight,
+                                      width: o.relW * captionedVideoLayout.imageWidth,
+                                      minHeight: o.relH * captionedVideoLayout.imageHeight,
+                                      fontSize: Math.max(
+                                        10,
+                                        o.relFontSize * captionedVideoLayout.imageWidth
+                                      ),
                                       color: o.color,
                                       fontFamily: o.fontFamily,
                                       fontWeight: o.fontWeight ?? "700",
@@ -11476,7 +11526,7 @@ function MainAppInner() {
                 </View>
               ) : null}
 
-              {pendingChatMediaAttachment && pendingChatMediaPreviewSize ? (
+              {pendingChatMediaAttachment && pendingChatMediaLayout ? (
                 <View
                   style={[
                     styles.pendingChatMediaPreviewShell,
@@ -11490,12 +11540,19 @@ function MainAppInner() {
                         styles.myMessageCard,
                         styles.photoMediaBubble,
                         styles.photoMessageStackMine,
+                        { width: pendingChatMediaLayout.bubbleWidth },
                       ]}
                     >
                       <View style={styles.photoMediaBubbleImageInset}>
                         <Image
                           source={{ uri: pendingChatMediaAttachment.uri }}
-                          style={[styles.photoMediaBubbleImage, pendingChatMediaPreviewSize]}
+                          style={[
+                            styles.photoMediaBubbleImage,
+                            {
+                              width: pendingChatMediaLayout.imageWidth,
+                              height: pendingChatMediaLayout.imageHeight,
+                            },
+                          ]}
                           resizeMode="cover"
                           accessibilityIgnoresInvertColors
                         />

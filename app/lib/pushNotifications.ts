@@ -6,9 +6,18 @@ import { Platform } from "react-native";
 
 import { callEmulatorFunction, getOrCreateBackendDeviceId } from "../../backendBridge";
 
+import { firebaseAuth } from "../../firebaseAuthClient";
+
 import { logAppError, logAppEvent } from "../../telemetry";
 
 export type OsNotificationPermissionStatus = "granted" | "denied" | "undetermined";
+
+export type PushTokenKind = "fcm" | "expo";
+
+export type AcquiredPushToken = {
+  token: string;
+  kind: PushTokenKind;
+};
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -71,39 +80,76 @@ export async function requestOsNotificationPermission(): Promise<OsNotificationP
   return normalizePermissionStatus(status);
 }
 
-async function acquirePushToken(): Promise<string | null> {
-  if (Platform.OS === "android") {
-    try {
-      const device = await Notifications.getDevicePushTokenAsync();
-      const token = typeof device.data === "string" ? device.data.trim() : "";
-      if (token) return token;
-    } catch (err) {
-      logAppError("push.device_token", err, {});
-    }
+async function acquireDevicePushToken(): Promise<string | null> {
+  try {
+    const device = await Notifications.getDevicePushTokenAsync();
+    const token = typeof device.data === "string" ? device.data.trim() : "";
+    return token || null;
+  } catch (err) {
+    logAppError("push.device_token", err, {});
+    return null;
   }
+}
+
+async function acquireExpoPushToken(): Promise<string | null> {
   try {
     const projectId = resolveExpoProjectId();
     const tokenData = await Notifications.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined
     );
     const token = tokenData.data?.trim();
-    if (token) return token;
+    return token || null;
   } catch (err) {
-    logAppError("push.expo_token", err, {});
+    logAppError("push.expo_token", err, { hasProjectId: Boolean(resolveExpoProjectId()) });
+    return null;
   }
-  if (Platform.OS !== "android") {
-    try {
-      const device = await Notifications.getDevicePushTokenAsync();
-      const token = typeof device.data === "string" ? device.data.trim() : "";
-      if (token) return token;
-    } catch (err) {
-      logAppError("push.device_token", err, {});
-    }
-  }
-  return null;
 }
 
-/** Registers FCM/APNs token with backend — assumes OS permission is already granted. */
+/** Collects every token the device can mint (FCM/APNs + Expo when configured). */
+export async function acquireAllPushTokens(): Promise<AcquiredPushToken[]> {
+  const out: AcquiredPushToken[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (token: string, kind: PushTokenKind) => {
+    if (!token || seen.has(token)) return;
+    seen.add(token);
+    out.push({ token, kind });
+  };
+
+  if (Platform.OS === "android") {
+    const fcm = await acquireDevicePushToken();
+    if (fcm) pushUnique(fcm, "fcm");
+    const expo = await acquireExpoPushToken();
+    if (expo) pushUnique(expo, "expo");
+  } else if (Platform.OS === "ios") {
+    const expo = await acquireExpoPushToken();
+    if (expo) pushUnique(expo, "expo");
+    const apns = await acquireDevicePushToken();
+    if (apns) pushUnique(apns, "fcm");
+  }
+
+  return out;
+}
+
+/** Keeps `userFirebaseAuthMap` aligned before strict push registration callables run. */
+async function ensureFirebaseAuthMapRegistered(session: {
+  uid: string;
+  deviceId: string;
+}): Promise<void> {
+  const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
+  if (!firebaseAuthUid) return;
+  try {
+    await callEmulatorFunction("registerFirebaseAuthUid", {
+      uid: session.uid,
+      deviceId: session.deviceId,
+      firebaseAuthUid,
+    });
+  } catch (err) {
+    logAppError("push.auth_map", err, { uid: session.uid });
+  }
+}
+
+/** Registers every available FCM/APNs + Expo token with backend — assumes OS permission is granted. */
 export async function registerPushTokenWithBackend(session: {
   uid: string;
   deviceId: string;
@@ -112,18 +158,35 @@ export async function registerPushTokenWithBackend(session: {
   const status = await getOsNotificationPermissionStatus();
   if (!isOsNotificationPermissionGranted(status)) return;
   await ensureAndroidMessagesChannel();
-  const token = await acquirePushToken();
-  if (!token) {
-    logAppEvent("push.token_unavailable", { platform: Platform.OS });
+  await ensureFirebaseAuthMapRegistered(session);
+
+  const tokens = await acquireAllPushTokens();
+  if (tokens.length === 0) {
+    logAppEvent("push.token_unavailable", {
+      platform: Platform.OS,
+      hasEasProjectId: Boolean(resolveExpoProjectId()),
+    });
     return;
   }
+
   const deviceId = session.deviceId || (await getOrCreateBackendDeviceId());
-  await callEmulatorFunction("registerPushToken", {
-    uid: session.uid,
-    deviceId,
-    token,
-    platform: Platform.OS,
-  });
+  for (const entry of tokens) {
+    try {
+      await callEmulatorFunction("registerPushToken", {
+        uid: session.uid,
+        deviceId,
+        token: entry.token,
+        platform: Platform.OS,
+        tokenKind: entry.kind,
+      });
+      logAppEvent("push.token_registered", {
+        platform: Platform.OS,
+        kind: entry.kind,
+      });
+    } catch (err) {
+      logAppError("push.register", err, { kind: entry.kind });
+    }
+  }
 }
 
 /** Legacy helper — requests permission immediately (prefer pre-prompt + registerPushTokenWithBackend). */
