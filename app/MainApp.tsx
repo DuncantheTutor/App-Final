@@ -162,6 +162,7 @@ import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
 import { readComposerTextTrimmed, writeComposerText } from "./lib/syncedComposerText";
 import {
+  composerKeyboardAvoidanceEnabled,
   keyboardComposerBottomPadding,
   navDeadZoneHeight,
   scrollPageBottomPadding,
@@ -628,6 +629,8 @@ function MainAppInner() {
   const [postFullscreenThreadReplyKey, setPostFullscreenThreadReplyKey] = useState<string | null>(null);
   const [shouldFocusPostCommentInput, setShouldFocusPostCommentInput] = useState(false);
   const postCommentInputRef = useRef<TextInput | null>(null);
+  const postCommentTextRef = useRef("");
+  const [postCommentInput, setPostCommentInput] = useState("");
   const [reactionDetailPost, setReactionDetailPost] = useState<Post | null>(null);
   const [commentDraftByPostId, setCommentDraftByPostId] = useState<Record<string, string>>({});
   const [threadDraftByChainKey, setThreadDraftByChainKey] = useState<Record<string, string>>({});
@@ -921,7 +924,10 @@ function MainAppInner() {
     imageCropVisible ||
     videoThumbnailModalOpen ||
     reactionPickerOpen;
-  const keyboardAvoidanceEnabled = keyboardVisible && !overlaySuppressesKeyboardAvoidance;
+  const composerKavEnabled = composerKeyboardAvoidanceEnabled(
+    keyboardVisible,
+    overlaySuppressesKeyboardAvoidance
+  );
 
   const myProfileBioPin = useScrollPinnedInput({
     scrollRef: myProfileScrollRef,
@@ -957,6 +963,8 @@ function MainAppInner() {
     setFullScreenPost(null);
     setPostFullscreenThreadReplyKey(null);
     setShouldFocusPostCommentInput(false);
+    postCommentTextRef.current = "";
+    setPostCommentInput("");
     Keyboard.dismiss();
   }, []);
 
@@ -8393,25 +8401,23 @@ function MainAppInner() {
       ? posts.find((p) => p.id === fullScreenPost.id) ?? fullScreenPost
       : null;
     if (!post) return;
+    const draft = readComposerTextTrimmed(postCommentTextRef);
+    if (!draft) return;
     if (postFullscreenThreadReplyKey) {
       const prefix = `${post.id}:`;
       if (!postFullscreenThreadReplyKey.startsWith(prefix)) return;
       const anchorCommentId = postFullscreenThreadReplyKey.slice(prefix.length);
       if (!anchorCommentId) return;
-      const draft = threadDraftByChainKey[postFullscreenThreadReplyKey] ?? "";
-      if (!draft.trim()) return;
       addThreadReplyToComment(post.id, anchorCommentId, draft);
-      return;
+    } else {
+      addCommentToPost(post.id, draft);
     }
-    const topDraft = commentDraftByPostId[post.id] ?? "";
-    if (!topDraft.trim()) return;
-    addCommentToPost(post.id, topDraft);
+    postCommentTextRef.current = "";
+    setPostCommentInput("");
   }, [
     fullScreenPost,
     posts,
     postFullscreenThreadReplyKey,
-    threadDraftByChainKey,
-    commentDraftByPostId,
     addCommentToPost,
     addThreadReplyToComment,
   ]);
@@ -8784,6 +8790,34 @@ function MainAppInner() {
     if (!fullScreenPost) return null;
     return posts.find((p) => p.id === fullScreenPost.id) ?? fullScreenPost;
   }, [fullScreenPost, posts]);
+
+  useEffect(() => {
+    if (!fullScreenPost) {
+      postCommentTextRef.current = "";
+      setPostCommentInput("");
+      return;
+    }
+    const text = postFullscreenThreadReplyKey
+      ? (threadDraftByChainKey[postFullscreenThreadReplyKey] ?? "")
+      : (commentDraftByPostId[fullScreenPost.id] ?? "");
+    writeComposerText(postCommentTextRef, setPostCommentInput, text);
+  }, [fullScreenPost?.id, postFullscreenThreadReplyKey]);
+
+  const handlePostCommentInputChange = useCallback(
+    (text: string) => {
+      writeComposerText(postCommentTextRef, setPostCommentInput, text);
+      if (postFullscreenThreadReplyKey) {
+        setThreadDraftByChainKey((current) => ({
+          ...current,
+          [postFullscreenThreadReplyKey]: text,
+        }));
+      } else if (fullScreenPost) {
+        setCommentDraftByPostId((current) => ({ ...current, [fullScreenPost.id]: text }));
+      }
+    },
+    [postFullscreenThreadReplyKey, fullScreenPost?.id]
+  );
+
   const showCompactComposer = keyboardVisible && !!chatInput.trim();
 
   useEffect(() => {
@@ -9154,7 +9188,7 @@ function MainAppInner() {
           <KeyboardAvoidingView
             style={[styles.fullScreenPostRoot, { backgroundColor: theme.background }]}
             behavior="padding"
-            enabled={keyboardAvoidanceEnabled}
+            enabled={composerKavEnabled}
             keyboardVerticalOffset={safeTop}
           >
             <View style={{ paddingTop: safeTop, flex: 1 }}>
@@ -9219,110 +9253,111 @@ function MainAppInner() {
                   }
                 />
               </ScrollViewUntilScroll>
-              {(() => {
-                const pc = fullScreenPostLive;
-                const isViewerOwner = pc.authorId === CURRENT_USER_ID;
-                const threadDraftKey = postFullscreenThreadReplyKey;
-                const composerActive = isViewerOwner ? !!threadDraftKey : true;
-                const commentValue = threadDraftKey
-                  ? (threadDraftByChainKey[threadDraftKey] ?? "")
-                  : (commentDraftByPostId[pc.id] ?? "");
-
-                const onChangeCommentText = (text: string) => {
-                  if (threadDraftKey) {
-                    setThreadDraftByChainKey((current) => ({ ...current, [threadDraftKey]: text }));
-                  } else {
-                    setCommentDraftByPostId((current) => ({ ...current, [pc.id]: text }));
-                  }
-                };
-
-                return (
+              {fullScreenPostLive ? (
+                <View
+                  style={[
+                    styles.chatComposerStack,
+                    {
+                      borderTopColor: theme.divider,
+                      backgroundColor: theme.background,
+                    },
+                  ]}
+                >
+                  {postFullscreenThreadReplyKey ? (
+                    <View style={styles.replyBanner}>
+                      <Text style={styles.replyBannerText} numberOfLines={2}>
+                        Replying in a private thread
+                      </Text>
+                      <Pressable
+                        onPress={() => setPostFullscreenThreadReplyKey(null)}
+                        style={styles.replyBannerClose}
+                        accessibilityLabel="Leave thread reply"
+                      >
+                        <Ionicons name="close" size={16} color={theme.text} />
+                      </Pressable>
+                    </View>
+                  ) : fullScreenPostLive.authorId === CURRENT_USER_ID ? (
+                    <View
+                      style={[
+                        styles.replyBanner,
+                        { backgroundColor: theme.replyBannerQuotingOtherBg, borderBottomColor: theme.divider },
+                      ]}
+                    >
+                      <Text style={[styles.replyBannerText, { color: theme.text }]} numberOfLines={2}>
+                        Tap Reply on a conversation above — your message sends from this field once a thread is
+                        selected.
+                      </Text>
+                    </View>
+                  ) : null}
                   <View
                     style={[
-                      styles.chatComposerStack,
+                      styles.chatInputBar,
                       {
-                        borderTopColor: theme.divider,
-                        backgroundColor: theme.background,
+                        paddingTop: keyboardVisible ? 4 : 8,
+                        paddingBottom: keyboardComposerBottomPadding(
+                          insets.bottom,
+                          keyboardVisible,
+                          keyboardHeight
+                        ),
                       },
                     ]}
                   >
-                    {postFullscreenThreadReplyKey ? (
-                      <View style={styles.replyBanner}>
-                        <Text style={styles.replyBannerText} numberOfLines={2}>
-                          Replying in a private thread
-                        </Text>
-                        <Pressable
-                          onPress={() => setPostFullscreenThreadReplyKey(null)}
-                          style={styles.replyBannerClose}
-                          accessibilityLabel="Leave thread reply"
-                        >
-                          <Ionicons name="close" size={16} color={theme.text} />
-                        </Pressable>
-                      </View>
-                    ) : isViewerOwner ? (
-                      <View
-                        style={[
-                          styles.replyBanner,
-                          { backgroundColor: theme.replyBannerQuotingOtherBg, borderBottomColor: theme.divider },
-                        ]}
-                      >
-                        <Text style={[styles.replyBannerText, { color: theme.text }]} numberOfLines={2}>
-                          Tap Reply on a conversation above — your message sends from this field once a thread is
-                          selected.
-                        </Text>
-                      </View>
-                    ) : null}
-                    <View
+                    <TextInput
+                      ref={postCommentInputRef}
+                      editable={
+                        fullScreenPostLive.authorId !== CURRENT_USER_ID ||
+                        !!postFullscreenThreadReplyKey
+                      }
+                      value={postCommentInput}
+                      onChangeText={handlePostCommentInputChange}
+                      placeholder={
+                        fullScreenPostLive.authorId !== CURRENT_USER_ID || postFullscreenThreadReplyKey
+                          ? postFullscreenThreadReplyKey
+                            ? "Reply…"
+                            : "Add comment ..."
+                          : "Tap Reply on a comment above"
+                      }
+                      placeholderTextColor={theme.subtleText}
                       style={[
-                        styles.chatInputBar,
-                        {
-                          paddingTop: keyboardVisible ? 4 : 8,
-                          paddingBottom: keyboardComposerBottomPadding(
-                            insets.bottom,
-                            keyboardVisible,
-                            keyboardHeight
-                          ),
-                        },
+                        styles.chatInputMultiline,
+                        fullScreenPostLive.authorId === CURRENT_USER_ID &&
+                        !postFullscreenThreadReplyKey
+                          ? { opacity: 0.55 }
+                          : null,
                       ]}
-                    >
-                      <TextInput
-                        ref={postCommentInputRef}
-                        editable={composerActive}
-                        value={composerActive ? commentValue : ""}
-                        onChangeText={onChangeCommentText}
-                        placeholder={
-                          composerActive
-                            ? postFullscreenThreadReplyKey
-                              ? "Reply…"
-                              : "Add comment ..."
-                            : "Tap Reply on a comment above"
+                      multiline
+                      textAlignVertical="top"
+                      returnKeyType="send"
+                      blurOnSubmit={false}
+                      inputAccessoryViewID={Platform.OS === "ios" ? "postCommentInputAccessory" : undefined}
+                      onSubmitEditing={() => {
+                        if (readComposerTextTrimmed(postCommentTextRef)) {
+                          void submitFullscreenPostComment();
                         }
-                        placeholderTextColor={theme.subtleText}
-                        style={[styles.chatInputMultiline, !composerActive && { opacity: 0.55 }]}
-                        multiline
-                        textAlignVertical="top"
-                        returnKeyType="send"
-                        enablesReturnKeyAutomatically
-                        blurOnSubmit={false}
-                        inputAccessoryViewID={Platform.OS === "ios" ? "postCommentInputAccessory" : undefined}
-                        onSubmitEditing={() => {
-                          if (composerActive && commentValue.trim()) {
-                            void submitFullscreenPostComment();
-                          }
-                        }}
-                      />
-                      <Pressable
-                        disabled={!composerActive || !commentValue.trim()}
-                        style={[styles.sendButtonChat, (!composerActive || !commentValue.trim()) && { opacity: 0.45 }]}
-                        onPress={() => void submitFullscreenPostComment()}
-                        accessibilityLabel="Send comment"
-                      >
-                        <Ionicons name="send" size={16} color="#FFFFFF" />
-                      </Pressable>
-                    </View>
+                      }}
+                    />
+                    <Pressable
+                      disabled={
+                        (fullScreenPostLive.authorId === CURRENT_USER_ID &&
+                          !postFullscreenThreadReplyKey) ||
+                        !postCommentInput.trim()
+                      }
+                      style={[
+                        styles.sendButtonChat,
+                        (fullScreenPostLive.authorId === CURRENT_USER_ID &&
+                          !postFullscreenThreadReplyKey) ||
+                        !postCommentInput.trim()
+                          ? { opacity: 0.45 }
+                          : null,
+                      ]}
+                      onPress={() => void submitFullscreenPostComment()}
+                      accessibilityLabel="Send comment"
+                    >
+                      <Ionicons name="send" size={16} color="#FFFFFF" />
+                    </Pressable>
                   </View>
-                );
-              })()}
+                </View>
+              ) : null}
             </View>
           </KeyboardAvoidingView>
         </Modal>
@@ -9670,7 +9705,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 20 }]}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={safeTop}
         >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
@@ -9790,7 +9825,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 20 }]}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={safeTop}
         >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
@@ -10086,7 +10121,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 27 }]}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={safeTop}
         >
           <View style={{ flex: 1, paddingTop: safeTop, paddingHorizontal: 16, minHeight: 0 }}>
@@ -10312,7 +10347,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={[styles.chatScreen, { paddingTop: safeTop }]}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           /** KAV already has `paddingTop: safeTop`; avoid stacking large offsets (gap above keyboard). */
           keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
         >
@@ -11390,7 +11425,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1, backgroundColor: theme.background }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top + 8}
         >
         <View
@@ -11462,7 +11497,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1, backgroundColor: theme.background }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top + 8}
         >
         <View
@@ -11631,7 +11666,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top}
         >
           <View style={styles.settingsOverlay}>
@@ -11679,7 +11714,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top}
         >
           <View style={styles.settingsOverlay}>
@@ -11792,7 +11827,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top}
         >
         <View style={styles.settingsOverlay}>
@@ -11827,7 +11862,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top}
         >
         <View style={styles.settingsOverlay}>
@@ -12231,7 +12266,7 @@ function MainAppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior="padding"
-          enabled={keyboardAvoidanceEnabled}
+          enabled={composerKavEnabled}
           keyboardVerticalOffset={insets.top}
         >
           <View style={styles.settingsOverlay}>

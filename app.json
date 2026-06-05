@@ -46,7 +46,6 @@
       "useFirebaseEmulators": false,
       "firebaseAuthEmulatorUrl": "http://127.0.0.1:9099",
       "firebase": {
-        "apiKey": "AIzaSyClcD5yBFIm0ee5k_7EbjqIOrlUteyaiIc",
         "authDomain": "nfc-app-7095e.firebaseapp.com",
         "projectId": "nfc-app-7095e",
         "storageBucket": "nfc-app-7095e.firebasestorage.app",

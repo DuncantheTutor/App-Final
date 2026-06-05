@@ -1995,7 +1995,7 @@ If you want, after you paste them, I can run `npm run beta:preflight` again and 
 Can you do it using this:
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAZZZS9O-kfx2hCI9DKhHo3_n1qkm8TZWs",
+  apiKey: "<REDACTED — set EXPO_PUBLIC_FIREBASE_API_KEY in .env>",
   authDomain: "app-v2-c2a18.firebaseapp.com",
   projectId: "app-v2-c2a18",
   storageBucket: "app-v2-c2a18.firebasestorage.app",

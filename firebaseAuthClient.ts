@@ -44,10 +44,16 @@ function extras(): ExpoExtra {
 
 const extra = extras();
 const projectId = extra.firebase?.projectId ?? "nfc-app-7095e";
+const apiKey = extra.firebase?.apiKey?.trim() ?? "";
+if (!apiKey) {
+  throw new Error(
+    "Missing Firebase API key. Copy .env.example to .env and set EXPO_PUBLIC_FIREBASE_API_KEY (Firebase console → Project settings → Web app)."
+  );
+}
 const app: FirebaseApp = getApps().length
   ? getApp()
   : initializeApp({
-      apiKey: extra.firebase?.apiKey ?? "AIzaSyClcD5yBFIm0ee5k_7EbjqIOrlUteyaiIc",
+      apiKey,
       authDomain: extra.firebase?.authDomain ?? "nfc-app-7095e.firebaseapp.com",
       projectId,
       appId: extra.firebase?.appId ?? "1:127071681912:web:8f54fb23c26731decc5c8d",

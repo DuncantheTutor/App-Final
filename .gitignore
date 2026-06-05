@@ -34,6 +34,9 @@ yarn-error.*
 .env
 .env*.local
 
+# Firebase Android client config (download from Firebase console; see google-services.json.example)
+android/app/google-services.json
+
 # typescript
 *.tsbuildinfo
 

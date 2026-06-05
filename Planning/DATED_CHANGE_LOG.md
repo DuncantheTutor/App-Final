@@ -10,7 +10,21 @@
 
 ---
 
-## 2026-06-05 17:42 +01:00
+## 2026-06-05 20:23 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 20:23 +01:00 | Security / Git | Stop tracking Firebase API keys: `.env` + `app.config.js`, untrack `google-services.json`, scrub keys from planning exports. |
+
+---
+
+## 2026-06-05 18:26 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 18:26 +01:00 | Keyboard / Posts / Comments | Stop stacking KAV + keyboardHeight padding; iOS-only KAV. Tier B carousel keeps one URI per slot on decrypt failure. Post comment composer uses ref+state like chat send. |
+
+---
 
 | Time | Area | Change |
 |------|------|--------|

@@ -30,21 +30,24 @@ export function composerBottomPadding(insetsBottom: number, keyboardVisible: boo
 }
 
 /**
- * Bottom inset for fixed bottom composers (chat, post comment) while the keyboard is open.
- * iOS usually relies on KeyboardAvoidingView; Android edge-to-edge + absolute overlays need
- * explicit lift from `keyboardHeight`.
+ * Bottom inset for fixed bottom composers (chat, post comment).
+ * When the keyboard is open, use a minimal gap — `KeyboardAvoidingView` (iOS) or
+ * `adjustResize` (Android) already lifts the layout; do not add `keyboardHeight` padding.
  */
 export function keyboardComposerBottomPadding(
   insetsBottom: number,
   keyboardVisible: boolean,
-  keyboardHeight: number
+  _keyboardHeight = 0
 ): number {
-  if (!keyboardVisible) return stickyFooterPadding(insetsBottom);
-  if (Platform.OS === "android" && keyboardHeight > 0) {
-    const nav = androidNavInset(insetsBottom);
-    return Math.max(4, keyboardHeight - nav);
-  }
-  return composerBottomPadding(insetsBottom, true);
+  return composerBottomPadding(insetsBottom, keyboardVisible);
+}
+
+/** iOS-only KAV for fixed composers — Android uses `softwareKeyboardLayoutMode: resize`. */
+export function composerKeyboardAvoidanceEnabled(
+  keyboardVisible: boolean,
+  overlaySuppressesKeyboardAvoidance: boolean
+): boolean {
+  return Platform.OS === "ios" && keyboardVisible && !overlaySuppressesKeyboardAvoidance;
 }
 
 /** Spacer height below fixed home bars (Chats **Start Chat** dead zone). */

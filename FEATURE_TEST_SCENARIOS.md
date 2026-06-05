@@ -7,6 +7,10 @@
 - **Upgrade from encrypted-cache build:** Sign in after installing this APK — chats/posts still restore; first read may briefly migrate legacy `enc1:` storage keys to plaintext (no user action).
 - **Many dormant threads:** Account with 20+ old chats — cold start must not freeze for tens of seconds decrypting a giant messages blob; only **visible** inbox rows keep message bodies in RAM (7 each).
 
+- **Chat keyboard:** Composer should sit just above the keyboard — **no large empty gap** (Android: resize only; iOS: KAV padding).
+- **Post carousel:** Multi-photo posts keep **all slides** after Tier B resolve; a failed decrypt must not remove a slide.
+- **Post comments:** On a **friend's post**, type in Add comment → send enables and posts live. On **your post**, tap **Reply** on a thread first, then send.
+
 ## Jun 2026 — testing fixes (5 Jun)
 
 - **Chat keyboard:** Open a 1:1 chat → focus the message field → keyboard must **not** cover the composer (Android + iOS). Repeat on **fullscreen post comment** field and **Publish post** caption.

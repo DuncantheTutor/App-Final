@@ -427,7 +427,7 @@ If you paste your Firebase config object here, I can patch `app.json` for you im
 Can you copy through the correct values from here: 
 
 const firebaseConfig = {
-  apiKey: "AIzaSyClcD5yBFIm0ee5k_7EbjqIOrlUteyaiIc",
+  apiKey: "<REDACTED — set EXPO_PUBLIC_FIREBASE_API_KEY in .env>",
   authDomain: "nfc-app-7095e.firebaseapp.com",
   projectId: "nfc-app-7095e",
   storageBucket: "nfc-app-7095e.firebasestorage.app",
@@ -560,7 +560,7 @@ If you want to self-check before sending:
 **User**
 
 const firebaseConfig = {
-  apiKey: "AIzaSyClcD5yBFIm0ee5k_7EbjqIOrlUteyaiIc",
+  apiKey: "<REDACTED — set EXPO_PUBLIC_FIREBASE_API_KEY in .env>",
   authDomain: "nfc-app-7095e.firebaseapp.com",
   projectId: "nfc-app-7095e",
   storageBucket: "nfc-app-7095e.firebasestorage.app",

@@ -12,6 +12,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Security (Jun 2026)
+- **No committed API keys:** Firebase web API key loads from **`.env`** (`EXPO_PUBLIC_FIREBASE_API_KEY` via `app.config.js`). **`android/app/google-services.json`** is gitignored; use **`google-services.json.example`** or download from Firebase console. Hardcoded fallbacks removed from `firebaseAuthClient.ts`.
+
+### Fixed (Jun 2026 — testing report 5 Jun, follow-up)
+- **Keyboard gap:** Removed double-lift (`keyboardHeight` padding on top of KAV/`adjustResize`); composers use minimal 4px inset when keyboard is open; KAV is **iOS-only** (`composerKeyboardAvoidanceEnabled`).
+- **Missing carousel photos:** `useResolvedPostMedia` maps one display URI per Tier B ref by index; failed decrypts keep legacy/peek URIs instead of dropping slides.
+- **Post comment send:** Comment field uses `postCommentTextRef` + `postCommentInput` (same pattern as chat); send enables as you type; submit reads ref after input settles.
+
 ### Fixed (Jun 2026 — testing report 5 Jun)
 - **Chat keyboard:** Re-enabled `KeyboardAvoidingView` on Android for chat; fixed composers use `keyboardComposerBottomPadding` (explicit lift from `keyboardHeight` on edge-to-edge). Same helper on post comment composer, publish footer, and chat/broadcast composer modals.
 - **Post comments live:** Fullscreen post viewer reads from live `posts` state (`fullScreenPostLive`) so new comments appear immediately without leaving the thread.

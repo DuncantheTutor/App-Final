@@ -11,6 +11,15 @@ This guide covers:
 
 ## 1) Test on laptop ("fake mobiles")
 
+### Firebase credentials (required once per machine)
+
+This repo does **not** commit Google API keys. Before `npm run android` or `npm run apk:release`:
+
+1. Copy **`.env.example`** → **`.env`** and set **`EXPO_PUBLIC_FIREBASE_API_KEY`** (Firebase console → Project settings → Your apps → Web app → API key).
+2. Copy **`android/app/google-services.json.example`** → **`android/app/google-services.json`**, or download the real file from Firebase console (Project settings → Android app `com.duncanharper42.appv2build2` → **google-services.json**).
+
+Without these files, Auth/Firestore and FCM push builds will fail at runtime or build time.
+
 ### Option A: Android emulator (recommended on Windows)
 
 1. Install Android Studio (includes Android Emulator + AVD Manager).

@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { Post } from "../domain/types";
 import {
   httpsDisplayCacheKey,
-  peekDisplayMediaUri,
   peekTierBDisplayUri,
   rememberDisplayMediaUri,
 } from "../lib/displayMediaCache";
@@ -42,11 +41,41 @@ export function thumbnailFromResolvedMedia(
   return undefined;
 }
 
+/** One display URI per carousel slot — legacy HTTPS and Tier B refs align by index. */
+export function mergePostImageUris(
+  legacyImages: string[],
+  encRefs: EncryptedMediaRef[],
+  resolvedEncUris: string[]
+): string[] {
+  if (encRefs.length === 0) return legacyImages;
+
+  const merged: string[] = [];
+  for (let i = 0; i < encRefs.length; i++) {
+    const resolved = resolvedEncUris[i]?.trim();
+    const legacy = legacyImages[i]?.trim();
+    const peek = peekTierBDisplayUri(encRefs[i])?.trim();
+    const uri = resolved || legacy || peek || "";
+    if (uri) merged.push(uri);
+  }
+
+  if (merged.length > 0) return merged;
+  return legacyImages;
+}
+
+function syncImageUrisFromPost(post: Post): string[] {
+  const legacyImages = (post.imageUris ?? []).filter((u) => u.trim().length > 0);
+  const encRefs = post.imageEncryptedMedia ?? [];
+  if (encRefs.length === 0) return legacyImages;
+
+  const peekResolved = encRefs.map((ref, i) => peekTierBDisplayUri(ref) ?? legacyImages[i] ?? "");
+  return mergePostImageUris(legacyImages, encRefs, peekResolved);
+}
+
 function initialResolvedFromPost(post: Post): ResolvedPostMedia {
   const legacyImages = (post.imageUris ?? []).filter((u) => u.trim().length > 0);
-  const encImages = (post.imageEncryptedMedia ?? [])
-    .map((ref) => peekTierBDisplayUri(ref))
-    .filter((uri): uri is string => !!uri?.trim());
+  for (const uri of legacyImages) {
+    rememberDisplayMediaUri(httpsDisplayCacheKey(uri), uri);
+  }
 
   let videoUri = post.videoUri?.trim();
   if (post.videoEncryptedMedia) {
@@ -58,31 +87,37 @@ function initialResolvedFromPost(post: Post): ResolvedPostMedia {
       peekTierBDisplayUri(post.videoPosterEncryptedMedia) ?? videoPosterUri;
   }
 
-  for (const uri of legacyImages) {
-    rememberDisplayMediaUri(httpsDisplayCacheKey(uri), uri);
-  }
-
   return {
-    imageUris: encImages.length > 0 ? [...legacyImages, ...encImages] : legacyImages,
+    imageUris: syncImageUrisFromPost(post),
     videoUri: videoUri || undefined,
     videoPosterUri: videoPosterUri || undefined,
   };
 }
 
-async function resolveRefs(refs: EncryptedMediaRef[]): Promise<string[]> {
+async function resolveRefsByIndex(
+  refs: EncryptedMediaRef[],
+  legacyByIndex: string[],
+  previousUris: string[]
+): Promise<string[]> {
   const out: string[] = [];
-  for (const ref of refs) {
+  for (let i = 0; i < refs.length; i++) {
+    const ref = refs[i];
+    const legacy = legacyByIndex[i]?.trim();
+    const peek = peekTierBDisplayUri(ref)?.trim();
+    const previous = previousUris[i]?.trim();
+    let uri = legacy || peek || previous || "";
     try {
       const cached = await peekTierBMediaFileUri(ref);
-      if (cached) {
-        out.push(cached);
-        continue;
+      if (cached?.trim()) {
+        uri = cached.trim();
+      } else {
+        uri = (await resolveTierBMediaToFileUri(ref)).trim();
       }
-      out.push(await resolveTierBMediaToFileUri(ref));
       await yieldToUi();
     } catch {
-      /* skip failed blob */
+      /* keep best-known uri for this slot */
     }
+    if (uri) out.push(uri);
   }
   return out;
 }
@@ -120,11 +155,13 @@ export function useResolvedPostMedia(
         rememberDisplayMediaUri(httpsDisplayCacheKey(uri), uri);
       }
 
-      const encImages = post.imageEncryptedMedia ?? [];
-      const mergedImages =
-        encImages.length > 0
-          ? [...legacyImages, ...(await resolveRefs(encImages))]
-          : legacyImages;
+      const encRefs = post.imageEncryptedMedia ?? [];
+      const syncUris = syncImageUrisFromPost(post);
+      const resolvedEnc =
+        encRefs.length > 0
+          ? await resolveRefsByIndex(encRefs, legacyImages, syncUris)
+          : [];
+      const mergedImages = mergePostImageUris(legacyImages, encRefs, resolvedEnc);
 
       let videoUri = post.videoUri?.trim();
       if (resolveVideo && post.videoEncryptedMedia) {
@@ -133,7 +170,7 @@ export function useResolvedPostMedia(
             (await peekTierBMediaFileUri(post.videoEncryptedMedia)) ??
             (await resolveTierBMediaToFileUri(post.videoEncryptedMedia));
         } catch {
-          /* keep legacy */
+          videoUri = peekTierBDisplayUri(post.videoEncryptedMedia) ?? videoUri;
         }
       }
 
@@ -144,13 +181,14 @@ export function useResolvedPostMedia(
             (await peekTierBMediaFileUri(post.videoPosterEncryptedMedia)) ??
             (await resolveTierBMediaToFileUri(post.videoPosterEncryptedMedia));
         } catch {
-          /* keep legacy */
+          videoPosterUri =
+            peekTierBDisplayUri(post.videoPosterEncryptedMedia) ?? videoPosterUri;
         }
       }
 
       if (!cancelled) {
         const next: ResolvedPostMedia = {
-          imageUris: mergedImages,
+          imageUris: mergedImages.length > 0 ? mergedImages : syncUris,
           videoUri: videoUri || undefined,
           videoPosterUri: videoPosterUri || undefined,
         };
