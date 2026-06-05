@@ -10,6 +10,30 @@
 
 ---
 
+## 2026-06-05 20:29 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 20:29 +01:00 | Chat | Read-receipt avatars always align to the right screen edge. |
+
+---
+
+## 2026-06-05 20:27 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 20:27 +01:00 | Chat | Scroll-up pagination kept messages in memory for the open thread; trim no longer deletes loaded history after fetch. |
+
+---
+
+## 2026-06-05 20:26 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 20:26 +01:00 | Keyboard / Media | Restore Android keyboard lift without KAV double-stack; Tier B decrypt runs 3-wide with high/low priority so tap-to-play video is not blocked. |
+
+---
+
 ## 2026-06-05 20:23 +01:00
 
 | Time | Area | Change |

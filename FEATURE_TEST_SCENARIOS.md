@@ -7,7 +7,7 @@
 - **Upgrade from encrypted-cache build:** Sign in after installing this APK — chats/posts still restore; first read may briefly migrate legacy `enc1:` storage keys to plaintext (no user action).
 - **Many dormant threads:** Account with 20+ old chats — cold start must not freeze for tens of seconds decrypting a giant messages blob; only **visible** inbox rows keep message bodies in RAM (7 each).
 
-- **Chat keyboard:** Composer should sit just above the keyboard — **no large empty gap** (Android: resize only; iOS: KAV padding).
+- **Chat keyboard:** Composer should sit just above the keyboard — **no large empty gap** (Android: `keyboardHeight` padding only; iOS: KAV padding). Typing while editing a message must keep the text field visible.
 - **Post carousel:** Multi-photo posts keep **all slides** after Tier B resolve; a failed decrypt must not remove a slide.
 - **Post comments:** On a **friend's post**, type in Add comment → send enables and posts live. On **your post**, tap **Reply** on a thread first, then send.
 
@@ -17,7 +17,7 @@
 - **Post comments live:** Open a post fullscreen → send a comment → it appears in the thread **immediately** (no leave/return).
 - **Reactions horizontal:** Multiple emoji types on a post/comment/message appear in **one horizontal pill**, not stacked vertically.
 - **Remove reaction:** Long-press → **Remove reaction (emoji)** in picker, or tap your current emoji again → reaction clears.
-- **Read receipts:** On your sent messages, small read avatars align with the **right screen edge** below your avatar; incoming reads align left under their avatar.
+- **Read receipts:** Small read avatars always align with the **right screen edge** below the message row.
 - **Push:** After rebuild, grant notifications → send chat from other phone → heads-up within ~1–3 s (`POST_NOTIFICATIONS` required on Android 13+).
 
 ## Jun 2026 — new friend profile + notifications
@@ -143,10 +143,10 @@
 - **Read receipts:** Reader avatars below sent messages must **not** flash a **?** while friend profiles are still loading — use cached profile cards / roster fallback letters instead.
 - **Chat avatars:** Tapping **your own** avatar in a chat thread opens **My profile**.
 - **New-post push:** Friends receive a push when you publish (`New post from {username}`). Requires **Cloud Functions deploy** after this build (`firebase deploy --only functions` from `backend/functions`).
-- **Chat performance:** Opening a chat loads the **most recent 30 messages** (scroll up for older). Even when hundreds are already in memory, the list only **mounts a sliding window** (30 at first, +30 per scroll-up) so taps and the keyboard stay responsive. Video bubbles use first-frame posters until play. **Requires new release APK (`npm run apk:release`).**
+- **Chat performance:** Opening a chat loads the **most recent 7 messages** (scroll up for older). Scroll-up shows a spinner then **older bubbles appear** (15 per server page, or expands locally when already in memory). Leaving the chat trims that thread back to 7 in memory. **Requires new release APK (`npm run apk:release`).**
 - **First open / cold start (responsiveness):** On a **fresh install** (or cleared app data), sign in and reach home — bottom nav icons and chat/feed tabs must remain **tappable within a few seconds** (no multi-second freeze). The home feed should show **at most 3 post cards** on first paint (not 10+); scrolling loads more in batches of 5, then older posts from the server. Tier B media on off-screen cards should not block the UI (decrypt starts when cards become viewable). After the first session, reopening the app should feel snappier (cached AsyncStorage + incremental sync). **Requires new release APK (`npm run apk:release`).**
 - **Notification pre-prompt (first launch):** After splash, while still signed in, the app shows **Stay in the loop** with **Allow notifications** / **Not now** before the home feed is usable. Chats and feed sync continue in the background during this screen. **Allow** → OS permission sheet → home. **Not now** → home without OS prompt; pre-prompt is not shown again for that email unless app data is cleared. Returning users who already granted or denied OS notifications skip this screen. **Requires new release APK.**
-- **Inbound encrypted chat video (responsiveness):** When a friend sends a Tier B encrypted video, the bubble appears immediately with a play icon — **no multi-second UI freeze** while the app decrypts. Tap play → **Preparing video…** spinner while decrypt/download runs, then inline playback as usual. The chat must stay scrollable and the back button must work while a video message is visible (even if decrypt is running). Scrolling the chat or switching the app while a video message arrives must stay responsive. **Feed/post Tier B video** uses the same tap-to-decrypt rule (poster + play until tap). **Full-screen chat/feed media** follows device rotation (portrait + landscape). **Requires new release APK (`npm run apk:release`).**
+- **Inbound encrypted chat video (responsiveness):** When a friend sends a Tier B encrypted video, the bubble appears immediately with a play icon — **no multi-second UI freeze** while the app decrypts. Tap play → **Preparing video…** spinner while decrypt/download runs (should start within a few seconds, not minutes — high-priority queue), then inline playback as usual.
 - **Chat photos:** tap a photo or GIF — **full-screen** page (not a dimmed popup); close with X or Android back. With the composer keyboard open, tap must **dismiss the keyboard** (or open the viewer above it) so the image is fully visible.
 - **Photo editor (chat):** Add text on a photo/video or type a caption on the preview step — the keyboard must not cover the chat composer underneath, and caption / **Add text** inputs must stay visible above the keyboard (Send/Add actions reachable).
 - **Shared media:** chat ⋮ → **Shared media** lists all photos/videos in the thread (3-column grid); tile tap opens full-screen viewer; back arrow returns to chat.

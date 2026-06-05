@@ -2761,8 +2761,26 @@ function MainAppInner() {
       unfriendedIds,
       openChatLocalId,
     });
+    const exemptChatIds = new Set<string>();
+    if (openChatLocalId) {
+      if (session?.uid) {
+        for (const id of localChatIdsForDirectThread(
+          openChatLocalId,
+          chats,
+          session.uid,
+          friendMap,
+          friendIdToBackendUid
+        )) {
+          exemptChatIds.add(id);
+        }
+      } else {
+        exemptChatIds.add(openChatLocalId);
+      }
+    }
     setMessages((current) => {
-      const trimmed = trimInMemoryMessages(current, retained, CHAT_INITIAL_MESSAGE_LIMIT);
+      const trimmed = trimInMemoryMessages(current, retained, CHAT_INITIAL_MESSAGE_LIMIT, {
+        exemptChatIds,
+      });
       const curSig = current
         .map((m) => m.id)
         .sort()
@@ -3188,9 +3206,17 @@ function MainAppInner() {
       }
       if (decoded.length > 0) {
         setMessages((current) => mergeSyncedMessages(current, decoded, { incremental: true, optimisticWindowMs: 120_000 }));
-        setChatListDisplayLimit((current) => current + decoded.length);
       }
-      setChatHasMoreOlder((current) => ({ ...current, [chatId]: Boolean(res.hasMore) }));
+      const fetchedCount = res.items?.length ?? 0;
+      if (fetchedCount > 0) {
+        setChatListDisplayLimit((current) =>
+          current + Math.max(decoded.length, CHAT_UI_DISPLAY_PAGE_SIZE)
+        );
+      }
+      setChatHasMoreOlder((current) => ({
+        ...current,
+        [chatId]: fetchedCount === 0 ? false : Boolean(res.hasMore),
+      }));
     } finally {
       setChatLoadingOlder(false);
     }
@@ -11098,12 +11124,7 @@ function MainAppInner() {
                   </View>
                 </View>
                 {readAvatarUids.length > 0 ? (
-                  <View
-                    style={[
-                      styles.readReceiptAvatarRow,
-                      isMine ? styles.readReceiptAvatarRowMine : styles.readReceiptAvatarRowOther,
-                    ]}
-                  >
+                  <View style={styles.readReceiptAvatarRow}>
                     {readAvatarUids.map((uid) => {
                       const pd =
                         uid === CURRENT_USER_ID

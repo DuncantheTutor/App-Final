@@ -29,7 +29,7 @@ export async function resolveVoicePlayUri(
 ): Promise<string | undefined> {
   if (message.mediaEncrypted) {
     try {
-      return await resolveTierBMediaToFileUri(message.mediaEncrypted);
+      return await resolveTierBMediaToFileUri(message.mediaEncrypted, { priority: "high" });
     } catch {
       /* try legacy/local below */
     }

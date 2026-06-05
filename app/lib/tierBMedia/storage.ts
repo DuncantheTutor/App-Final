@@ -23,7 +23,7 @@ import {
 /** Dedupe concurrent decrypt/download for the same Storage object. */
 const resolveInFlight = new Map<string, Promise<string>>();
 
-export type TierBResolvePriority = "normal" | "high";
+export type TierBResolvePriority = "low" | "normal" | "high";
 
 type ResolveQueueEntry<T> = {
   work: () => Promise<T>;
@@ -32,29 +32,50 @@ type ResolveQueueEntry<T> = {
   priority: TierBResolvePriority;
 };
 
-/** One Tier B resolve at a time so a large video decrypt cannot starve the whole app. */
-const resolveQueue: ResolveQueueEntry<unknown>[] = [];
-let resolveQueueRunning = false;
+const PRIORITY_RANK: Record<TierBResolvePriority, number> = {
+  high: 0,
+  normal: 1,
+  low: 2,
+};
 
-async function drainResolveQueue(): Promise<void> {
-  if (resolveQueueRunning) return;
-  resolveQueueRunning = true;
-  while (resolveQueue.length > 0) {
-    const highIdx = resolveQueue.findIndex((entry) => entry.priority === "high");
-    const entry =
-      highIdx >= 0
-        ? resolveQueue.splice(highIdx, 1)[0]
-        : resolveQueue.shift();
-    if (!entry) break;
-    try {
-      const result = await entry.work();
-      entry.resolve(result);
-    } catch (err) {
-      entry.reject(err);
+/** Limit parallel decrypt/download so UI stays responsive but tap-to-play is not blocked. */
+const MAX_CONCURRENT_RESOLVES = 3;
+
+const resolveQueue: ResolveQueueEntry<unknown>[] = [];
+let activeResolveCount = 0;
+
+function pickNextResolveEntry(): ResolveQueueEntry<unknown> | undefined {
+  if (resolveQueue.length === 0) return undefined;
+  let bestIdx = 0;
+  let bestRank = PRIORITY_RANK[resolveQueue[0].priority];
+  for (let i = 1; i < resolveQueue.length; i++) {
+    const rank = PRIORITY_RANK[resolveQueue[i].priority];
+    if (rank < bestRank) {
+      bestRank = rank;
+      bestIdx = i;
     }
-    await yieldToUi();
   }
-  resolveQueueRunning = false;
+  return resolveQueue.splice(bestIdx, 1)[0];
+}
+
+function drainResolveQueue(): void {
+  while (activeResolveCount < MAX_CONCURRENT_RESOLVES && resolveQueue.length > 0) {
+    const entry = pickNextResolveEntry();
+    if (!entry) break;
+    activeResolveCount++;
+    void (async () => {
+      try {
+        const result = await entry.work();
+        entry.resolve(result);
+      } catch (err) {
+        entry.reject(err);
+      } finally {
+        activeResolveCount--;
+        await yieldToUi();
+        drainResolveQueue();
+      }
+    })();
+  }
 }
 
 function enqueueTierBResolve<T>(

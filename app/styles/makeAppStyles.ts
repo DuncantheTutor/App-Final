@@ -317,17 +317,11 @@ export const makeStyles = (theme: ThemePalette) =>
     readReceiptAvatarRow: {
       flexDirection: "row",
       alignItems: "center",
+      justifyContent: "flex-end",
       gap: 4,
       marginTop: 2,
       marginBottom: 2,
       width: "100%",
-    },
-    readReceiptAvatarRowMine: {
-      justifyContent: "flex-end",
-    },
-    readReceiptAvatarRowOther: {
-      justifyContent: "flex-start",
-      paddingLeft: 38,
     },
     messageBlock: {
       width: "100%",

@@ -7,7 +7,11 @@ import {
   rememberDisplayMediaUri,
 } from "../lib/displayMediaCache";
 import type { EncryptedMediaRef } from "../lib/tierBMedia/types";
-import { peekTierBMediaFileUri, resolveTierBMediaToFileUri } from "../lib/tierBMedia/storage";
+import {
+  peekTierBMediaFileUri,
+  resolveTierBMediaToFileUri,
+  type TierBResolvePriority,
+} from "../lib/tierBMedia/storage";
 import { yieldToUi } from "../lib/yieldToUi";
 
 export type ResolvedPostMedia = {
@@ -97,7 +101,8 @@ function initialResolvedFromPost(post: Post): ResolvedPostMedia {
 async function resolveRefsByIndex(
   refs: EncryptedMediaRef[],
   legacyByIndex: string[],
-  previousUris: string[]
+  previousUris: string[],
+  priority: TierBResolvePriority
 ): Promise<string[]> {
   const out: string[] = [];
   for (let i = 0; i < refs.length; i++) {
@@ -111,7 +116,7 @@ async function resolveRefsByIndex(
       if (cached?.trim()) {
         uri = cached.trim();
       } else {
-        uri = (await resolveTierBMediaToFileUri(ref)).trim();
+        uri = (await resolveTierBMediaToFileUri(ref, { priority })).trim();
       }
       await yieldToUi();
     } catch {
@@ -128,10 +133,17 @@ async function resolveRefsByIndex(
  */
 export function useResolvedPostMedia(
   post: Post,
-  options?: { enabled?: boolean; resolveVideo?: boolean }
+  options?: {
+    enabled?: boolean;
+    resolveVideo?: boolean;
+    /** User-initiated playback should jump ahead of feed thumbnail decrypt work. */
+    resolvePriority?: TierBResolvePriority;
+  }
 ): ResolvedPostMedia {
   const enabled = options?.enabled !== false;
   const resolveVideo = options?.resolveVideo !== false;
+  const imagePriority = options?.resolvePriority ?? "low";
+  const videoPriority = options?.resolvePriority ?? "high";
   const encryptedKey = useMemo(
     () =>
       JSON.stringify({
@@ -159,7 +171,7 @@ export function useResolvedPostMedia(
       const syncUris = syncImageUrisFromPost(post);
       const resolvedEnc =
         encRefs.length > 0
-          ? await resolveRefsByIndex(encRefs, legacyImages, syncUris)
+          ? await resolveRefsByIndex(encRefs, legacyImages, syncUris, imagePriority)
           : [];
       const mergedImages = mergePostImageUris(legacyImages, encRefs, resolvedEnc);
 
@@ -168,7 +180,7 @@ export function useResolvedPostMedia(
         try {
           videoUri =
             (await peekTierBMediaFileUri(post.videoEncryptedMedia)) ??
-            (await resolveTierBMediaToFileUri(post.videoEncryptedMedia));
+            (await resolveTierBMediaToFileUri(post.videoEncryptedMedia, { priority: videoPriority }));
         } catch {
           videoUri = peekTierBDisplayUri(post.videoEncryptedMedia) ?? videoUri;
         }
@@ -215,6 +227,8 @@ export function useResolvedPostMedia(
     encryptedKey,
     enabled,
     resolveVideo,
+    imagePriority,
+    videoPriority,
   ]);
 
   return resolved;

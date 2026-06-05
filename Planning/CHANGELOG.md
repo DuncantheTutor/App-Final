@@ -12,6 +12,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed (Jun 2026 — read receipts)
+- **Read receipt alignment:** Small reader avatars always sit on the **right screen edge** below the message block (mine and other senders).
+
+### Fixed (Jun 2026 — chat scroll-up history)
+- **Load older messages:** In-memory trim no longer caps the **open** chat to 7 rows right after pagination; scroll-up spinner now reveals older messages. Background chats still trim to 7 for memory.
+
+### Fixed (Jun 2026 — keyboard + media perf)
+- **Keyboard (Android):** Composers use `keyboardHeight` bottom padding again; KAV stays **iOS-only** so there is no double-lift gap. Applies to chat, post comments, publish footer, and composer modals via `keyboardComposerBottomPadding`.
+- **Video / Tier B slowness:** Decrypt queue runs up to **3** jobs in parallel with **high / normal / low** priority. Tap-to-play video and voice notes use **high**; feed thumbnails and chat photos use **low** so they do not block playback.
+
 ### Security (Jun 2026)
 - **No committed API keys:** Firebase web API key loads from **`.env`** (`EXPO_PUBLIC_FIREBASE_API_KEY` via `app.config.js`). **`android/app/google-services.json`** is gitignored; use **`google-services.json.example`** or download from Firebase console. Hardcoded fallbacks removed from `firebaseAuthClient.ts`.
 

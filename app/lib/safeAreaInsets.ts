@@ -30,19 +30,24 @@ export function composerBottomPadding(insetsBottom: number, keyboardVisible: boo
 }
 
 /**
- * Bottom inset for fixed bottom composers (chat, post comment).
- * When the keyboard is open, use a minimal gap — `KeyboardAvoidingView` (iOS) or
- * `adjustResize` (Android) already lifts the layout; do not add `keyboardHeight` padding.
+ * Bottom inset for fixed bottom composers (chat, post comment, modals).
+ * iOS: minimal gap — `KeyboardAvoidingView` lifts the layout.
+ * Android edge-to-edge: explicit `keyboardHeight` lift only (never stack with KAV).
  */
 export function keyboardComposerBottomPadding(
   insetsBottom: number,
   keyboardVisible: boolean,
-  _keyboardHeight = 0
+  keyboardHeight = 0
 ): number {
-  return composerBottomPadding(insetsBottom, keyboardVisible);
+  if (!keyboardVisible) return stickyFooterPadding(insetsBottom);
+  if (Platform.OS === "android" && keyboardHeight > 0) {
+    const nav = androidNavInset(insetsBottom);
+    return Math.max(4, keyboardHeight - nav);
+  }
+  return composerBottomPadding(insetsBottom, true);
 }
 
-/** iOS-only KAV for fixed composers — Android uses `softwareKeyboardLayoutMode: resize`. */
+/** iOS-only KAV — Android composers use `keyboardComposerBottomPadding` instead. */
 export function composerKeyboardAvoidanceEnabled(
   keyboardVisible: boolean,
   overlaySuppressesKeyboardAvoidance: boolean

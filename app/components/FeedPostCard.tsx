@@ -112,6 +112,7 @@ function FeedPostCardView({
   const resolvedMedia = useResolvedPostMedia(post, {
     enabled: resolveMediaEnabled,
     resolveVideo: feedVideoDecryptRequested,
+    resolvePriority: feedVideoDecryptRequested ? "high" : "low",
   });
   const mediaUris = resolvedMedia.imageUris;
   const feedVideoUri = resolvedMedia.videoUri;

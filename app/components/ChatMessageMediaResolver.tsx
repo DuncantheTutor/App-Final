@@ -12,10 +12,15 @@ export function ChatMessageMediaResolver(props: {
   resolvePriority?: TierBResolvePriority;
   children: (resolvedUri: string | undefined, resolving: boolean) => ReactNode;
 }): ReactNode {
+  const defaultPriority: TierBResolvePriority =
+    props.message.kind === "video" ? "normal" : "low";
   const { uri, resolving } = useResolvedMediaUri(
     props.message.mediaUri,
     props.message.mediaEncrypted,
-    { enabled: props.resolveEnabled !== false, priority: props.resolvePriority ?? "normal" }
+    {
+      enabled: props.resolveEnabled !== false,
+      priority: props.resolvePriority ?? defaultPriority,
+    }
   );
   return <>{props.children(uri, resolving)}</>;
 }
