@@ -12,6 +12,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed (Jun 2026 — chat keyboard double-lift)
+- **Chat composer gap:** Android chat no longer stacks overlay `bottom: keyboardHeight` with another full `keyboardHeight` on the input bar; skips manual shrink when `adjustResize` already resized the window. Photo caption mode uses compact composer (wider field) like typed messages.
+
+### Fixed (Jun 2026 — chat photo caption)
+- **Chat photo send:** After the photo editor, chat photos no longer use the preview-step caption field (which could vanish behind the keyboard). **Done** returns to the thread with the edited photo pinned above the normal composer; optional caption + **Send** use the regular chat input.
+
+### Fixed (Jun 2026 — chat keyboard, Android)
+- **Chat composer on Android:** Chat screen is `absoluteFill`; padding on the input bar could not lift the overlay. Root now sets `bottom: keyboardHeight` while the keyboard is open so the whole thread + composer sit above it.
+
+### Fixed (Jun 2026 — auth keyboard)
+- **Login / OTP:** Sign-in, login OTP, and signup OTP screens scroll and lift above the keyboard (same pattern as chat: iOS KAV + Android `keyboardHeight` padding).
+
 ### Fixed (Jun 2026 — read receipts)
 - **Read receipt alignment:** Small reader avatars always sit on the **right screen edge** below the message block (mine and other senders).
 

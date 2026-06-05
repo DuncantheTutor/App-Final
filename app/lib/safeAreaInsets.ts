@@ -30,24 +30,47 @@ export function composerBottomPadding(insetsBottom: number, keyboardVisible: boo
 }
 
 /**
- * Bottom inset for fixed bottom composers (chat, post comment, modals).
+ * Bottom inset for fixed bottom composers on flex layouts (auth, modals, publish).
  * iOS: minimal gap — `KeyboardAvoidingView` lifts the layout.
- * Android edge-to-edge: explicit `keyboardHeight` lift only (never stack with KAV).
+ * Android flex roots: lift by full `keyboardHeight`.
+ *
+ * When `overlayRootShrinksForKeyboard` is true (chat `absoluteFill` + `androidAbsoluteOverlayKeyboardBottom`),
+ * the parent already lifted — use only the minimal open-keyboard gap.
  */
 export function keyboardComposerBottomPadding(
   insetsBottom: number,
   keyboardVisible: boolean,
-  keyboardHeight = 0
+  keyboardHeight = 0,
+  overlayRootShrinksForKeyboard = false
 ): number {
   if (!keyboardVisible) return stickyFooterPadding(insetsBottom);
+  if (overlayRootShrinksForKeyboard) return composerBottomPadding(insetsBottom, true);
   if (Platform.OS === "android" && keyboardHeight > 0) {
-    const nav = androidNavInset(insetsBottom);
-    return Math.max(4, keyboardHeight - nav);
+    return Math.max(4, keyboardHeight);
   }
   return composerBottomPadding(insetsBottom, true);
 }
 
-/** iOS-only KAV — Android composers use `keyboardComposerBottomPadding` instead. */
+/** Shrink `absoluteFill` chat (and similar) roots above the keyboard on Android edge-to-edge. */
+export function androidAbsoluteOverlayKeyboardBottom(
+  keyboardVisible: boolean,
+  keyboardHeight: number,
+  options?: { windowHeight?: number; baselineWindowHeight?: number }
+): number {
+  if (Platform.OS !== "android" || !keyboardVisible || keyboardHeight <= 0) return 0;
+  const windowHeight = options?.windowHeight;
+  const baselineWindowHeight = options?.baselineWindowHeight;
+  if (
+    baselineWindowHeight != null &&
+    windowHeight != null &&
+    baselineWindowHeight - windowHeight >= keyboardHeight * 0.85
+  ) {
+    return 0;
+  }
+  return keyboardHeight;
+}
+
+/** iOS-only KAV — Android absolute overlays use `androidAbsoluteOverlayKeyboardBottom`. */
 export function composerKeyboardAvoidanceEnabled(
   keyboardVisible: boolean,
   overlaySuppressesKeyboardAvoidance: boolean

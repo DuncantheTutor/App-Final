@@ -1646,6 +1646,12 @@ export const makeStyles = (theme: ThemePalette) =>
       marginRight: 8,
       fontSize: 12,
     },
+    pendingChatMediaThumb: {
+      width: 44,
+      height: 44,
+      borderRadius: 6,
+      marginRight: 8,
+    },
     replyBannerClose: {
       padding: 2,
     },

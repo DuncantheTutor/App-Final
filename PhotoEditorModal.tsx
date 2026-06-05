@@ -101,6 +101,10 @@ type Props = {
   mediaType?: "photo" | "video";
   /** Label for the final confirmation on the preview step (default: Post). */
   previewSubmitLabel?: string;
+  /** Skip preview/caption step — export from edit and return immediately (chat photos). */
+  externalCaptionComposer?: boolean;
+  /** Label for the edit-step continue button (default: Continue). */
+  editContinueLabel?: string;
   /** Fired when crop UI opens or closes (Android hardware back can exit crop first). */
   onCropModeChange?: (active: boolean) => void;
   /** Increment to exit crop from the parent (hardware back). */
@@ -332,6 +336,8 @@ export function PhotoEditorModal({
   theme,
   mediaType = "photo",
   previewSubmitLabel = "Post",
+  externalCaptionComposer = false,
+  editContinueLabel = "Continue",
   onCropModeChange,
   cropExitTick = 0,
 }: Props) {
@@ -843,6 +849,33 @@ export function PhotoEditorModal({
     [drawMode, drawColor, strokeWidth, pushUndo]
   );
 
+  const finishExportedPhoto = useCallback(
+    (uri: string) => {
+      Image.getSize(
+        uri,
+        (width, height) => {
+          onComplete({
+            uri,
+            width,
+            height,
+            caption: "",
+            mediaKind: "photo",
+          });
+        },
+        () => {
+          onComplete({
+            uri,
+            width: naturalW,
+            height: naturalH,
+            caption: "",
+            mediaKind: "photo",
+          });
+        }
+      );
+    },
+    [onComplete, naturalH, naturalW]
+  );
+
   const runExportToPreview = useCallback(async () => {
     if (!workingUri) return;
     if (isVideo) {
@@ -859,6 +892,10 @@ export function PhotoEditorModal({
         quality: 0.92,
         result: "tmpfile",
       });
+      if (externalCaptionComposer) {
+        finishExportedPhoto(uri);
+        return;
+      }
       setPreviewUri(uri);
       setStep("preview");
     } catch {
@@ -866,7 +903,7 @@ export function PhotoEditorModal({
     } finally {
       setExporting(false);
     }
-  }, [workingUri, isVideo]);
+  }, [workingUri, isVideo, externalCaptionComposer, finishExportedPhoto]);
 
   const confirmPost = useCallback(() => {
     if (!previewUri) return;
@@ -1668,12 +1705,14 @@ export function PhotoEditorModal({
                   ]}
                   onPress={() => void runExportToPreview()}
                   disabled={exporting || !workingUri || manipulating || externalCropVisible}
-                  accessibilityLabel="Continue to preview"
+                  accessibilityLabel={
+                    externalCaptionComposer ? editContinueLabel : "Continue to preview"
+                  }
                 >
                   {exporting ? (
                     <ActivityIndicator color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.primaryWideText}>Continue</Text>
+                    <Text style={styles.primaryWideText}>{editContinueLabel}</Text>
                   )}
                 </Pressable>
               </View>

@@ -40,6 +40,7 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   Vibration,
+  Dimensions,
   View,
   type ScrollView,
   type ViewToken,
@@ -164,6 +165,7 @@ import { readComposerTextTrimmed, writeComposerText } from "./lib/syncedComposer
 import {
   composerKeyboardAvoidanceEnabled,
   keyboardComposerBottomPadding,
+  androidAbsoluteOverlayKeyboardBottom,
   navDeadZoneHeight,
   scrollPageBottomPadding,
   stickyFooterPadding,
@@ -553,6 +555,12 @@ function MainAppInner() {
   const [pendingVoiceNote, setPendingVoiceNote] = useState<{ uri: string; durationSec: number } | null>(
     null
   );
+  const [pendingChatMediaAttachment, setPendingChatMediaAttachment] = useState<{
+    kind: "photo";
+    uri: string;
+    width: number;
+    height: number;
+  } | null>(null);
   const [previewVoicePlaying, setPreviewVoicePlaying] = useState(false);
   const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
   const [photoEditorInCrop, setPhotoEditorInCrop] = useState(false);
@@ -899,6 +907,8 @@ function MainAppInner() {
   );
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [windowHeight, setWindowHeight] = useState(() => Dimensions.get("window").height);
+  const windowHeightBaselineRef = useRef(windowHeight);
   useEffect(() => {
     const show = Keyboard.addListener(
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
@@ -911,12 +921,25 @@ function MainAppInner() {
     const hide = Keyboard.addListener("keyboardDidHide", () => {
       setKeyboardVisible(false);
       setKeyboardHeight(0);
+      windowHeightBaselineRef.current = Dimensions.get("window").height;
+      setWindowHeight(windowHeightBaselineRef.current);
     });
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
+  useEffect(() => {
+    const sub = Dimensions.addEventListener("change", ({ window }) => {
+      setWindowHeight(window.height);
+    });
+    return () => sub.remove();
+  }, []);
+  useEffect(() => {
+    if (!keyboardVisible) {
+      windowHeightBaselineRef.current = windowHeight;
+    }
+  }, [keyboardVisible, windowHeight]);
 
   /** Full-screen overlays that manage their own keyboard — don't shift chat/post composers underneath. */
   const overlaySuppressesKeyboardAvoidance =
@@ -6695,10 +6718,22 @@ function MainAppInner() {
 
   const sendMessage = () => {
     const text = readComposerTextTrimmed(chatInputTextRef);
-    if (!text) return;
+    const pendingMedia = pendingChatMediaAttachment;
+    if (!text && !pendingMedia) return;
     Keyboard.dismiss();
     chatInputRef.current?.blur();
     try {
+      if (pendingMedia) {
+        sendPayload({
+          text,
+          kind: pendingMedia.kind,
+          mediaUri: pendingMedia.uri,
+          mediaWidth: pendingMedia.width,
+          mediaHeight: pendingMedia.height,
+        });
+        setPendingChatMediaAttachment(null);
+        return;
+      }
       sendPayload({ text, kind: "text" });
     } catch (err) {
       logAppError("send.compose", err, {});
@@ -6905,13 +6940,13 @@ function MainAppInner() {
       });
       return;
     }
-    sendPayload({
-      text: result.caption,
+    setPendingChatMediaAttachment({
       kind: "photo",
-      mediaUri: result.uri,
-      mediaWidth: result.width,
-      mediaHeight: result.height,
+      uri: result.uri,
+      width: result.width,
+      height: result.height,
     });
+    setShouldFocusChatInput(true);
   };
 
   const cancelPhotoEditor = () => {
@@ -7084,6 +7119,10 @@ function MainAppInner() {
     setPendingVoiceNote(null);
   }, []);
 
+  const discardPendingChatMedia = useCallback(() => {
+    setPendingChatMediaAttachment(null);
+  }, []);
+
   const sendPendingVoiceNote = useCallback(async () => {
     if (!pendingVoiceNote) return;
     if (previewSoundRef.current) {
@@ -7235,6 +7274,7 @@ function MainAppInner() {
     setVoiceRecordElapsedSec(0);
     voiceRecordStartedAtRef.current = null;
     setPendingVoiceNote(null);
+    setPendingChatMediaAttachment(null);
     setPreviewVoicePlaying(false);
     setPlayingVoiceMessageId(null);
     setVoiceLoadingMessageId(null);
@@ -7546,7 +7586,8 @@ function MainAppInner() {
     const hasUnsent =
       readComposerTextTrimmed(chatInputTextRef).length > 0 ||
       !!voiceRecordStartedAt ||
-      !!pendingVoiceNote;
+      !!pendingVoiceNote ||
+      !!pendingChatMediaAttachment;
 
     if (chat?.isDraft && hasUnsent) {
       Alert.alert("Save draft?", "You have unsent text in this draft.", [
@@ -7691,6 +7732,10 @@ function MainAppInner() {
       void discardPendingVoiceNote();
       return true;
     }
+    if (pendingChatMediaAttachment) {
+      discardPendingChatMedia();
+      return true;
+    }
     if (voiceNoteMode) {
       void exitVoiceNoteMode();
       return true;
@@ -7787,12 +7832,14 @@ function MainAppInner() {
     chatSearchVisible,
     voiceRecordStartedAt,
     pendingVoiceNote,
+    pendingChatMediaAttachment,
     voiceNoteMode,
     closeFullscreenPost,
     closePublishPostScreen,
     cancelPhotoEditor,
     cancelVoiceRecording,
     discardPendingVoiceNote,
+    discardPendingChatMedia,
     exitVoiceNoteMode,
     onBackFromChat,
   ]);
@@ -8844,7 +8891,8 @@ function MainAppInner() {
     [postFullscreenThreadReplyKey, fullScreenPost?.id]
   );
 
-  const showCompactComposer = keyboardVisible && !!chatInput.trim();
+  const showCompactComposer =
+    keyboardVisible && (!!chatInput.trim() || !!pendingChatMediaAttachment);
 
   useEffect(() => {
     if (!showChatScreen || !shouldFocusChatInput) return;
@@ -8938,14 +8986,28 @@ function MainAppInner() {
   }
 
   if (!signedIn) {
+    const authKavEnabled = keyboardVisible && !overlaySuppressesKeyboardAvoidance;
+    const authScrollContentStyle = {
+      flexGrow: 1,
+      justifyContent: keyboardVisible ? ("flex-start" as const) : ("center" as const),
+      paddingBottom: keyboardVisible ? keyboardScrollPadding(keyboardHeight, 24) : 8,
+      paddingTop: keyboardVisible ? 4 : 0,
+    };
     return (
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: theme.background }}
+        behavior="padding"
+        enabled={authKavEnabled}
+        keyboardVerticalOffset={safeTop}
+      >
       <View
         style={[
           styles.screen,
           {
-            backgroundColor: theme.background,
             paddingTop: safeTop + 10,
-            paddingBottom: stickyFooterPadding(insets.bottom),
+            paddingBottom: keyboardVisible
+              ? keyboardComposerBottomPadding(insets.bottom, keyboardVisible, keyboardHeight)
+              : stickyFooterPadding(insets.bottom),
           },
         ]}
       >
@@ -8962,7 +9024,11 @@ function MainAppInner() {
                 </Pressable>
               )}
             </View>
-            <View style={styles.authCentered}>
+            <ScrollViewUntilScroll
+              style={{ flex: 1 }}
+              contentContainerStyle={authScrollContentStyle}
+              keyboardShouldPersistTaps="handled"
+            >
               <View style={styles.authCard}>
                 <Text style={styles.authHeading}>{DEMO_OFFLINE_MODE ? "Demo Login" : "Login"}</Text>
                 {DEMO_OFFLINE_MODE ? (
@@ -9002,7 +9068,7 @@ function MainAppInner() {
                   <Text style={styles.primaryButtonText}>Login</Text>
                 </Pressable>
               </View>
-            </View>
+            </ScrollViewUntilScroll>
           </View>
         ) : authMode === "loginOtp" ? (
           <View style={styles.authLoginRoot}>
@@ -9012,7 +9078,11 @@ function MainAppInner() {
               </Pressable>
               <View style={styles.authTopSideSpacer} />
             </View>
-            <View style={styles.authCentered}>
+            <ScrollViewUntilScroll
+              style={{ flex: 1 }}
+              contentContainerStyle={authScrollContentStyle}
+              keyboardShouldPersistTaps="handled"
+            >
               <View style={[styles.authCard, { width: "100%", maxWidth: 420 }]}>
                 <Text style={styles.authHeading}>Verification code</Text>
                 <Text style={styles.subtleText}>
@@ -9039,23 +9109,18 @@ function MainAppInner() {
                   </Pressable>
                 </View>
               </View>
-            </View>
+            </ScrollViewUntilScroll>
           </View>
         ) : authMode === "signup" ? (
-          <KeyboardAvoidingView
-            style={{ flex: 1 }}
-            behavior="padding"
-            enabled={keyboardVisible}
-            keyboardVerticalOffset={safeTop}
-          >
           <ScrollViewUntilScroll
+            style={{ flex: 1 }}
             contentContainerStyle={[
               styles.authCard,
+              authScrollContentStyle,
               {
-                paddingBottom:
-                  keyboardHeight > 0
-                    ? keyboardScrollPadding(keyboardHeight, 20)
-                    : scrollPageBottomPadding(insets.bottom, 20),
+                paddingBottom: keyboardVisible
+                  ? keyboardScrollPadding(keyboardHeight, 20)
+                  : scrollPageBottomPadding(insets.bottom, 20),
               },
             ]}
             keyboardShouldPersistTaps="handled"
@@ -9141,7 +9206,6 @@ function MainAppInner() {
               <Text style={styles.primaryButtonText}>Create account</Text>
             </Pressable>
           </ScrollViewUntilScroll>
-          </KeyboardAvoidingView>
         ) : (
           <View style={styles.authLoginRoot}>
             <View style={styles.authTopBar}>
@@ -9150,7 +9214,11 @@ function MainAppInner() {
               </Pressable>
               <View style={styles.authTopSideSpacer} />
             </View>
-            <View style={styles.authCentered}>
+            <ScrollViewUntilScroll
+              style={{ flex: 1 }}
+              contentContainerStyle={authScrollContentStyle}
+              keyboardShouldPersistTaps="handled"
+            >
               <View style={styles.authCard}>
                 <Text style={styles.authHeading}>Enter OTP</Text>
                 <Text style={styles.subtleText}>Enter the OTP sent to {signupPhoneNumber.trim()}.</Text>
@@ -9167,10 +9235,11 @@ function MainAppInner() {
                   <Text style={styles.primaryButtonText}>Verify OTP</Text>
                 </Pressable>
               </View>
-            </View>
+            </ScrollViewUntilScroll>
           </View>
         )}
       </View>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -10371,12 +10440,22 @@ function MainAppInner() {
 
       {showChatScreen ? (
         <KeyboardAvoidingView
-          style={[styles.chatScreen, { paddingTop: safeTop }]}
+          style={[
+            styles.chatScreen,
+            { paddingTop: safeTop },
+            {
+              bottom: androidAbsoluteOverlayKeyboardBottom(keyboardVisible, keyboardHeight, {
+                windowHeight,
+                baselineWindowHeight: windowHeightBaselineRef.current,
+              }),
+            },
+          ]}
           behavior="padding"
           enabled={composerKavEnabled}
           /** KAV already has `paddingTop: safeTop`; avoid stacking large offsets (gap above keyboard). */
           keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
         >
+          <View style={{ flex: 1 }}>
           <ChatThreadErrorBoundary
             backgroundColor={theme.background}
             accentColor={theme.accent}
@@ -11264,6 +11343,31 @@ function MainAppInner() {
                 </View>
               ) : null}
 
+              {pendingChatMediaAttachment ? (
+                <View
+                  style={[
+                    styles.replyBanner,
+                    { borderBottomColor: theme.divider, backgroundColor: theme.replyBannerQuotingOtherBg },
+                  ]}
+                >
+                  <Image
+                    source={{ uri: pendingChatMediaAttachment.uri }}
+                    style={styles.pendingChatMediaThumb}
+                    accessibilityIgnoresInvertColors
+                  />
+                  <Text style={[styles.replyBannerText, { color: theme.text, flex: 1 }]}>
+                    Photo ready — add a caption below or send
+                  </Text>
+                  <Pressable
+                    style={styles.attachButton}
+                    onPress={discardPendingChatMedia}
+                    accessibilityLabel="Discard photo"
+                  >
+                    <Ionicons name="trash-outline" size={18} color={theme.danger} />
+                  </Pressable>
+                </View>
+              ) : null}
+
               <View
                 style={[
                   styles.chatComposerStack,
@@ -11333,7 +11437,8 @@ function MainAppInner() {
                       paddingBottom: keyboardComposerBottomPadding(
                         insets.bottom,
                         keyboardVisible,
-                        keyboardHeight
+                        keyboardHeight,
+                        true
                       ),
                     },
                   ]}
@@ -11383,7 +11488,9 @@ function MainAppInner() {
                         ? "Edit message..."
                         : broadcastRecipientComposerLocked
                           ? "Reply to the broadcaster to respond…"
-                          : "Message..."
+                          : pendingChatMediaAttachment
+                            ? "Add a caption (optional)…"
+                            : "Message..."
                     }
                     placeholderTextColor={theme.subtleText}
                     editable={!broadcastRecipientComposerLocked}
@@ -11399,7 +11506,10 @@ function MainAppInner() {
                     blurOnSubmit={false}
                     inputAccessoryViewID={Platform.OS === "ios" ? "chatInputAccessory" : undefined}
                     onSubmitEditing={() => {
-                      if (readComposerTextTrimmed(chatInputTextRef)) {
+                      if (
+                        readComposerTextTrimmed(chatInputTextRef) ||
+                        pendingChatMediaAttachment
+                      ) {
                         sendMessage();
                       }
                     }}
@@ -11439,6 +11549,7 @@ function MainAppInner() {
             </>
           )}
           </ChatThreadErrorBoundary>
+          </View>
         </KeyboardAvoidingView>
       ) : null}
 
@@ -12391,6 +12502,12 @@ function MainAppInner() {
               : photoEditorTarget === "chat"
                 ? "Send"
                 : "Post"
+          }
+          externalCaptionComposer={
+            photoEditorTarget === "chat" && photoEditorMediaType === "photo"
+          }
+          editContinueLabel={
+            photoEditorTarget === "chat" && photoEditorMediaType === "photo" ? "Done" : "Continue"
           }
           theme={{
             accent: theme.accent,

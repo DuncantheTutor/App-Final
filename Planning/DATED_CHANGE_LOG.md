@@ -10,6 +10,38 @@
 
 ---
 
+## 2026-06-05 21:28 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:28 +01:00 | Chat / Keyboard | Fixed Android double keyboard lift; photo caption uses compact/wider composer when keyboard open. |
+
+---
+
+## 2026-06-05 21:08 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:08 +01:00 | Chat / Media | Chat photos skip editor caption step; edited photo attaches above regular composer for optional caption + send. |
+
+---
+
+## 2026-06-05 21:05 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:05 +01:00 | Chat / Keyboard | Android chat overlay shrinks with `bottom: keyboardHeight` (absoluteFill fix); auth KAV on both platforms. |
+
+---
+
+## 2026-06-05 21:03 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:03 +01:00 | Auth / Keyboard | Login and OTP screens use KAV + scroll + Android keyboard lift so Request/Verify OTP buttons stay visible. |
+
+---
+
 ## 2026-06-05 20:29 +01:00
 
 | Time | Area | Change |
