@@ -13,7 +13,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 ## [Unreleased]
 
 ### Changed (Sep 2026)
-- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; chat/message in-memory state lives in `useMessagingController`. No user-visible behavior change.
+- **Erdos visual brand, same Firebase install id:** Launcher/name/icons are Erdos. `applicationId` stays **`com.duncanharper42.appv2build2`** so Auth, pairing, and push keep working without a new Firebase Android app. Kotlin `namespace` is `com.erdos`.
+- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; chat/message state lives in `useMessagingController` (hide/mute/draft/send-adjacent mutations, not live sync yet).
 
 ### Fixed (Sep 2026)
 - **Release APK Kotlin compile:** Restored `applicationId` / `namespace` to `com.duncanharper42.appv2build2` so `R` / `BuildConfig` match the Kotlin sources (a half-finished `com.erdos` rebrand broke `:app:compileReleaseKotlin`).

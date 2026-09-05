@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-05 17:48 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 17:48 +01:00 | Android / Chat | Kept Firebase install id on the existing package so Auth and pairing still work; moved send-adjacent message mutations into the messaging controller. |
+
+---
+
+## 2026-09-05 17:41 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 17:41 +01:00 | Android / Chat | Finished com.erdos package rebrand (Kotlin + Gradle + app.json) and moved hide/mute/draft/reset chat mutations into the messaging controller. |
+
+---
+
 ## 2026-09-05 17:30 +01:00
 
 | Time | Area | Change |

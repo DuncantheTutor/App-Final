@@ -531,6 +531,15 @@ function MainAppInner() {
     hiddenChatIdsRef,
     hiddenServerConversationIdsRef,
     openDirectChat,
+    hideChatIds,
+    unhideChatId,
+    removeChatsAndMessages,
+    upsertChat,
+    patchChat,
+    appendMessages,
+    removeMessageById,
+    patchMessage,
+    resetMessagingState,
   } = useMessagingController();
   const [chatComposerOpen, setChatComposerOpen] = useState(false);
   const [broadcastPickerOpen, setBroadcastPickerOpen] = useState(false);
@@ -3589,10 +3598,7 @@ function MainAppInner() {
 
   const resetLocalSocialStateForSignedOut = useCallback(() => {
     const allSeedIds = FRIENDS.map((f) => f.id);
-    setChats([]);
-    setHiddenChatIds([]);
-    hiddenServerConversationIdsRef.current = new Set();
-    setMessages([]);
+    resetMessagingState();
     setPosts([]);
     deletedPostIdsRef.current = new Set();
     setUnfriendedIds(allSeedIds);
@@ -3604,7 +3610,7 @@ function MainAppInner() {
     myDisplayNameRef.current = "";
     void storageRemoveItem(POSTS_STORAGE_KEY);
     void clearEncryptedMediaCaches();
-  }, []);
+  }, [resetMessagingState]);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
@@ -4819,12 +4825,12 @@ function MainAppInner() {
           visibleToRecipients: false,
           updatedAt: Date.now(),
         };
-        setChats((current) => [liveRow, ...current.filter((c) => c.id !== liveRow.id)]);
+        upsertChat(liveRow);
       }
     }
     const chat = chats.find((c) => c.id === targetChatId);
     const draftText = chat?.draftComposerText ?? "";
-    setHiddenChatIds((current) => current.filter((id) => id !== targetChatId));
+    unhideChatId(targetChatId);
     setChatInputSynced(draftText);
     setShouldFocusChatInput(draftText.trim().length > 0);
     setView({ screen: "chat", chatId: targetChatId });
@@ -6473,10 +6479,8 @@ function MainAppInner() {
 
     const scheduleReply = (message: Message, delayMs: number) => {
       const timer = setTimeout(() => {
-        setMessages((current) => [...current, message]);
-        setChats((current) =>
-          current.map((c) => (c.id === chat.id ? { ...c, updatedAt: Date.now() } : c))
-        );
+        appendMessages([message]);
+        patchChat(chat.id, (c) => ({ ...c, updatedAt: Date.now() }));
       }, delayMs);
       autoReplyTimersRef.current.push(timer);
     };
@@ -6567,17 +6571,17 @@ function MainAppInner() {
         deliveryStatus: undefined,
         unsentAt: undefined,
       };
-      setMessages((current) => current.filter((m) => m.id !== message.id));
+      removeMessageById(message.id);
       commitOutgoingMessages(chat, [retryMessage]);
     },
-    [chats, commitOutgoingMessages, setMessages]
+    [chats, commitOutgoingMessages, removeMessageById]
   );
 
   const deleteFailedMessage = useCallback(
     (messageId: string) => {
-      setMessages((current) => current.filter((m) => m.id !== messageId));
+      removeMessageById(messageId);
     },
-    [setMessages]
+    [removeMessageById]
   );
 
   const handleChatMessagePress = useCallback(
@@ -6619,22 +6623,16 @@ function MainAppInner() {
       if (!trimmed) return;
       const editedAt = Date.now();
       const targetId = editingMessageId;
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === targetId
-            ? {
-                ...message,
-                text: trimmed,
-                editedAt,
-                kind: payload.kind ?? "text",
-                mediaUri: payload.mediaUri,
-                durationSec: payload.durationSec,
-                videoTextOverlays: payload.videoTextOverlays,
-                unsentAt: undefined,
-              }
-            : message
-        )
-      );
+      patchMessage(targetId, (message) => ({
+        ...message,
+        text: trimmed,
+        editedAt,
+        kind: payload.kind ?? "text",
+        mediaUri: payload.mediaUri,
+        durationSec: payload.durationSec,
+        videoTextOverlays: payload.videoTextOverlays,
+        unsentAt: undefined,
+      }));
       setEditingMessageId(null);
       setChatInputSynced("");
       if (!DEMO_OFFLINE_MODE) {
@@ -6726,10 +6724,8 @@ function MainAppInner() {
             broadcastThreadFriendId: friendId,
           };
           const timer = setTimeout(() => {
-            setMessages((current) => [...current, guaranteedReply]);
-            setChats((current) =>
-              current.map((c) => (c.id === chat.id ? { ...c, updatedAt: Date.now() } : c))
-            );
+            appendMessages([guaranteedReply]);
+            patchChat(chat.id, (c) => ({ ...c, updatedAt: Date.now() }));
           }, delayMs);
           autoReplyTimersRef.current.push(timer);
         });
@@ -7472,34 +7468,26 @@ function MainAppInner() {
         }
       }
     }
-    setHiddenChatIds((current) => [...new Set([...current, ...idsToHide])]);
+    hideChatIds([...idsToHide]);
     if (chat.kind === "broadcast") {
-      setChats((c) => c.filter((x) => x.id !== chatId));
-      setMessages((m) => m.filter((msg) => msg.chatId !== chatId));
+      removeChatsAndMessages([chatId]);
       persistSocialMessagingNow();
       return;
     }
 
     const newMemberIds = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
     if (newMemberIds.length < 2) {
-      setChats((c) => c.filter((x) => !idsToHide.has(x.id)));
-      setMessages((m) => m.filter((msg) => !idsToHide.has(msg.chatId)));
+      removeChatsAndMessages(idsToHide);
     } else {
       const nextJoined = chat.memberJoinedAt
         ? Object.fromEntries(Object.entries(chat.memberJoinedAt).filter(([k]) => k !== CURRENT_USER_ID))
         : undefined;
-      setChats((c) =>
-        c.map((x) =>
-          x.id === chatId
-            ? {
-                ...x,
-                memberIds: newMemberIds,
-                memberJoinedAt: nextJoined,
-                updatedAt: Date.now(),
-              }
-            : x
-        )
-      );
+      patchChat(chatId, (x) => ({
+        ...x,
+        memberIds: newMemberIds,
+        memberJoinedAt: nextJoined,
+        updatedAt: Date.now(),
+      }));
     }
     persistSocialMessagingNow();
   };
@@ -7559,22 +7547,14 @@ function MainAppInner() {
           targetUid: targetBackendUid,
         });
         const nextMemberIds = chat.memberIds.filter((id) => id !== friendId);
-        setChats((c) =>
-          c.map((x) =>
-            x.id === chatId
-              ? {
-                  ...x,
-                  memberIds: nextMemberIds,
-                  memberJoinedAt: x.memberJoinedAt
-                    ? Object.fromEntries(
-                        Object.entries(x.memberJoinedAt).filter(([k]) => k !== friendId)
-                      )
-                    : undefined,
-                  updatedAt: Date.now(),
-                }
-              : x
-          )
-        );
+        patchChat(chatId, (x) => ({
+          ...x,
+          memberIds: nextMemberIds,
+          memberJoinedAt: x.memberJoinedAt
+            ? Object.fromEntries(Object.entries(x.memberJoinedAt).filter(([k]) => k !== friendId))
+            : undefined,
+          updatedAt: Date.now(),
+        }));
       } catch (err) {
         Alert.alert("Could not remove member", err instanceof Error ? err.message : "Try again.");
       }
@@ -7585,9 +7565,7 @@ function MainAppInner() {
     const chat = chats.find((c) => c.id === chatId);
     if (!chat) return;
     const nextMuted = !chat.mutedForNotifications;
-    setChats((current) =>
-      current.map((c) => (c.id === chatId ? { ...c, mutedForNotifications: nextMuted } : c))
-    );
+    patchChat(chatId, (c) => ({ ...c, mutedForNotifications: nextMuted }));
     const session = getBackendSession();
     if (!session || DEMO_OFFLINE_MODE) return;
     void callEmulatorFunction("setConversationNotificationMute", {
@@ -7597,11 +7575,7 @@ function MainAppInner() {
       muted: nextMuted,
     }).catch((err) => {
       logAppError("chat.mute.sync", err, { chatId, muted: nextMuted });
-      setChats((current) =>
-        current.map((c) =>
-          c.id === chatId ? { ...c, mutedForNotifications: !nextMuted } : c
-        )
-      );
+      patchChat(chatId, (c) => ({ ...c, mutedForNotifications: !nextMuted }));
     });
   };
 
@@ -7689,19 +7663,13 @@ function MainAppInner() {
         const nextMemberIds = [...chat.memberIds, friendId];
         const counterpartIds = nextMemberIds.filter((id) => id !== CURRENT_USER_ID);
         const newName = chat.isCustomName ? chat.name : buildDefaultChatName(counterpartIds);
-        setChats((c) =>
-          c.map((x) =>
-            x.id === chatId
-              ? {
-                  ...x,
-                  memberIds: nextMemberIds,
-                  memberJoinedAt: { ...x.memberJoinedAt, [friendId]: joinedAt },
-                  name: newName,
-                  updatedAt: now,
-                }
-              : x
-          )
-        );
+        patchChat(chatId, (x) => ({
+          ...x,
+          memberIds: nextMemberIds,
+          memberJoinedAt: { ...x.memberJoinedAt, [friendId]: joinedAt },
+          name: newName,
+          updatedAt: now,
+        }));
         setAddMemberModalOpen(false);
         setAddMemberSearch("");
       } catch (err) {
@@ -7733,21 +7701,18 @@ function MainAppInner() {
           text: "Discard",
           style: "destructive",
           onPress: () => {
-            setChats((current) => current.filter((c) => c.id !== chatId));
-            setMessages((current) => current.filter((m) => m.chatId !== chatId));
+            removeChatsAndMessages([chatId]);
             leaveChatToHome();
           },
         },
         {
           text: "Save draft",
           onPress: () => {
-            setChats((current) =>
-              current.map((c) =>
-                c.id === chatId
-                  ? { ...c, draftComposerText: readComposerTextTrimmed(chatInputTextRef), updatedAt: Date.now() }
-                  : c
-              )
-            );
+            patchChat(chatId, (c) => ({
+              ...c,
+              draftComposerText: readComposerTextTrimmed(chatInputTextRef),
+              updatedAt: Date.now(),
+            }));
             leaveChatToHome();
           },
         },
@@ -7759,7 +7724,7 @@ function MainAppInner() {
     if (chat?.isDraft && !hasUnsent) {
       const noMessages = messages.every((m) => m.chatId !== chatId);
       if (noMessages) {
-        setChats((current) => current.filter((c) => c.id !== chatId));
+        removeChatsAndMessages([chatId]);
       }
     }
 
@@ -7957,16 +7922,13 @@ function MainAppInner() {
         ? getMyReactionEmoji(target.reactions, session.uid, backendUidToFriendId)
         : undefined;
       const nextEmoji = prevEmoji === emoji ? undefined : emoji;
-      setMessages((current) =>
-        current.map((message) => {
-          if (message.id !== messageId) return message;
-          const reactions = { ...(message.reactions ?? {}) };
-          delete reactions[session.uid];
-          delete reactions[CURRENT_USER_ID];
-          if (nextEmoji) reactions[CURRENT_USER_ID] = nextEmoji;
-          return { ...message, reactions };
-        })
-      );
+      patchMessage(messageId, (message) => {
+        const reactions = { ...(message.reactions ?? {}) };
+        delete reactions[session.uid];
+        delete reactions[CURRENT_USER_ID];
+        if (nextEmoji) reactions[CURRENT_USER_ID] = nextEmoji;
+        return { ...message, reactions };
+      });
       setReactionPickerOpen(false);
       if (!target || !chat || DEMO_OFFLINE_MODE) return;
       void callEmulatorFunction("updateMessageMetadata", {
@@ -8088,22 +8050,16 @@ function MainAppInner() {
     if (!messageActionTarget) return;
     const unsentAt = Date.now();
     const target = messageActionTarget;
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === target.id
-          ? {
-              ...message,
-              text: "",
-              kind: "text",
-              mediaUri: undefined,
-              durationSec: undefined,
-              videoTextOverlays: undefined,
-              unsentAt,
-              editedAt: undefined,
-            }
-          : message
-      )
-    );
+    patchMessage(target.id, (message) => ({
+      ...message,
+      text: "",
+      kind: "text",
+      mediaUri: undefined,
+      durationSec: undefined,
+      videoTextOverlays: undefined,
+      unsentAt,
+      editedAt: undefined,
+    }));
     if (!DEMO_OFFLINE_MODE) {
       const session = getBackendSession();
       const chat = chats.find((c) => c.id === target.chatId);
@@ -8151,25 +8107,22 @@ function MainAppInner() {
 
   const saveChatTitle = () => {
     if (!resolvedChat || !chatTitleDraft.trim()) return;
-    setChats((current) =>
-      current.map((chat) =>
-        chat.id === resolvedChat.id
-          ? { ...chat, name: chatTitleDraft.trim(), isCustomName: true, updatedAt: Date.now() }
-          : chat
-      )
-    );
+    patchChat(resolvedChat.id, (chat) => ({
+      ...chat,
+      name: chatTitleDraft.trim(),
+      isCustomName: true,
+      updatedAt: Date.now(),
+    }));
     setEditChatMetaOpen(false);
   };
 
   const saveChatPicture = () => {
     if (!resolvedChat || !chatPictureDraft.trim()) return;
-    setChats((current) =>
-      current.map((chat) =>
-        chat.id === resolvedChat.id
-          ? { ...chat, profilePicture: chatPictureDraft.trim().slice(0, 2), updatedAt: Date.now() }
-          : chat
-      )
-    );
+    patchChat(resolvedChat.id, (chat) => ({
+      ...chat,
+      profilePicture: chatPictureDraft.trim().slice(0, 2),
+      updatedAt: Date.now(),
+    }));
     setEditChatPictureOpen(false);
   };
 

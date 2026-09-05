@@ -72,10 +72,16 @@ function createFirebaseAuth(): Auth {
     const code =
       typeof e === "object" && e !== null && "code" in e ? String((e as { code: string }).code) : "";
     if (code === "auth/already-initialized") {
+      // Hot reload / duplicate import — reuse the singleton (persistence was set on first init).
       return getAuth(app);
     }
     throw e;
   }
+}
+
+/** True when Firebase has rehydrated the persisted session from AsyncStorage. */
+export function hasPersistedFirebaseUser(): boolean {
+  return Boolean(firebaseAuth.currentUser?.email?.trim());
 }
 
 export const firebaseAuth = createFirebaseAuth();

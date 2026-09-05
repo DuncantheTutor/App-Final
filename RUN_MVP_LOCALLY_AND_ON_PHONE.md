@@ -16,7 +16,7 @@ This guide covers:
 This repo does **not** commit Google API keys. Before `npm run android` or `npm run apk:release`:
 
 1. Copy **`.env.example`** → **`.env`** and set **`EXPO_PUBLIC_FIREBASE_API_KEY`** (Firebase console → Project settings → Your apps → Web app → API key).
-2. Copy **`android/app/google-services.json.example`** → **`android/app/google-services.json`**, or download the real file from Firebase console (Project settings → Android app `com.duncanharper42.appv2build2` → **google-services.json**).
+2. Copy **`android/app/google-services.json.example`** → **`android/app/google-services.json`**, or download the real file from Firebase console (Project settings → Android app **`com.duncanharper42.appv2build2`** → **google-services.json**). Display name is Erdos; the install id is unchanged so existing Firebase credentials still work.
 
 Without these files, Auth/Firestore and FCM push builds will fail at runtime or build time.
 
@@ -119,7 +119,7 @@ npm run start:tunnel
 The app already registers a device push token on sign-in (`registerOsPushToken`) and the backend sends a push to other participants on every new message (`notifyConversationParticipantsPush`). For pushes to actually reach a **standalone APK**, complete one of these (a credentials step — code alone can't do it):
 
 - **Direct FCM (wired — recommended):** the Gradle build is already configured. The Google Services classpath is in `android/build.gradle`, and `android/app/build.gradle` *conditionally* applies `com.google.gms.google-services` **only when `android/app/google-services.json` exists** (so builds without it still succeed). `expo-notifications` already bundles `firebase-messaging`. To turn push on:
-  1. Firebase console → project `nfc-app-7095e` → Project Settings → add/select the Android app with package `com.duncanharper42.appv2build2` → **download `google-services.json`**.
+  1. Firebase console → project `nfc-app-7095e` → Project Settings → select the Android app with package **`com.duncanharper42.appv2build2`** → **download `google-services.json`**. Do not create a `com.erdos` app until you are ready to change the install id.
   2. Save it to **`android/app/google-services.json`**.
   3. **Rebuild the release APK** (`npm run apk:release`) — the Google Services plugin only applies when that file exists at build time.
 - On **Android 13+**, the app declares **`POST_NOTIFICATIONS`**; grant it when prompted (or in System Settings → Notifications). The in-app **Stay in the loop** screen appears after **sign-in** when OS permission is still undetermined (not on the login screen itself).

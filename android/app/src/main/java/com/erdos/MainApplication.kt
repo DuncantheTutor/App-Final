@@ -1,4 +1,4 @@
-package com.duncanharper42.appv2build2
+package com.erdos
 
 import android.app.Application
 import android.content.res.Configuration

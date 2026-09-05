@@ -96,9 +96,10 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.duncanharper42.appv2build2'
+    namespace "com.erdos"
     defaultConfig {
-        applicationId 'com.duncanharper42.appv2build2'
+        // Keep the existing Firebase / Play identity until a new Android app is registered.
+        applicationId "com.duncanharper42.appv2build2"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

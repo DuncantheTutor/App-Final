@@ -1,6 +1,5 @@
-package com.duncanharper42.appv2build2
+package com.erdos
 
-import android.os.Build
 import android.os.Bundle
 
 import com.facebook.react.ReactActivity

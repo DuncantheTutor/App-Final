@@ -20,6 +20,15 @@ export type MessagingController = {
   hiddenChatIdsRef: MutableRefObject<string[]>;
   hiddenServerConversationIdsRef: MutableRefObject<Set<string>>;
   openDirectChat: (params: OpenDirectChatFromController) => void;
+  hideChatIds: (ids: string[]) => void;
+  unhideChatId: (chatId: string) => void;
+  removeChatsAndMessages: (ids: Iterable<string>) => void;
+  upsertChat: (chat: Chat) => void;
+  patchChat: (chatId: string, updater: (chat: Chat) => Chat) => void;
+  appendMessages: (incoming: Message[]) => void;
+  removeMessageById: (messageId: string) => void;
+  patchMessage: (messageId: string, updater: (message: Message) => Message) => void;
+  resetMessagingState: () => void;
 };
 
 /**
@@ -51,6 +60,50 @@ export function useMessagingController(): MessagingController {
     });
   }, []);
 
+  const hideChatIds = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setHiddenChatIds((current) => [...new Set([...current, ...ids])]);
+  }, []);
+
+  const unhideChatId = useCallback((chatId: string) => {
+    setHiddenChatIds((current) => current.filter((id) => id !== chatId));
+  }, []);
+
+  const removeChatsAndMessages = useCallback((ids: Iterable<string>) => {
+    const hide = ids instanceof Set ? ids : new Set(ids);
+    if (hide.size === 0) return;
+    setChats((c) => c.filter((x) => !hide.has(x.id)));
+    setMessages((m) => m.filter((msg) => !hide.has(msg.chatId)));
+  }, []);
+
+  const upsertChat = useCallback((chat: Chat) => {
+    setChats((current) => [chat, ...current.filter((c) => c.id !== chat.id)]);
+  }, []);
+
+  const patchChat = useCallback((chatId: string, updater: (chat: Chat) => Chat) => {
+    setChats((current) => current.map((c) => (c.id === chatId ? updater(c) : c)));
+  }, []);
+
+  const appendMessages = useCallback((incoming: Message[]) => {
+    if (incoming.length === 0) return;
+    setMessages((current) => [...current, ...incoming]);
+  }, []);
+
+  const removeMessageById = useCallback((messageId: string) => {
+    setMessages((current) => current.filter((m) => m.id !== messageId));
+  }, []);
+
+  const patchMessage = useCallback((messageId: string, updater: (message: Message) => Message) => {
+    setMessages((current) => current.map((m) => (m.id === messageId ? updater(m) : m)));
+  }, []);
+
+  const resetMessagingState = useCallback(() => {
+    setChats([]);
+    setMessages([]);
+    setHiddenChatIds([]);
+    hiddenServerConversationIdsRef.current = new Set();
+  }, []);
+
   return {
     chats,
     setChats,
@@ -63,5 +116,14 @@ export function useMessagingController(): MessagingController {
     hiddenChatIdsRef,
     hiddenServerConversationIdsRef,
     openDirectChat,
+    hideChatIds,
+    unhideChatId,
+    removeChatsAndMessages,
+    upsertChat,
+    patchChat,
+    appendMessages,
+    removeMessageById,
+    patchMessage,
+    resetMessagingState,
   };
 }
