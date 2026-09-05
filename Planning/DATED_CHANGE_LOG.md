@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-05 17:56 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 17:56 +01:00 | Session / Feed | Extracted backend session + feed post state from MainApp; session-ready is visible to waiters immediately after claim. |
+
+---
+
 ## 2026-09-05 17:50 +01:00
 
 | Time | Area | Change |

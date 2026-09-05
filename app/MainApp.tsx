@@ -219,6 +219,8 @@ import {
   viewAfterHardwareBack,
   viewAfterLeavingFriendProfile,
 } from "./shell";
+import { useBackendSession } from "./session";
+import { useFeedController } from "./feed";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
@@ -454,12 +456,18 @@ function MainAppInner() {
   }, [isDarkMode, colorThemeId]);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
-  const backendAuthUidRef = useRef<string | null>(null);
-  const backendDeviceIdRef = useRef<string | null>(null);
+  const {
+    backendSessionReady,
+    backendAuthUidRef,
+    backendDeviceIdRef,
+    backendSessionReadyRef,
+    readBackendSessionFromRefs,
+    getBackendSession,
+    waitForBackendSession,
+    markSessionReady,
+    clearSession,
+  } = useBackendSession();
   const recipientKeyCacheRef = useRef<Record<string, string>>({});
-  const [backendSessionReady, setBackendSessionReady] = useState(false);
-  const backendSessionReadyRef = useRef(false);
-  backendSessionReadyRef.current = backendSessionReady;
   const [encryptedSyncState, setEncryptedSyncState] = useState<{
     profile: EncryptedSyncChannelState;
     posts: EncryptedSyncChannelState;
@@ -542,6 +550,7 @@ function MainAppInner() {
     replaceInbox,
     resetMessagingState,
   } = useMessagingController();
+  const { posts, setPosts, postsRef, resetPosts } = useFeedController();
   const [chatComposerOpen, setChatComposerOpen] = useState(false);
   const [broadcastPickerOpen, setBroadcastPickerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"standard" | "broadcast">("standard");
@@ -709,7 +718,6 @@ function MainAppInner() {
   identityLockedChatIdsRef.current = identityLockedChatIds;
   /** Prevents Firestore roster snapshots from briefly un-unfriending during `removeFriendship`. */
   const stickyUnfriendedFriendIdsRef = useRef<Set<string>>(new Set());
-  const [posts, setPosts] = useState<Post[]>([]);
   const [feedRefreshing, setFeedRefreshing] = useState(false);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedHasMore, setFeedHasMore] = useState(true);
@@ -1474,15 +1482,6 @@ function MainAppInner() {
     });
   }, [signedIn, friendMap, backendUidToFriendId]);
 
-  const readBackendSessionFromRefs = useCallback((): { uid: string; deviceId: string } | null => {
-    const uid = backendAuthUidRef.current;
-    const deviceId = backendDeviceIdRef.current;
-    if (!backendSessionReadyRef.current || !uid || !deviceId) return null;
-    return { uid, deviceId };
-  }, []);
-
-  const getBackendSession = useCallback(() => readBackendSessionFromRefs(), [backendSessionReady, readBackendSessionFromRefs]);
-
   const queueSharePostsWithNewFriend = useCallback((newFriendUid: string) => {
     if (DEMO_OFFLINE_MODE) return;
     if (!newFriendUid.startsWith("u_")) return;
@@ -1507,20 +1506,6 @@ function MainAppInner() {
     },
     [queueSharePostsWithNewFriend]
   );
-  /** Waits for `claimDeviceSession` to finish after sign-in (home can render from cache earlier). */
-  const waitForBackendSession = useCallback(
-    async (maxMs = 10_000): Promise<{ uid: string; deviceId: string } | null> => {
-      const deadline = Date.now() + maxMs;
-      while (Date.now() < deadline) {
-        const session = readBackendSessionFromRefs();
-        if (session) return session;
-        await new Promise<void>((r) => setTimeout(r, 200));
-      }
-      return null;
-    },
-    [readBackendSessionFromRefs]
-  );
-
   useEffect(() => {
     if (!signedIn || DEMO_OFFLINE_MODE || !osNotificationGranted) return;
     const session = getBackendSession();
@@ -1562,8 +1547,6 @@ function MainAppInner() {
     });
   }, [signedIn, appLifecycleState, getBackendSession, backendSessionReady]);
 
-  const postsRef = useRef(posts);
-  postsRef.current = posts;
   const socialSnapshotUploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleSocialSnapshotCloudBackup = useCallback(() => {
@@ -3599,7 +3582,7 @@ function MainAppInner() {
   const resetLocalSocialStateForSignedOut = useCallback(() => {
     const allSeedIds = FRIENDS.map((f) => f.id);
     resetMessagingState();
-    setPosts([]);
+    resetPosts();
     deletedPostIdsRef.current = new Set();
     setUnfriendedIds(allSeedIds);
     setFriendLinksState(cloneFriendLinks(FRIEND_LINKS));
@@ -3610,7 +3593,7 @@ function MainAppInner() {
     myDisplayNameRef.current = "";
     void storageRemoveItem(POSTS_STORAGE_KEY);
     void clearEncryptedMediaCaches();
-  }, [resetMessagingState]);
+  }, [resetMessagingState, resetPosts]);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
@@ -3662,14 +3645,12 @@ function MainAppInner() {
     }
     const ownBundle = await ensureLocalKeyBundle(uid);
 
-    backendAuthUidRef.current = uid;
-    backendDeviceIdRef.current = deviceId;
+    markSessionReady({ uid, deviceId });
     setTelemetryContext({ uid, deviceId });
     recipientKeyCacheRef.current = {
       ...recipientKeyCacheRef.current,
       [uid]: ownBundle.encryptionPublicKey,
     };
-    setBackendSessionReady(true);
     setEncryptedSyncState({ profile: "syncing", posts: "syncing", messages: "syncing", lastSuccessAt: null });
 
     void (async () => {
@@ -3829,7 +3810,7 @@ function MainAppInner() {
         setEncryptedSyncState((current) => ({ ...current, profile: "error" }));
       }
     })();
-  }, [refreshHiddenConversationIdsFromServer]);
+  }, [refreshHiddenConversationIdsFromServer, markSessionReady]);
 
   const retryInitializeBackendForAccount = useCallback(
     async (account: MockAuthAccount) => {
@@ -4056,10 +4037,9 @@ function MainAppInner() {
       }
 
       if (DEMO_OFFLINE_MODE) {
-        backendAuthUidRef.current = `demo-${account.username.toLowerCase().replace(/\s+/g, "-")}`;
-        backendDeviceIdRef.current = "demo-offline-device";
-        setTelemetryContext({ uid: backendAuthUidRef.current, deviceId: backendDeviceIdRef.current });
-        setBackendSessionReady(true);
+        const demoUid = `demo-${account.username.toLowerCase().replace(/\s+/g, "-")}`;
+        markSessionReady({ uid: demoUid, deviceId: "demo-offline-device" });
+        setTelemetryContext({ uid: demoUid, deviceId: "demo-offline-device" });
         setEncryptedSyncState({ profile: "ok", posts: "ok", messages: "ok", lastSuccessAt: Date.now() });
         setInitialServerSyncDone(true);
         return;
@@ -4073,10 +4053,8 @@ function MainAppInner() {
         } catch (err) {
           if (backendInitGenerationRef.current !== initGen) return;
           const message = err instanceof Error ? err.message : String(err ?? "");
-          backendAuthUidRef.current = null;
-          backendDeviceIdRef.current = null;
+          clearSession();
           setTelemetryContext({ uid: null, deviceId: null });
-          setBackendSessionReady(false);
           setEncryptedSyncState({
             profile: "error",
             posts: "error",
@@ -4114,7 +4092,7 @@ function MainAppInner() {
         }
       })();
     },
-    [initializeBackendSessionForAccount, retryInitializeBackendForAccount]
+    [initializeBackendSessionForAccount, retryInitializeBackendForAccount, markSessionReady, clearSession]
   );
 
   const applySignedInAccountRef = useRef(applySignedInAccount);
@@ -4147,10 +4125,8 @@ function MainAppInner() {
           signedInRef.current = false;
           isRestoringAuthRef.current = false;
           backendInitGenerationRef.current += 1;
-          backendAuthUidRef.current = null;
-          backendDeviceIdRef.current = null;
+          clearSession();
           setTelemetryContext({ uid: null, deviceId: null });
-          setBackendSessionReady(false);
           setSignedIn(false);
           setView({ screen: "home" });
           setAuthMode("login");
@@ -4250,8 +4226,7 @@ function MainAppInner() {
         /* ignore */
       });
     }
-    backendAuthUidRef.current = null;
-    backendDeviceIdRef.current = null;
+    clearSession();
     setTelemetryContext({ uid: null, deviceId: null });
     recipientKeyCacheRef.current = {};
     messagesWatermarkMsRef.current = 0;
@@ -4260,7 +4235,6 @@ function MainAppInner() {
     messagesLastFullSyncAtRef.current = 0;
     postsWatermarkMsRef.current = 0;
     postsLastFullSyncAtRef.current = 0;
-    setBackendSessionReady(false);
     setEncryptedSyncState({ profile: "idle", posts: "idle", messages: "idle", lastSuccessAt: null });
     setInitialServerSyncDone(false);
     setSignedIn(false);
@@ -4320,8 +4294,7 @@ function MainAppInner() {
     logAppEvent("auth.session_replaced", {});
     sessionTokenRef.current = null;
     sessionEmailRef.current = null;
-    backendAuthUidRef.current = null;
-    backendDeviceIdRef.current = null;
+    clearSession();
     setTelemetryContext({ uid: null, deviceId: null });
     recipientKeyCacheRef.current = {};
     messagesWatermarkMsRef.current = 0;
@@ -4330,7 +4303,6 @@ function MainAppInner() {
     messagesLastFullSyncAtRef.current = 0;
     postsWatermarkMsRef.current = 0;
     postsLastFullSyncAtRef.current = 0;
-    setBackendSessionReady(false);
     setEncryptedSyncState({ profile: "idle", posts: "idle", messages: "idle", lastSuccessAt: null });
     setInitialServerSyncDone(false);
     setSignedIn(false);
@@ -5143,7 +5115,8 @@ function MainAppInner() {
 
     const backendUid = friendMap[friendId]?.backendUid?.trim();
     if (!DEMO_OFFLINE_MODE && backendUid?.startsWith("u_")) {
-      const session = getBackendSession();
+      let session = getBackendSession();
+      if (!session) session = await waitForBackendSession(3000);
       if (!session) {
         Alert.alert(
           "Profile unavailable",
@@ -5204,7 +5177,8 @@ function MainAppInner() {
 
     const backendUid = friendMap[friendId]?.backendUid?.trim();
     if (!DEMO_OFFLINE_MODE && backendUid?.startsWith("u_")) {
-      const session = getBackendSession();
+      let session = getBackendSession();
+      if (!session) session = await waitForBackendSession(3000);
       if (!session) {
         Alert.alert(
           "Profile unavailable",

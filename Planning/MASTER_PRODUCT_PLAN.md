@@ -43,7 +43,7 @@ The following is a **planning-level summary** of functionality **exercised and d
 
 ### Platform and backend
 
-- **Client:** React Native (Expo), native Android project under `android/`. Display name **Erdos**; install id **`com.duncanharper42.appv2build2`** (Firebase). Orchestration is moving out of `app/MainApp.tsx` into feature modules: `app/shell/` (routing), `app/messaging/useMessagingController.ts` (chat/message state). Feed, boot, and Add Friend still compose through `MainApp` until later milestones.
+- **Client:** React Native (Expo), native Android project under `android/`. Display name **Erdos**; install id **`com.duncanharper42.appv2build2`** (Firebase). Orchestration is moving out of `app/MainApp.tsx` into feature modules: `app/shell/` (routing), `app/messaging/useMessagingController.ts` (chat/message state), `app/session/useBackendSession.ts` (device session refs), `app/feed/useFeedController.ts` (post rows). Add Friend pairing and boot sync still compose through `MainApp` until later milestones.
 - **Backend:** Firebase (Firestore, Storage, Cloud Functions), rules and indexes documented in-repo.
 - **Standalone installs:** APK build paths documented in-repo; demo vs release behavior differentiated where noted in test scenarios.
 

@@ -14,9 +14,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ### Changed (Sep 2026)
 - **Erdos visual brand, same Firebase install id:** Launcher/name/icons are Erdos. `applicationId` stays **`com.duncanharper42.appv2build2`** so Auth, pairing, and push keep working without a new Firebase Android app. Kotlin `namespace` is `com.erdos`.
-- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`).
+- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`). Backend session refs live in `app/session/useBackendSession`; feed post rows live in `app/feed/useFeedController`.
 
 ### Fixed (Sep 2026)
+- **Session ready waiters:** `markSessionReady` / `clearSession` update the session-ready ref immediately (not on the next React render), so send, push register, and friend-profile loads can proceed as soon as `claimDeviceSession` succeeds. Friend profile no longer treats a still-claiming session as “no internet” without a short wait.
 - **Release APK Kotlin compile:** Restored `applicationId` / `namespace` to `com.duncanharper42.appv2build2` so `R` / `BuildConfig` match the Kotlin sources (a half-finished `com.erdos` rebrand broke `:app:compileReleaseKotlin`).
 - **Release APK resources:** Restored `color/iconBackground`, `drawable/erdos_e`, and splash/launcher XML so Gradle `:app:processReleaseResources` links (AAPT had failed after a partial icon rewrite dropped those names).
 
