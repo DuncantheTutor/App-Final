@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; chat/message in-memory state lives in `useMessagingController`. No user-visible behavior change.
 
 ### Fixed (Sep 2026)
+- **Release APK Kotlin compile:** Restored `applicationId` / `namespace` to `com.duncanharper42.appv2build2` so `R` / `BuildConfig` match the Kotlin sources (a half-finished `com.erdos` rebrand broke `:app:compileReleaseKotlin`).
 - **Release APK resources:** Restored `color/iconBackground`, `drawable/erdos_e`, and splash/launcher XML so Gradle `:app:processReleaseResources` links (AAPT had failed after a partial icon rewrite dropped those names).
 
 ### Reverted (Jul 2026)

@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-05 17:30 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 17:30 +01:00 | Android | Restored package id and Firebase plugin after a half-finished com.erdos rebrand so release Kotlin compile can resolve R/BuildConfig. |
+
+---
+
 ## 2026-09-05 17:22 +01:00
 
 | Time | Area | Change |
