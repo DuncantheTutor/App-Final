@@ -4,5 +4,6 @@ export * from "./legacyChatMigration";
 export * from "./openDirectChat";
 export * from "./promotePendingChat";
 export * from "./types";
+export * from "./useMessagingController";
 export * from "./useMessagingSync";
 export * from "./useOutgoingMessages";

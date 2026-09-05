@@ -12,6 +12,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Changed (Sep 2026)
+- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; chat/message in-memory state lives in `useMessagingController`. No user-visible behavior change.
+
+### Fixed (Sep 2026)
+- **Release APK resources:** Restored `color/iconBackground`, `drawable/erdos_e`, and splash/launcher XML so Gradle `:app:processReleaseResources` links (AAPT had failed after a partial icon rewrite dropped those names).
+
+### Reverted (Jul 2026)
+- **Button press animation:** Removed `AppPressable` scale-on-press — reverted to standard `Pressable` / `TouchableOpacity` (animation broke layout).
+
+### Fixed (Jun 2026 — testing feedback batch)
+- **Login keyboard:** Auth screens keep centered layout; scroll padding lifts fields above the keyboard without `KeyboardAvoidingView` reshaping the whole screen.
+- **Signup OTP:** **Request new OTP** sits beside **Verify OTP** on the signup verification step (parity with login OTP).
+- **Login persistence:** Ignore spurious Firebase `null` auth events when `currentUser` still exists; fallback restore if `onAuthStateChanged` misses a persisted session; always set `sessionEmailRef` inside `applySignedInAccount`.
+- **Notification pre-prompt:** Shows for new users when OS permission is **denied** (Android 13+ default) until they complete the Allow flow — not only `undetermined`.
+- **Friend old posts:** Historical post backfill no longer gets stuck when friendship sync runs before `claimDeviceSession`; pending shares retry when the backend session becomes ready.
+
 ### Fixed (Jun 2026 — Tier B on-disk cache plaintext)
 - **Media file cache:** Tier B display cache no longer encrypts files on device — plain files in document storage (faster profile/feed reload). Legacy `.enc` blobs decrypt once on first access then are removed.
 

@@ -10,6 +10,38 @@
 
 ---
 
+## 2026-09-05 17:22 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 17:22 +01:00 | Architecture | Extracted app shell routing and a messaging controller so MainApp no longer owns view/homeTab or chat/message state. |
+
+---
+
+## 2026-09-03 19:25 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 19:25 +01:00 | Android | Restored `iconBackground` / Erdos launcher drawables so `processReleaseResources` can link after a partial icon rewrite. |
+
+---
+
+## 2026-07-07 21:03 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 21:03 +01:00 | UX | Reverted `AppPressable` scale animation — restored standard `Pressable` / `TouchableOpacity` after UI layout breakage. |
+
+---
+
+## 2026-06-06 13:28 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 13:28 +01:00 | UX / Auth / Push / Posts | Press animation on buttons; login keyboard scroll-only; signup Request new OTP; notification pre-prompt for Android denied; auth restore hardening; retry post backfill when backend session ready. |
+
+---
+
 ## 2026-06-06 00:38 +01:00
 
 | Time | Area | Change |

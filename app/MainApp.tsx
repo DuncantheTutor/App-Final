@@ -152,6 +152,7 @@ import {
 } from "./lib/pushNotifications";
 import {
   markNotificationPrePromptOsRequested,
+  readNotificationPrePromptOsRequested,
 } from "./lib/notificationPermissionGate";
 import { inferOutgoingMediaKind } from "./lib/mediaKind";
 import { chatCaptionedMediaLayout, chatPhotoMessageSize } from "./lib/chatMediaLayout";
@@ -208,9 +209,16 @@ import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
-import { openDirectChatWithFriend } from "./messaging/openDirectChat";
 import { promotePendingChatToRow } from "./messaging/promotePendingChat";
+import { useMessagingController } from "./messaging/useMessagingController";
 import { useMessagingSync } from "./messaging/useMessagingSync";
+import {
+  activeChatIdFromView,
+  pendingDraftFromView,
+  useAppNavigation,
+  viewAfterHardwareBack,
+  viewAfterLeavingFriendProfile,
+} from "./shell";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
@@ -246,7 +254,6 @@ import type {
   PostComment,
   SavedBroadcastGroup,
   ThemePalette,
-  ViewState,
 } from "./domain/types";
 import {
   APP_BOOT_SPLASH_MIN_MS,
@@ -495,7 +502,36 @@ function MainAppInner() {
   signupOtpRef.current = signupOtp;
   const [issuedOtpCode, setIssuedOtpCode] = useState<string | null>(null);
   const [issuedOtpForEmail, setIssuedOtpForEmail] = useState<string | null>(null);
-  const [homeTab, setHomeTab] = useState<"chats" | "feed">("feed");
+  const {
+    view,
+    setView,
+    viewRef,
+    homeTab,
+    setHomeTab,
+    homeNavIconHighlight,
+    goHome,
+    openHomeChatsFromNav,
+    openHomeFeedFromNav,
+    goToSettings,
+    goToAddFriend,
+    goToMyProfile,
+    goToPublishPost,
+    goToOpenSourceLicenses,
+    goToFriendsListFromHome,
+  } = useAppNavigation();
+  const {
+    chats,
+    setChats,
+    chatsRef,
+    messages,
+    setMessages,
+    messagesRef,
+    hiddenChatIds,
+    setHiddenChatIds,
+    hiddenChatIdsRef,
+    hiddenServerConversationIdsRef,
+    openDirectChat,
+  } = useMessagingController();
   const [chatComposerOpen, setChatComposerOpen] = useState(false);
   const [broadcastPickerOpen, setBroadcastPickerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"standard" | "broadcast">("standard");
@@ -657,25 +693,12 @@ function MainAppInner() {
   const [seenFeedReactionSigByPostId, setSeenFeedReactionSigByPostId] = useState<
     Record<string, string>
   >({});
-  const [view, setView] = useState<ViewState>({ screen: "home" });
-  const viewRef = useRef<ViewState>(view);
-  viewRef.current = view;
-  const [chats, setChats] = useState<Chat[]>([]);
-  const chatsRef = useRef<Chat[]>([]);
-  chatsRef.current = chats;
-  const messagesRef = useRef<Message[]>([]);
-  const [hiddenChatIds, setHiddenChatIds] = useState<string[]>([]);
-  const hiddenChatIdsRef = useRef<string[]>([]);
-  hiddenChatIdsRef.current = hiddenChatIds;
-  const hiddenServerConversationIdsRef = useRef<Set<string>>(new Set());
   const unfriendedIdsRef = useRef<string[]>([]);
   unfriendedIdsRef.current = unfriendedIds;
   const identityLockedChatIdsRef = useRef<string[]>([]);
   identityLockedChatIdsRef.current = identityLockedChatIds;
   /** Prevents Firestore roster snapshots from briefly un-unfriending during `removeFriendship`. */
   const stickyUnfriendedFriendIdsRef = useRef<Set<string>>(new Set());
-  const [messages, setMessages] = useState<Message[]>([]);
-  messagesRef.current = messages;
   const [posts, setPosts] = useState<Post[]>([]);
   const [feedRefreshing, setFeedRefreshing] = useState(false);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
@@ -712,6 +735,7 @@ function MainAppInner() {
   const messagesWatermarkMsRef = useRef(0);
   const acceptedFriendBackendUidsRef = useRef<Set<string>>(new Set());
   const sharePostsBackfillStartedRef = useRef<Set<string>>(new Set());
+  const pendingPostsShareFriendUidsRef = useRef<Set<string>>(new Set());
   const postsSharedWithFriendsRef = useRef<Set<string>>(new Set());
   const sharePostsWithNewFriendHandlerRef = useRef<(newFriendUid: string) => void>(() => {});
   const resolveRecipientEncryptionKeysRef = useRef<
@@ -720,16 +744,6 @@ function MainAppInner() {
   const [serverAcceptedFriendBackendUids, setServerAcceptedFriendBackendUids] = useState<Set<string>>(
     () => new Set()
   );
-  const syncServerAcceptedFriendBackendUids = useCallback((uids: Set<string>) => {
-    acceptedFriendBackendUidsRef.current = uids;
-    setServerAcceptedFriendBackendUids(new Set(uids));
-    for (const uid of uids) {
-      if (sharePostsBackfillStartedRef.current.has(uid)) continue;
-      if (postsSharedWithFriendsRef.current.has(uid)) continue;
-      sharePostsBackfillStartedRef.current.add(uid);
-      sharePostsWithNewFriendHandlerRef.current(uid);
-    }
-  }, []);
   const messagesLastFullSyncAtRef = useRef(0);
   const backendUidToFriendIdRef = useRef<Record<string, string>>({});
   const postsWatermarkMsRef = useRef(0);
@@ -846,9 +860,12 @@ function MainAppInner() {
       return;
     }
     const osStatus = await getOsNotificationPermissionStatus();
+    const osRequested = await readNotificationPrePromptOsRequested(email);
     setOsNotificationGranted(isOsNotificationPermissionGranted(osStatus));
     setShowNotificationPrePrompt(
-      osStatus === "undetermined" && !notificationPrePromptDismissedSessionRef.current
+      !notificationPrePromptDismissedSessionRef.current &&
+        !osRequested &&
+        (osStatus === "undetermined" || osStatus === "denied")
     );
     setNotificationGateReady(true);
   }, [signedIn]);
@@ -1416,23 +1433,7 @@ function MainAppInner() {
   useEffect(() => {
     if (view.screen !== "friendProfile") return;
     if (resolvePd(view.friendId).canOpenProfile) return;
-    const v = view;
-    if (v.returnTo === "friendsList" && v.friendsListRestore) {
-      setView({
-        screen: "friendsList",
-        returnTo: v.friendsListRestore.returnTo,
-        returnChatId: v.friendsListRestore.returnChatId,
-        returnPendingDraft: v.friendsListRestore.returnPendingDraft,
-      });
-      return;
-    }
-    if (v.returnTo === "chat") {
-      if (v.returnPendingDraft) setView({ screen: "chat", pendingDraft: v.returnPendingDraft });
-      else if (v.returnChatId) setView({ screen: "chat", chatId: v.returnChatId });
-      else setView({ screen: "home" });
-      return;
-    }
-    setView({ screen: "home" });
+    setView(viewAfterLeavingFriendProfile(view));
   }, [view, resolvePd]);
 
   const backendUidToFriendId = useMemo(() => {
@@ -1472,6 +1473,30 @@ function MainAppInner() {
 
   const getBackendSession = useCallback(() => readBackendSessionFromRefs(), [backendSessionReady, readBackendSessionFromRefs]);
 
+  const queueSharePostsWithNewFriend = useCallback((newFriendUid: string) => {
+    if (DEMO_OFFLINE_MODE) return;
+    if (!newFriendUid.startsWith("u_")) return;
+    if (postsSharedWithFriendsRef.current.has(newFriendUid)) return;
+    if (sharePostsBackfillStartedRef.current.has(newFriendUid)) return;
+    const session = readBackendSessionFromRefs();
+    if (!session) {
+      pendingPostsShareFriendUidsRef.current.add(newFriendUid);
+      return;
+    }
+    sharePostsBackfillStartedRef.current.add(newFriendUid);
+    sharePostsWithNewFriendHandlerRef.current(newFriendUid);
+  }, [readBackendSessionFromRefs]);
+
+  const syncServerAcceptedFriendBackendUids = useCallback(
+    (uids: Set<string>) => {
+      acceptedFriendBackendUidsRef.current = uids;
+      setServerAcceptedFriendBackendUids(new Set(uids));
+      for (const uid of uids) {
+        queueSharePostsWithNewFriend(uid);
+      }
+    },
+    [queueSharePostsWithNewFriend]
+  );
   /** Waits for `claimDeviceSession` to finish after sign-in (home can render from cache earlier). */
   const waitForBackendSession = useCallback(
     async (maxMs = 10_000): Promise<{ uid: string; deviceId: string } | null> => {
@@ -1603,7 +1628,7 @@ function MainAppInner() {
     viewScreen: view.screen,
     homeTab: view.screen === "home" ? homeTab : undefined,
     activeChatLocalId:
-      view.screen === "chat" && "chatId" in view ? view.chatId : null,
+      activeChatIdFromView(view),
     getBackendSession,
     backendSessionReady,
     allFriends,
@@ -1657,7 +1682,11 @@ function MainAppInner() {
   sharePostsWithNewFriendHandlerRef.current = (newFriendUid: string) => {
     if (DEMO_OFFLINE_MODE) return;
     const session = getBackendSession();
-    if (!session) return;
+    if (!session) {
+      sharePostsBackfillStartedRef.current.delete(newFriendUid);
+      pendingPostsShareFriendUidsRef.current.add(newFriendUid);
+      return;
+    }
     void (async () => {
       try {
         const visibleIds = [
@@ -1697,6 +1726,18 @@ function MainAppInner() {
       }
     })();
   };
+
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE || !backendSessionReady) return;
+    const pending = [...pendingPostsShareFriendUidsRef.current];
+    pendingPostsShareFriendUidsRef.current.clear();
+    for (const uid of pending) {
+      queueSharePostsWithNewFriend(uid);
+    }
+    for (const uid of acceptedFriendBackendUidsRef.current) {
+      queueSharePostsWithNewFriend(uid);
+    }
+  }, [signedIn, backendSessionReady, queueSharePostsWithNewFriend]);
 
   useEffect(() => {
     if (!DEMO_OFFLINE_MODE) return;
@@ -2413,31 +2454,6 @@ function MainAppInner() {
     };
   }, [signedIn, initialServerSyncDone, friendBackendUidsKey, getBackendSession]);
 
-  /** Top icon strip: only the screen you’re on is highlighted (friend profile / chat: none). */
-  const homeNavIconHighlight = useMemo(() => {
-    const screen = view.screen;
-    const onHome = screen === "home";
-    return {
-      createPost: screen === "publishPost",
-      settings: screen === "settings",
-      chats: onHome && homeTab === "chats",
-      feed: onHome && homeTab === "feed",
-      myProfile: screen === "myProfile",
-      friendsList: screen === "friendsList",
-      addFriend: screen === "addFriend",
-    };
-  }, [view.screen, homeTab]);
-
-  const openHomeChatsFromNav = useCallback(() => {
-    setHomeTab("chats");
-    setView({ screen: "home" });
-  }, []);
-
-  const openHomeFeedFromNav = useCallback(() => {
-    setHomeTab("feed");
-    setView({ screen: "home" });
-  }, []);
-
   const isFriendFeedMuted = useCallback(
     (friendId: string) => {
       const until = feedMutedUntilByFriendId[friendId];
@@ -2797,7 +2813,7 @@ function MainAppInner() {
     if (!initialServerSyncDone || DEMO_OFFLINE_MODE || !signedIn) return;
     const session = getBackendSession();
     const openChatLocalId =
-      view.screen === "chat" && "chatId" in view ? view.chatId : null;
+      activeChatIdFromView(view);
     const retained = retainedMessageChatIds({
       chats,
       messages,
@@ -2863,7 +2879,7 @@ function MainAppInner() {
     const session = getBackendSession();
     const myUid = session?.uid ?? null;
     if (!myUid) return new Set<string>();
-    const openChatId = view.screen === "chat" && "chatId" in view ? view.chatId : null;
+    const openChatId = activeChatIdFromView(view);
     const unread = new Set<string>();
     for (const chat of visibleSortedChats) {
       if (chat.mutedForNotifications) continue;
@@ -2913,7 +2929,7 @@ function MainAppInner() {
   }, [onHomeFeedTab, posts, getBackendSession]);
 
   const pendingDraft =
-    view.screen === "chat" && "pendingDraft" in view ? view.pendingDraft : null;
+    pendingDraftFromView(view);
 
   const resolvedChat = useMemo(() => {
     if (view.screen !== "chat" || !("chatId" in view)) return null;
@@ -2949,7 +2965,7 @@ function MainAppInner() {
     (id) => id !== CURRENT_USER_ID
   );
   const activeChatId =
-    view.screen === "chat" && "chatId" in view ? view.chatId : undefined;
+    activeChatIdFromView(view) ?? undefined;
   const activeDirectCounterpartPd =
     activeChatKind === "standard" && activeCounterpartIds.length === 1
       ? resolvePd(activeCounterpartIds[0], activeChatId)
@@ -3091,7 +3107,7 @@ function MainAppInner() {
   const chatListCanExpandLocally = invertedChatMessages.length > chatListDisplayLimit;
 
   const activeChatIdForPagination =
-    view.screen === "chat" && "chatId" in view ? view.chatId : null;
+    activeChatIdFromView(view);
 
   /** Enable scroll-up when more rows are in memory or the server may have older history. */
   const chatPaginationEnabled = Boolean(
@@ -3833,6 +3849,8 @@ function MainAppInner() {
 
   const applySignedInAccount = useCallback(
     async (account: MockAuthAccount) => {
+      const emailKey = account.email.trim().toLowerCase();
+      sessionEmailRef.current = emailKey;
       const allSeedIds = FRIENDS.map((f) => f.id);
       const hasSeedGraph = !!(account.seedFriendIds && account.seedFriendIds.length > 0);
       const demoGraph = DEMO_OFFLINE_MODE && hasSeedGraph ? buildDemoChatsAndMessages(account.seedFriendIds ?? []) : null;
@@ -3842,8 +3860,6 @@ function MainAppInner() {
         account.seedFriendIds && account.seedFriendIds.length > 0
           ? allSeedIds.filter((id) => !account.seedFriendIds!.includes(id))
           : allSeedIds;
-      const emailKey = account.email.trim().toLowerCase();
-
       let nextPosts: Post[] =
         DEMO_OFFLINE_MODE && hasSeedGraph
           ? buildDemoPostsForFriends(account.seedFriendIds ?? [])
@@ -4107,6 +4123,10 @@ function MainAppInner() {
     const unsub = onAuthStateChanged(firebaseAuth, (user) => {
       if (!user?.email) {
         if (signedInRef.current) {
+          const stillSignedIn = firebaseAuth.currentUser?.email?.trim();
+          if (stillSignedIn) {
+            return;
+          }
           const navEmail = sessionEmailRef.current;
           if (navEmail) {
             void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
@@ -4163,7 +4183,40 @@ function MainAppInner() {
         }
       })();
     });
-    return () => unsub();
+
+    const restoreFallbackTimer = setTimeout(() => {
+      if (signedInRef.current || isRestoringAuthRef.current) return;
+      const persistedEmail = firebaseAuth.currentUser?.email?.trim().toLowerCase();
+      if (!persistedEmail) return;
+      isRestoringAuthRef.current = true;
+      sessionEmailRef.current = persistedEmail;
+      void (async () => {
+        try {
+          const persistedUsername =
+            (await storageGetItem(profileUsernameStorageKey(persistedEmail)))?.trim() ?? "";
+          const account: MockAuthAccount = {
+            email: persistedEmail,
+            password: "",
+            username: persistedUsername,
+            phoneNumber: "",
+            bio: "",
+            profilePictureUrl: null,
+          };
+          logAppEvent("auth.restore_session_fallback", { email: persistedEmail });
+          await applySignedInAccountRef.current(account);
+        } catch {
+          /* ignore — user can sign in manually */
+        } finally {
+          isRestoringAuthRef.current = false;
+          markAppBootAuthResolved();
+        }
+      })();
+    }, 1200);
+
+    return () => {
+      clearTimeout(restoreFallbackTimer);
+      unsub();
+    };
   }, [resetLocalSocialStateForSignedOut, markAppBootAuthResolved]);
 
   const logout = () => {
@@ -5011,21 +5064,17 @@ function MainAppInner() {
   };
 
   const findOrCreateChatWithFriend = (friendId: string) => {
-    openDirectChatWithFriend({
+    openDirectChat({
       friendId,
       session: getBackendSession(),
-      chats,
       friendMap,
       friendIdToBackendUid,
       unfriendedIds,
       identityLockedChatIds: identityLockedChatIdsSet,
-      hiddenServerConversationIds: hiddenServerConversationIdsRef.current,
-      hiddenLocalChatIds: new Set(hiddenChatIdsRef.current),
       resolveDisplayName: (id) =>
         friendMap[id]?.displayName?.trim() || resolvePd(id).displayName,
       normalizeMemberSet: normalizeSet,
       goToChat,
-      setChats,
     });
   };
 
@@ -5193,19 +5242,13 @@ function MainAppInner() {
   };
 
   const openFriendsListFromHome = useCallback(() => {
-    const v = viewRef.current;
-    if (v.screen === "friendsList") return;
     setFriendsListSearch("");
-    setView({ screen: "friendsList", returnTo: "home" });
-  }, []);
+    goToFriendsListFromHome();
+  }, [goToFriendsListFromHome]);
 
-  const openAddFriendFromHome = useCallback(() => {
-    setView({ screen: "addFriend" });
-  }, []);
+  const openAddFriendFromHome = goToAddFriend;
 
-  const openSettingsScreen = useCallback(() => {
-    setView({ screen: "settings" });
-  }, []);
+  const openSettingsScreen = goToSettings;
 
   const hydrateFriendByUid = useCallback(
     async (
@@ -5905,9 +5948,7 @@ function MainAppInner() {
     ]);
   };
 
-  const openMyProfile = () => {
-    setView({ screen: "myProfile" });
-  };
+  const openMyProfile = goToMyProfile;
 
   const cancelImageCropFlow = useCallback(() => {
     setImageCropVisible(false);
@@ -6037,13 +6078,12 @@ function MainAppInner() {
     setPostDraftImageUris([]);
     setPostDraftVideoUri(null);
     setQueuedPostPhotoAssets([]);
-    setView({ screen: "publishPost" });
+    goToPublishPost();
   };
 
   const closePublishPostScreen = useCallback(() => {
-    setView({ screen: "home" });
-    setHomeTab("feed");
-  }, []);
+    goHome("feed");
+  }, [goHome]);
 
   const pickPostPhotos = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -7840,10 +7880,6 @@ function MainAppInner() {
     }
 
     const v = viewRef.current;
-    if (v.screen === "chatSharedMedia" && "chatId" in v) {
-      setView({ screen: "chat", chatId: v.chatId });
-      return true;
-    }
     if (v.screen === "chat") {
       onBackFromChat();
       return true;
@@ -7854,54 +7890,12 @@ function MainAppInner() {
     }
     if (v.screen === "addFriend") {
       abortAddFriendPairingRef.current?.();
-      setView({ screen: "home" });
+      goHome();
       return true;
     }
-    if (v.screen === "openSourceLicenses") {
-      setView({ screen: "settings" });
-      return true;
-    }
-    if (v.screen === "settings") {
-      setView({ screen: "home" });
-      return true;
-    }
-    if (v.screen === "friendsList") {
-      if (v.returnTo === "chat") {
-        if (v.returnPendingDraft) {
-          setView({ screen: "chat", pendingDraft: v.returnPendingDraft });
-        } else if (v.returnChatId) {
-          setView({ screen: "chat", chatId: v.returnChatId });
-        } else {
-          setView({ screen: "home" });
-        }
-      } else {
-        setView({ screen: "home" });
-      }
-      return true;
-    }
-    if (v.screen === "friendProfile") {
-      if (v.returnTo === "chat") {
-        if (v.returnPendingDraft) {
-          setView({ screen: "chat", pendingDraft: v.returnPendingDraft });
-        } else if (v.returnChatId) {
-          setView({ screen: "chat", chatId: v.returnChatId });
-        } else {
-          setView({ screen: "home" });
-        }
-      } else if (v.returnTo === "friendsList" && v.friendsListRestore) {
-        setView({
-          screen: "friendsList",
-          returnTo: v.friendsListRestore.returnTo,
-          returnChatId: v.friendsListRestore.returnChatId,
-          returnPendingDraft: v.friendsListRestore.returnPendingDraft,
-        });
-      } else {
-        setView({ screen: "home" });
-      }
-      return true;
-    }
-    if (v.screen === "myProfile") {
-      setView({ screen: "home" });
+    const nextView = viewAfterHardwareBack(v);
+    if (nextView) {
+      setView(nextView);
       return true;
     }
     return false;
@@ -7940,6 +7934,7 @@ function MainAppInner() {
     discardPendingChatMedia,
     exitVoiceNoteMode,
     onBackFromChat,
+    goHome,
   ]);
 
   handleAndroidHardwareBackRef.current = handleAndroidHardwareBack;
@@ -9108,27 +9103,21 @@ function MainAppInner() {
   }
 
   if (!signedIn) {
-    const authKavEnabled = keyboardVisible && !overlaySuppressesKeyboardAvoidance;
     const authScrollContentStyle = {
       flexGrow: 1,
-      justifyContent: keyboardVisible ? ("flex-start" as const) : ("center" as const),
-      paddingBottom: keyboardVisible ? keyboardScrollPadding(keyboardHeight, 24) : 8,
-      paddingTop: keyboardVisible ? 4 : 0,
+      justifyContent: "center" as const,
+      paddingBottom: keyboardVisible ? keyboardScrollPadding(keyboardHeight, 32) : 8,
+      paddingTop: 8,
     };
     return (
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: theme.background }}
-        behavior="padding"
-        enabled={authKavEnabled}
-        keyboardVerticalOffset={safeTop}
-      >
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
       <View
         style={[
           styles.screen,
           {
             paddingTop: safeTop + 10,
             paddingBottom: keyboardVisible
-              ? keyboardComposerBottomPadding(insets.bottom, keyboardVisible, keyboardHeight)
+              ? keyboardScrollPadding(keyboardHeight, insets.bottom + 16)
               : stickyFooterPadding(insets.bottom),
           },
         ]}
@@ -9353,15 +9342,23 @@ function MainAppInner() {
                   placeholderTextColor={theme.subtleText}
                   style={styles.searchInput}
                 />
-                <Pressable style={styles.primaryButton} onPress={completeSignupWithOtp}>
-                  <Text style={styles.primaryButtonText}>Verify OTP</Text>
-                </Pressable>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <Pressable
+                    style={[styles.primaryButton, { flex: 1 }]}
+                    onPress={() => void requestSignupOtp()}
+                  >
+                    <Text style={styles.primaryButtonText}>Request new OTP</Text>
+                  </Pressable>
+                  <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={completeSignupWithOtp}>
+                    <Text style={styles.primaryButtonText}>Verify OTP</Text>
+                  </Pressable>
+                </View>
               </View>
             </ScrollViewUntilScroll>
           </View>
         )}
       </View>
-      </KeyboardAvoidingView>
+      </View>
     );
   }
 
@@ -12440,7 +12437,7 @@ function MainAppInner() {
               </View>
               <Pressable
                 style={[styles.settingsRow, { paddingVertical: 12 }]}
-                onPress={() => setView({ screen: "openSourceLicenses" })}
+                onPress={goToOpenSourceLicenses}
               >
                 <Text style={styles.chatName}>Open source licences</Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
