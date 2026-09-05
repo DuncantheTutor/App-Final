@@ -28,6 +28,9 @@ export type MessagingController = {
   appendMessages: (incoming: Message[]) => void;
   removeMessageById: (messageId: string) => void;
   patchMessage: (messageId: string, updater: (message: Message) => Message) => void;
+  applyChats: Dispatch<SetStateAction<Chat[]>>;
+  applyMessages: Dispatch<SetStateAction<Message[]>>;
+  replaceInbox: (nextChats: Chat[], nextMessages: Message[]) => void;
   resetMessagingState: () => void;
 };
 
@@ -97,6 +100,11 @@ export function useMessagingController(): MessagingController {
     setMessages((current) => current.map((m) => (m.id === messageId ? updater(m) : m)));
   }, []);
 
+  const replaceInbox = useCallback((nextChats: Chat[], nextMessages: Message[]) => {
+    setChats(nextChats);
+    setMessages(nextMessages);
+  }, []);
+
   const resetMessagingState = useCallback(() => {
     setChats([]);
     setMessages([]);
@@ -124,6 +132,9 @@ export function useMessagingController(): MessagingController {
     appendMessages,
     removeMessageById,
     patchMessage,
+    applyChats: setChats,
+    applyMessages: setMessages,
+    replaceInbox,
     resetMessagingState,
   };
 }

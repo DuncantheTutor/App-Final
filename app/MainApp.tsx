@@ -521,10 +521,8 @@ function MainAppInner() {
   } = useAppNavigation();
   const {
     chats,
-    setChats,
     chatsRef,
     messages,
-    setMessages,
     messagesRef,
     hiddenChatIds,
     setHiddenChatIds,
@@ -539,6 +537,9 @@ function MainAppInner() {
     appendMessages,
     removeMessageById,
     patchMessage,
+    applyChats,
+    applyMessages,
+    replaceInbox,
     resetMessagingState,
   } = useMessagingController();
   const [chatComposerOpen, setChatComposerOpen] = useState(false);
@@ -1459,7 +1460,7 @@ function MainAppInner() {
 
   useEffect(() => {
     if (!signedIn) return;
-    setChats((current) => {
+    applyChats((current) => {
       let changed = false;
       const next = current.map((chat) => {
         const memberIds = normalizeChatMemberIds(chat.memberIds, friendMap, backendUidToFriendId);
@@ -1650,8 +1651,8 @@ function MainAppInner() {
     recipientKeyCacheRef,
     persistWatermarksNow,
     persistFriendKeyCacheNow,
-    setChats,
-    setMessages,
+    setChats: applyChats,
+    setMessages: applyMessages,
     setHiddenChatIds,
     setEncryptedSyncState,
   });
@@ -2324,8 +2325,8 @@ function MainAppInner() {
     pullEncryptedPostsIncremental,
     setAddedFriendsFromRitual,
     setFriendLinksState,
-    setChats,
-    setMessages,
+    setChats: applyChats,
+    setMessages: applyMessages,
     chatsRef,
     messagesRef,
     postsRef,
@@ -2349,9 +2350,8 @@ function MainAppInner() {
       friendMapRef.current,
       friendIdToBackendUidRef.current
     );
-    setChats(migrated.chats);
-    setMessages(migrated.messages);
-  }, [signedIn, backendSessionReady, getBackendSession, friendMap, friendIdToBackendUid]);
+    replaceInbox(migrated.chats, migrated.messages);
+  }, [signedIn, backendSessionReady, getBackendSession, friendMap, friendIdToBackendUid, replaceInbox]);
 
   const friendBackendUidsKey = useMemo(
     () =>
@@ -2850,7 +2850,7 @@ function MainAppInner() {
         exemptChatIds.add(openChatLocalId);
       }
     }
-    setMessages((current) => {
+    applyMessages((current) => {
       const trimmed = trimInMemoryMessages(current, retained, CHAT_INITIAL_MESSAGE_LIMIT, {
         exemptChatIds,
       });
@@ -3290,7 +3290,7 @@ function MainAppInner() {
         }
       }
       if (decoded.length > 0) {
-        setMessages((current) => mergeSyncedMessages(current, decoded, { incremental: true, optimisticWindowMs: 120_000 }));
+        applyMessages((current) => mergeSyncedMessages(current, decoded, { incremental: true, optimisticWindowMs: 120_000 }));
       }
       const fetchedCount = res.items?.length ?? 0;
       if (fetchedCount > 0) {
@@ -3398,7 +3398,7 @@ function MainAppInner() {
         mutedBy?: Record<string, boolean>;
       };
       const serverMuted = Boolean(data.mutedBy?.[session.uid]);
-      setChats((current) =>
+      applyChats((current) =>
         current.map((c) =>
           c.id === chatRowId
             ? {
@@ -3683,9 +3683,9 @@ function MainAppInner() {
           const cloudPostsVisible = cloudSnapshot.posts.filter(
             (p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)
           );
-          setChats((current) => mergeCloudChatsWithLocalReadBy(current, cloudSnapshot.chats));
+          applyChats((current) => mergeCloudChatsWithLocalReadBy(current, cloudSnapshot.chats));
           await yieldToUi();
-          setMessages((current) =>
+          applyMessages((current) =>
             mergeSyncedMessages(current, cloudSnapshot.messages, {
               incremental: true,
               optimisticWindowMs: 120_000,
@@ -4009,8 +4009,7 @@ function MainAppInner() {
       const ritualFriendsFiltered = restoredRitualFriends.filter((f) => !nextUnfriendedIds.includes(f.id));
 
       // Prevent data bleed across accounts: reset local social timeline state on every sign-in.
-      setChats(nextChats);
-      setMessages(nextMessages);
+      replaceInbox(nextChats, nextMessages);
       setPosts(nextPosts);
       setUnfriendedIds(nextUnfriendedIds);
       setIdentityLockedChatIds(nextIdentityLockedChatIds);
@@ -6449,7 +6448,7 @@ function MainAppInner() {
         session: getBackendSession(),
         friendMap,
         friendIdToBackendUid,
-        setChats,
+        setChats: applyChats,
         setView,
       });
     }
@@ -6466,7 +6465,7 @@ function MainAppInner() {
       session: getBackendSession(),
       friendMap,
       friendIdToBackendUid,
-      setChats,
+      setChats: applyChats,
       setView,
     });
   };
@@ -6555,8 +6554,8 @@ function MainAppInner() {
     resolveConversationId,
     getSenderDisplayName,
     pullEncryptedMessagesIncremental,
-    setChats,
-    setMessages,
+    setChats: applyChats,
+    setMessages: applyMessages,
     setHiddenChatIds,
     setView,
     addAutoReplies,

@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-05 17:50 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 17:50 +01:00 | Chat | Routed remaining MainApp inbox writes (hydrate, migrate, trim, sync merge) through the messaging controller. |
+
+---
+
 ## 2026-09-05 17:48 +01:00
 
 | Time | Area | Change |
