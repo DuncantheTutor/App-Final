@@ -1,11 +1,11 @@
 # Real OTP Sign-In Commands
 
-> **Canonical app path:** `C:\Users\dunca\OneDrive\Desktop\App FInal V3`. Export Cursor chats periodically; see `Planning/PLANNING.md` §0.
+> **Canonical app path:** `C:\Users\dunca\OneDrive\Desktop\Erdos`. Export Cursor chats periodically; see `Planning/PLANNING.md` §0.
 
-Run these exact commands in PowerShell from the **App Final V3 repository root** (not inside `Planning/`).
+Run these exact commands in PowerShell from the **Erdos repository root** (not inside `Planning/`).
 
 ```powershell
-cd "C:\Users\dunca\OneDrive\Desktop\App FInal V3"
+cd "C:\Users\dunca\OneDrive\Desktop\Erdos"
 ```
 
 ---

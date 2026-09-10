@@ -1,14 +1,25 @@
-# Master product plan (App Final V3 workspace)
+# Master product plan (Erdos workspace)
 
 ## Purpose
 
-This document is the **single planning entry point** for work tracked from **`App Final V3`**. It preserves the **same core product values** as `App Final V2/docs/PRODUCT_SPEC.md` and the goals in **`Planning/PLANNING.md`**, while treating **what ships today in this workspace** as the definition of the **current product surface** (validated in practice against the **release APK**, not Expo or ad-hoc debug builds).
+This document is the **single planning entry point** for work tracked from **`Erdos`**. It preserves the **same core product values** as `App Final V2/docs/PRODUCT_SPEC.md` and the goals in **`Planning/PLANNING.md`**, while treating **what ships today in this workspace** as the definition of the **current product surface** (validated in practice against the **release APK**, not Expo or ad-hoc debug builds).
 
 Canonical implementation code for this product line:
 
-`C:\Users\dunca\OneDrive\Desktop\App FInal V3`
+`C:\Users\dunca\OneDrive\Desktop\Erdos`
 
 Git remote: [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final)
+
+### User action — Firebase Android app (do not create a new project)
+
+When you can use the Firebase console, stay on project **`nfc-app-7095e`** and:
+
+1. Add Android apps **`com.erdos.app`** and **`com.erdos.app.demo`**.
+2. Paste the debug keystore SHA-1 / SHA-256 from `RUN_MVP_LOCALLY_AND_ON_PHONE.md`.
+3. Download `google-services.json` into `android/app/` (must list `package_name` `com.erdos.app`).
+4. Then we can flip `applicationId` / `expo.android.package` to `com.erdos.app`. Until then the install id stays **`com.duncanharper42.appv2build2`** so Auth, pairing, and push keep working.
+
+Do **not** create a second Firebase project.
 
 Parity reference (UI/UX authority):
 
@@ -37,13 +48,13 @@ Non-goals as *values* (still true even when some legacy code paths exist): **rem
 
 ---
 
-## Current application scope (as implemented in App Final V3)
+## Current application scope (as implemented in Erdos)
 
 The following is a **planning-level summary** of functionality **exercised and described** for the shipping tree (this repo), including **`README.md`**, **`FEATURE_TEST_SCENARIOS.md`**, **`RUN_MVP_LOCALLY_AND_ON_PHONE.md`**, and **`backend/`**. Treat omissions or regressions as **engineering bugs**, not spec drift—update this doc when intentional product change is agreed.
 
 ### Platform and backend
 
-- **Client:** React Native (Expo), native Android project under `android/`. Display name **Erdos**; install id **`com.duncanharper42.appv2build2`** (Firebase). Orchestration is moving out of `app/MainApp.tsx` into feature modules: `app/shell/` (routing), `app/messaging/useMessagingController.ts` (chat/message state), `app/session/useBackendSession.ts` (device session refs), `app/feed/useFeedController.ts` (post rows). Add Friend pairing and boot sync still compose through `MainApp` until later milestones.
+- **Client:** React Native (Expo), native Android project under `android/`. Display name **Erdos**; install id **`com.duncanharper42.appv2build2`** until the `com.erdos.app` Android app exists on Firebase project `nfc-app-7095e`. Kotlin `namespace` stays `com.erdos`. Orchestration is moving out of `app/MainApp.tsx` into feature modules: `app/shell/` (routing), `app/messaging/useMessagingController.ts` (chat/message state), `app/session/useBackendSession.ts` (device session refs), `app/feed/useFeedController.ts` (post rows), `app/addFriend/` (pair-offer register + session wait). Dual-confirm pairing still composes through `MainApp`. The previous tree **`C:\Users\dunca\OneDrive\Desktop\App FInal V3`** is a read-only archive.
 - **Backend:** Firebase (Firestore, Storage, Cloud Functions), rules and indexes documented in-repo.
 - **Standalone installs:** APK build paths documented in-repo; demo vs release behavior differentiated where noted in test scenarios.
 

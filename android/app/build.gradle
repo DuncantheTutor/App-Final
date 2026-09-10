@@ -98,7 +98,7 @@ android {
 
     namespace "com.erdos"
     defaultConfig {
-        // Keep the existing Firebase / Play identity until a new Android app is registered.
+        // Stay on the existing Firebase Android app until com.erdos.app is registered.
         applicationId "com.duncanharper42.appv2build2"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion

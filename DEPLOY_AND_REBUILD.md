@@ -1,6 +1,6 @@
 # When to redeploy functions vs rebuild the APK
 
-Use this every time you pull changes or an agent says “deploy” / “rebuild”. Paths assume repo root: `C:\Users\dunca\OneDrive\Desktop\App FInal V3`.
+Use this every time you pull changes or an agent says “deploy” / “rebuild”. Paths assume repo root: `C:\Users\dunca\OneDrive\Desktop\Erdos`.
 
 ## Quick decision
 

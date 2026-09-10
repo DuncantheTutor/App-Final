@@ -1,6 +1,6 @@
-# Release notes (App Final V3)
+# Release notes (Erdos)
 
-Canonical tree: `C:\Users\dunca\OneDrive\Desktop\App FInal V3`. Git: [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final). Pairing and Firebase details: `Planning/BLE_ADD_FRIEND_ARCHITECTURE.md`, `RUN_MVP_LOCALLY_AND_ON_PHONE.md`.
+Canonical tree: `C:\Users\dunca\OneDrive\Desktop\Erdos`. Git: [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final). Pairing and Firebase details: `Planning/BLE_ADD_FRIEND_ARCHITECTURE.md`, `RUN_MVP_LOCALLY_AND_ON_PHONE.md`.
 
 ## Versioning and tags
 

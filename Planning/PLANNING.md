@@ -8,11 +8,11 @@ This document captures product requirements, privacy rules, technical scope, and
 
 ## 0. Canonical codebase, agents, and chat exports
 
-- **Canonical app implementation** lives only in **`App Final V3`**:  
-  `C:\Users\dunca\OneDrive\Desktop\App FInal V3`  
-  All coding, **NFC/BLE** friend pairing (default **NFC 4-digit PIN pair**; BLE siloed), APK builds, and prototype parity for this product line happen here. **Open this folder as the Cursor workspace** for day-to-day work.
+- **Canonical app implementation** lives only in **`Erdos`**:  
+  `C:\Users\dunca\OneDrive\Desktop\Erdos`  
+  All coding, **NFC/BLE** friend pairing (default **NFC 4-digit PIN pair**; BLE siloed), APK builds, and prototype parity for this product line happen here. **Open this folder as the Cursor workspace** for day-to-day work. The previous tree `C:\Users\dunca\OneDrive\Desktop\App FInal V3` is a read-only archive.
 - **Git remote:** [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final) — push from this tree when version control is initialized.
-- **Planning and spec Markdown** live in **`Planning/`** inside App Final V3 (same directory as this file). Legacy copies under `Cursor Projects\App V2` or the older OneDrive **`App Final`** folder are historical only; do not treat `App V2 Build*`, `App/mobile`, `App v4`, or other trees as edit targets unless a task explicitly says to migrate from them.
+- **Planning and spec Markdown** live in **`Planning/`** inside Erdos (same directory as this file). Legacy copies under `App FInal V3`, `Cursor Projects\App V2`, or the older OneDrive **`App Final`** folder are historical only; do not treat `App V2 Build*`, `App/mobile`, `App v4`, or other trees as edit targets unless a task explicitly says to migrate from them.
 - **Agent continuity:** Periodically **export chats** from Cursor (chat menu → Export) and save exports under **`Planning/`** (or merge into your latest export). Before long sessions or when opening a **new agent**, skim recent exports so decisions and file paths are not lost.
 - **Cursor coding gate:** Start a message with **`(code)`** on the first line to allow the agent to edit files; without it, chat is read-only (explain/review/plan only). See `.cursor/rules/code-permission-gate.mdc`.
 - **Commits:** After any code change, the agent must **ask** if you want a git commit — it does not commit unless you say yes. See `.cursor/rules/commit-prompt-after-code.mdc`.

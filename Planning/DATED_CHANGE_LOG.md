@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-05 19:20 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 19:20 +01:00 | Pairing / Android | Kept the working Firebase install id; extracted pair-offer register; Add Friend waits for session claim instead of aborting. |
+
+---
+
+## 2026-09-05 18:10 +01:00
+
+| Time | Area | Change |
+|------|------|--------|
+| 18:10 +01:00 | Workspace / Android | Canonical tree is Desktop\\Erdos; Android install id is now com.erdos.app on Firebase project nfc-app-7095e. |
+
+---
+
 ## 2026-09-05 17:56 +01:00
 
 | Time | Area | Change |

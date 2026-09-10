@@ -1,10 +1,11 @@
 # Feature Test Scenarios (MVP Prototype)
 
-## Sep 2026 — Erdos branding (install id unchanged)
+## Sep 2026 — Erdos branding (install id unchanged until Firebase Android app)
 
 - **Display:** Launcher name **Erdos** / **Erdos Demo**; icon uses `@drawable/erdos_e`.
-- **Install id stays `com.duncanharper42.appv2build2`** (debug `…appv2build2.demo`) so existing Firebase Auth / pairing / push keep working until a new Android app is registered. Kotlin `namespace` is `com.erdos` (source package only).
-- **Same-app update:** installing this APK replaces the previous build; you should not get a second icon.
+- **Install id stays `com.duncanharper42.appv2build2`** (debug `…appv2build2.demo`) so Auth / pairing / push keep working. Kotlin `namespace` is `com.erdos`. Flip to `com.erdos.app` only after you add that Android app on project `nfc-app-7095e` (do not create a new Firebase project).
+- **Same-app update:** installing this APK replaces the previous build on the current package; you should not get a second icon.
+- **Add Friend after cold start:** Show/Read QR during the brief `claimDeviceSession` window should wait and pair, not abort as if the offer disappeared.
 
 ## Jun 2026 — cold start / inbox load (performance)
 

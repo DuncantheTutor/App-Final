@@ -4,7 +4,7 @@ This tracks what must be complete before broad user rollout.
 
 ## Repo automated preflight (no devices)
 
-Run from **`App Final V3`** root (`C:\Users\dunca\OneDrive\Desktop\App FInal V3`) before device smoke or CI packaging:
+Run from **`Erdos`** root (`C:\Users\dunca\OneDrive\Desktop\Erdos`) before device smoke or CI packaging:
 
 | Step | Command | Last recorded |
 |------|---------|----------------|

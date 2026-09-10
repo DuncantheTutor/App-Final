@@ -221,6 +221,7 @@ import {
 } from "./shell";
 import { useBackendSession } from "./session";
 import { useFeedController } from "./feed";
+import { registerPairOfferToken, resolvePairingSession } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
@@ -5329,79 +5330,11 @@ function MainAppInner() {
       for (let i = 0; i < 32; i++) demoToken += Math.floor(Math.random() * 16).toString(16);
       return demoToken;
     }
-    const session = getBackendSession();
+    const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
     if (!session) return null;
-    logAppEvent("pairing.session.create", {});
     const proximityEvidence = await collectPairingProximityEvidence();
-
-    const parseRegisterResponse = (res: { pairingToken?: string; pin?: string }): string | null => {
-      const token = String(res.pairingToken ?? res.pin ?? "")
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, "");
-      return token.length > 0 ? token : null;
-    };
-
-    try {
-      const res = await callEmulatorFunction<{
-        ok?: boolean;
-        pin?: string;
-        pairingToken?: string;
-      }>("registerNfcPinPairOffer", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        proximityEvidence,
-      });
-      return parseRegisterResponse(res);
-    } catch (e: unknown) {
-      const raw = e instanceof Error ? e.message : String(e ?? "");
-      const lower = raw.toLowerCase();
-      const needsLegacyPin =
-        lower.includes("4 digit") ||
-        lower.includes("exactly 4") ||
-        (lower.includes("invalid-argument") && lower.includes("pin"));
-      if (needsLegacyPin) {
-        for (let i = 0; i < 48; i++) {
-          const pin = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
-          try {
-            const res = await callEmulatorFunction<{
-              ok?: boolean;
-              pin?: string;
-              pairingToken?: string;
-            }>("registerNfcPinPairOffer", {
-              uid: session.uid,
-              deviceId: session.deviceId,
-              pin,
-              proximityEvidence,
-            });
-            const token = parseRegisterResponse(res);
-            if (token) return token;
-          } catch (legacyErr: unknown) {
-            const legacyRaw =
-              legacyErr instanceof Error ? legacyErr.message : String(legacyErr ?? "");
-            const legacyLower = legacyRaw.toLowerCase();
-            if (
-              legacyLower.includes("pin unavailable") ||
-              legacyLower.includes("offer token unavailable") ||
-              legacyLower.includes("failed-precondition")
-            ) {
-              continue;
-            }
-            logAppError("pairing.session.create.legacy", legacyErr, {});
-            break;
-          }
-        }
-        return null;
-      }
-      logAppError("pairing.session.create", e, {});
-      if (lower.includes("404") || lower.includes("not found") || lower.includes("failed to fetch")) {
-        throw new Error(
-          "Could not reach pairing service. Deploy latest Cloud Functions (registerNfcPinPairOffer and related) or check network."
-        );
-      }
-      throw e instanceof Error ? e : new Error(String(e));
-    }
-  }, [getBackendSession, collectPairingProximityEvidence]);
+    return registerPairOfferToken(session, proximityEvidence);
+  }, [getBackendSession, waitForBackendSession, collectPairingProximityEvidence]);
 
   const pairingAwaitPinRedeemParent = useCallback(
     async (pin: string): Promise<Friend | null> => {
@@ -5417,7 +5350,7 @@ function MainAppInner() {
         setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
         return friend;
       }
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return null;
       await new Promise<void>((r) => setTimeout(r, 450));
       const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
@@ -5453,7 +5386,7 @@ function MainAppInner() {
       }
       return null;
     },
-    [getBackendSession, hydrateFriendByUid, demoPendingAddableQueue]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue]
   );
 
   const pairingConfirmPinReadParent = useCallback(
@@ -5485,7 +5418,7 @@ function MainAppInner() {
         setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
         return friend;
       }
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return null;
       const locGate = await ensurePreciseLocationForPairing({ showAlerts: true });
       if (!locGate.ok) {
@@ -5555,13 +5488,13 @@ function MainAppInner() {
 
       return quickFriend;
     },
-    [getBackendSession, hydrateFriendByUid, collectPairingProximityEvidence, demoPendingAddableQueue]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, collectPairingProximityEvidence, demoPendingAddableQueue]
   );
 
   const pairingConfirmRedeemerDualConfirmParent = useCallback(
     async (pin: string): Promise<boolean> => {
       if (DEMO_OFFLINE_MODE) return true;
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return false;
       const res = await callEmulatorFunction<{ accepted?: boolean }>("confirmRedeemerNfcPinPairOffer", {
         uid: session.uid,
@@ -5570,7 +5503,7 @@ function MainAppInner() {
       });
       return Boolean(res.accepted);
     },
-    [getBackendSession]
+    [getBackendSession, waitForBackendSession]
   );
 
   const pairingAwaitIssuerFinalConfirmParent = useCallback(
@@ -5580,7 +5513,7 @@ function MainAppInner() {
         if (!nextId) return null;
         return FRIENDS.find((f) => f.id === nextId) ?? null;
       }
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return null;
       const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
       while (Date.now() < deadline) {
@@ -5619,7 +5552,7 @@ function MainAppInner() {
       }
       return null;
     },
-    [getBackendSession, hydrateFriendByUid, demoPendingAddableQueue]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue]
   );
 
   const pairingFinalizePinOfferParent = useCallback(
@@ -5639,7 +5572,7 @@ function MainAppInner() {
         setFriendLinksState((prev) => addUndirectedEdge(prev, CURRENT_USER_ID, friend.id));
         return friend;
       }
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return null;
       const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
       let friendUid = "";
@@ -5683,12 +5616,12 @@ function MainAppInner() {
       void publishActivePresence(session, Date.now()).catch(() => undefined);
       return hydrated;
     },
-    [getBackendSession, hydrateFriendByUid, demoPendingAddableQueue, syncServerAcceptedFriendBackendUids]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue, syncServerAcceptedFriendBackendUids]
   );
 
   const pairingCancelPinOfferParent = useCallback(async (pin: string): Promise<void> => {
     if (DEMO_OFFLINE_MODE) return;
-    const session = getBackendSession();
+    const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
     if (!session) return;
     try {
       await callEmulatorFunction("cancelNfcPinPairOffer", {
@@ -5699,13 +5632,13 @@ function MainAppInner() {
     } catch {
       /* ignore */
     }
-  }, [getBackendSession]);
+  }, [getBackendSession, waitForBackendSession]);
 
   /** Dual-confirm UI: session deleted when either side aborts — poll returns false. */
   const pairingPollOfferStillPresentParent = useCallback(
     async (pin: string): Promise<boolean> => {
       if (DEMO_OFFLINE_MODE) return true;
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return false;
       try {
         await callEmulatorFunction("getNfcPinPairOfferStatus", {
@@ -5722,7 +5655,7 @@ function MainAppInner() {
         return true;
       }
     },
-    [getBackendSession]
+    [getBackendSession, waitForBackendSession]
   );
 
   const pairingGetOfferStatusParent = useCallback(
@@ -5730,7 +5663,7 @@ function MainAppInner() {
       pin: string
     ): Promise<"pending" | "awaiting_redeemer_confirm" | "awaiting_issuer_confirm" | "joined" | "gone"> => {
       if (DEMO_OFFLINE_MODE) return "awaiting_redeemer_confirm";
-      const session = getBackendSession();
+      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return "gone";
       try {
         const res = await callEmulatorFunction<{ status?: string }>("getNfcPinPairOfferStatus", {
@@ -5752,7 +5685,7 @@ function MainAppInner() {
         return "gone";
       }
     },
-    [getBackendSession]
+    [getBackendSession, waitForBackendSession]
   );
 
   /**

@@ -2,7 +2,7 @@
 
 All notable changes to this project are recorded here. Planning references: `MVP_FINAL_PLAN.md`, `PLANNING.md`, and related MVP docs in this folder.
 
-**Canonical app implementation** (agents and humans): `C:\Users\dunca\OneDrive\Desktop\App FInal V3`. Git remote: [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final). Legacy **`App/mobile`**, older OneDrive **`App Final`**, and duplicate trees are historical only; default new work to **App Final V3** only. Periodically **export Cursor chats** and reread recent exports when resuming work or switching agents (see `PLANNING.md` §0).
+**Canonical app implementation** (agents and humans): `C:\Users\dunca\OneDrive\Desktop\Erdos`. Git remote: [github.com/DuncantheTutor/App-Final](https://github.com/DuncantheTutor/App-Final). Legacy **`App FInal V3`**, **`App/mobile`**, older OneDrive **`App Final`**, and duplicate trees are historical only; default new work to **Erdos** only. Periodically **export Cursor chats** and reread recent exports when resuming work or switching agents (see `PLANNING.md` §0).
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions use [Semantic Versioning](https://semver.org/spec/v2.0.0.html) where a published app version exists (`package.json`).
 
@@ -13,10 +13,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 ## [Unreleased]
 
 ### Changed (Sep 2026)
-- **Erdos visual brand, same Firebase install id:** Launcher/name/icons are Erdos. `applicationId` stays **`com.duncanharper42.appv2build2`** so Auth, pairing, and push keep working without a new Firebase Android app. Kotlin `namespace` is `com.erdos`.
-- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`). Backend session refs live in `app/session/useBackendSession`; feed post rows live in `app/feed/useFeedController`.
+- **Canonical workspace is Desktop\\Erdos:** Implementation and APK builds live at `C:\Users\dunca\OneDrive\Desktop\Erdos`. `App FInal V3` is a read-only archive.
+- **Install id stays `com.duncanharper42.appv2build2`** until you add Android apps `com.erdos.app` / `.demo` on existing project `nfc-app-7095e` (do not create a new Firebase project). Kotlin `namespace` is `com.erdos`.
+- **Erdos visual brand:** Launcher/name/icons are Erdos.
+- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`). Backend session refs live in `app/session/useBackendSession`; feed post rows live in `app/feed/useFeedController`; pair-offer register lives in `app/addFriend/`.
 
 ### Fixed (Sep 2026)
+- **Add Friend during session claim:** QR/NFC pair callables wait a few seconds for `claimDeviceSession` instead of failing as if the offer were gone.
 - **Session ready waiters:** `markSessionReady` / `clearSession` update the session-ready ref immediately (not on the next React render), so send, push register, and friend-profile loads can proceed as soon as `claimDeviceSession` succeeds. Friend profile no longer treats a still-claiming session as “no internet” without a short wait.
 - **Release APK Kotlin compile:** Restored `applicationId` / `namespace` to `com.duncanharper42.appv2build2` so `R` / `BuildConfig` match the Kotlin sources (a half-finished `com.erdos` rebrand broke `:app:compileReleaseKotlin`).
 - **Release APK resources:** Restored `color/iconBackground`, `drawable/erdos_e`, and splash/launcher XML so Gradle `:app:processReleaseResources` links (AAPT had failed after a partial icon rewrite dropped those names).
