@@ -84,7 +84,7 @@ import { ChatReplyTargetPreview } from "./components/ChatReplyTargetPreview";
 import { ChatVoiceNoteBubble } from "./components/ChatVoiceNoteBubble";
 import { resolveTierBMediaToFileUri } from "./lib/tierBMedia/storage";
 import { requestReadSmsPermissionIfNeeded, startAndroidOtpAssist } from "../otpSmsAssist";
-import { firebaseAuth, getFirestoreDb } from "../firebaseAuthClient";
+import { debugSessionLog, firebaseAuth, getFirestoreDb } from "../firebaseAuthClient";
 import {
   collection,
   collectionGroup,
@@ -138,7 +138,6 @@ import {
   dedupeFriendsByBackendUid,
   friendsForFriendsList,
   mergeFriendsCatalog,
-  upsertRitualFriend,
 } from "./lib/mergeFriendsCatalog";
 import {
   registerPushTokenWithBackend,
@@ -207,6 +206,7 @@ import {
 } from "./lib/socialSnapshotBackup";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
+import { useFriendsController } from "./friends/useFriendsController";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
 import { promotePendingChatToRow } from "./messaging/promotePendingChat";
@@ -219,7 +219,7 @@ import {
   viewAfterHardwareBack,
   viewAfterLeavingFriendProfile,
 } from "./shell";
-import { useBackendSession } from "./session";
+import { useBackendSession, useSignedInSession } from "./session";
 import { useFeedController } from "./feed";
 import { registerPairOfferToken, resolvePairingSession } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
@@ -246,7 +246,6 @@ import {
 import type {
   Chat,
   ColorThemeId,
-  EncryptedSyncChannelState,
   Friend,
   FriendsListRestore,
   Message,
@@ -259,7 +258,6 @@ import type {
   ThemePalette,
 } from "./domain/types";
 import {
-  APP_BOOT_SPLASH_MIN_MS,
   PLACEHOLDER_APP_PRODUCT_NAME,
   lastHomeTabStorageKey,
   lastViewStorageKey,
@@ -332,6 +330,7 @@ import {
   DARK_THEME_PINK,
   DEMO_OFFLINE_ACCOUNTS,
   DEMO_OFFLINE_MODE,
+  EMAIL_OTP_ENABLED,
   DEMO_SHARED_FRIEND_IDS,
   DEMO_USER_A_FRIEND_IDS,
   DEMO_USER_A_ONLY_FRIEND_IDS,
@@ -341,7 +340,6 @@ import {
   FAKE_BIOS,
   FEED_MUTE_CHOICES,
   FRIENDS,
-  FRIEND_LINKS,
   FRIEND_NAMES,
   INITIAL_CHATS,
   INITIAL_MESSAGES,
@@ -387,7 +385,6 @@ import {
   chunkBy,
   claimMockSessionLedger,
   clearStoredSessionLockToken,
-  cloneFriendLinks,
   emailLocalPartGuess,
   isEmailDerivedUsername,
   isPlaceholderProfileUsername,
@@ -456,7 +453,28 @@ function MainAppInner() {
     );
   }, [isDarkMode, colorThemeId]);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
-  const [signedIn, setSignedIn] = useState(false);
+  const {
+    signedIn,
+    setSignedIn,
+    signedInRef,
+    sessionEmailRef,
+    sessionTokenRef,
+    backendInitGenerationRef,
+    authMode,
+    setAuthMode,
+    authModeRef,
+    isRestoringAuthRef,
+    appBootAuthResolvedRef,
+    markAppBootAuthResolved,
+    showBootSplash,
+    encryptedSyncState,
+    setEncryptedSyncState,
+    initialServerSyncDone,
+    setInitialServerSyncDone,
+    initialServerSyncCompletedAtRef,
+    markSignedIn,
+    resetSyncChannelsIdle,
+  } = useSignedInSession();
   const {
     backendSessionReady,
     backendAuthUidRef,
@@ -469,30 +487,11 @@ function MainAppInner() {
     clearSession,
   } = useBackendSession();
   const recipientKeyCacheRef = useRef<Record<string, string>>({});
-  const [encryptedSyncState, setEncryptedSyncState] = useState<{
-    profile: EncryptedSyncChannelState;
-    posts: EncryptedSyncChannelState;
-    messages: EncryptedSyncChannelState;
-    lastSuccessAt: number | null;
-  }>({
-    profile: "idle",
-    posts: "idle",
-    messages: "idle",
-    lastSuccessAt: null,
-  });
-  /** Mock single-device session: see `claimMockSessionLedger` / polling below. */
-  const sessionTokenRef = useRef<string | null>(null);
-  const sessionEmailRef = useRef<string | null>(null);
   /** Username as friends see it — used for outgoing push notification titles. */
   const myDisplayNameRef = useRef("");
   const sessionConflictNoticeAtRef = useRef(0);
   /** Latest `logout` so session-retry alerts can offer Logout before `logout` is defined in source order. */
   const logoutRef = useRef<() => void>(() => {});
-  /** Bumps on sign-out so in-flight `initializeBackendSessionForAccount` ignores stale results. */
-  const backendInitGenerationRef = useRef(0);
-  const [authMode, setAuthMode] = useState<"login" | "loginOtp" | "signup" | "signupOtp">("login");
-  const authModeRef = useRef(authMode);
-  authModeRef.current = authMode;
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginPasswordVisible, setLoginPasswordVisible] = useState(false);
@@ -552,6 +551,25 @@ function MainAppInner() {
     resetMessagingState,
   } = useMessagingController();
   const { posts, setPosts, postsRef, resetPosts } = useFeedController();
+  const {
+    addedFriendsFromRitual,
+    setAddedFriendsFromRitual,
+    addedFriendsFromRitualRef,
+    unfriendedIds,
+    setUnfriendedIds,
+    unfriendedIdsRef,
+    friendLinksState,
+    setFriendLinksState,
+    stickyUnfriendedFriendIdsRef,
+    acceptedFriendBackendUidsRef,
+    serverAcceptedFriendBackendUids,
+    setServerAcceptedFriendUids,
+    resetFriendsState,
+    hydrateFriends,
+    acceptFriend,
+    unfriendLocally,
+    replaceFriendsIfChanged,
+  } = useFriendsController();
   const [chatComposerOpen, setChatComposerOpen] = useState(false);
   const [broadcastPickerOpen, setBroadcastPickerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"standard" | "broadcast">("standard");
@@ -573,7 +591,6 @@ function MainAppInner() {
   const [chatSearchVisible, setChatSearchVisible] = useState(false);
   const [friendsListSearch, setFriendsListSearch] = useState("");
   const [demoPendingAddableQueue, setDemoPendingAddableQueue] = useState<string[]>([]);
-  const [unfriendedIds, setUnfriendedIds] = useState<string[]>(() => FRIENDS.map((f) => f.id));
   /** 1:1 chat ids that keep **User** identity after refriend (set on unfriend, never cleared). */
   const [identityLockedChatIds, setIdentityLockedChatIds] = useState<string[]>([]);
   const [chatOverflowOpen, setChatOverflowOpen] = useState(false);
@@ -713,12 +730,8 @@ function MainAppInner() {
   const [seenFeedReactionSigByPostId, setSeenFeedReactionSigByPostId] = useState<
     Record<string, string>
   >({});
-  const unfriendedIdsRef = useRef<string[]>([]);
-  unfriendedIdsRef.current = unfriendedIds;
   const identityLockedChatIdsRef = useRef<string[]>([]);
   identityLockedChatIdsRef.current = identityLockedChatIds;
-  /** Prevents Firestore roster snapshots from briefly un-unfriending during `removeFriendship`. */
-  const stickyUnfriendedFriendIdsRef = useRef<Set<string>>(new Set());
   const [feedRefreshing, setFeedRefreshing] = useState(false);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedHasMore, setFeedHasMore] = useState(true);
@@ -732,15 +745,10 @@ function MainAppInner() {
   const [feedPullNonce, setFeedPullNonce] = useState(0);
   const feedViewabilityConfig = useRef({ itemVisiblePercentThreshold: 55 }).current;
   const feedViewableHydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialServerSyncCompletedAtRef = useRef(0);
   const persistPostsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persistSocialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hydrateInFlightPostIdsRef = useRef<Set<string>>(new Set());
   const hydratedCommentPostAtRef = useRef<Record<string, number>>({});
-  const [friendLinksState, setFriendLinksState] = useState<Record<string, string[]>>(() =>
-    cloneFriendLinks(FRIEND_LINKS)
-  );
-  const [addedFriendsFromRitual, setAddedFriendsFromRitual] = useState<Friend[]>([]);
   const [presenceOnlineByBackendUid, setPresenceOnlineByBackendUid] = useState<Record<string, boolean>>({});
   /** Persisted profile cards (name/bio/avatar) for every profile opened — fallback when offline. */
   const [cachedProfileCards, setCachedProfileCards] = useState<Record<string, CachedProfileCard>>({});
@@ -748,11 +756,8 @@ function MainAppInner() {
   cachedProfileCardsRef.current = cachedProfileCards;
   /** Network reachability — drives the "Not connected to internet" profile state. */
   const [isOnline, setIsOnline] = useState(true);
-  const addedFriendsFromRitualRef = useRef<Friend[]>([]);
-  addedFriendsFromRitualRef.current = addedFriendsFromRitual;
   const autoReplyTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const messagesWatermarkMsRef = useRef(0);
-  const acceptedFriendBackendUidsRef = useRef<Set<string>>(new Set());
   const sharePostsBackfillStartedRef = useRef<Set<string>>(new Set());
   const pendingPostsShareFriendUidsRef = useRef<Set<string>>(new Set());
   const postsSharedWithFriendsRef = useRef<Set<string>>(new Set());
@@ -760,9 +765,6 @@ function MainAppInner() {
   const resolveRecipientEncryptionKeysRef = useRef<
     (recipientUids: string[]) => Promise<Record<string, string>>
   >(async () => ({}));
-  const [serverAcceptedFriendBackendUids, setServerAcceptedFriendBackendUids] = useState<Set<string>>(
-    () => new Set()
-  );
   const messagesLastFullSyncAtRef = useRef(0);
   const backendUidToFriendIdRef = useRef<Record<string, string>>({});
   const postsWatermarkMsRef = useRef(0);
@@ -823,42 +825,13 @@ function MainAppInner() {
     return isDarkMode ? DARK_THEME_GREEN : LIGHT_THEME_GREEN;
   }, [isDarkMode, colorThemeId]);
 
-  const appBootAuthResolvedRef = useRef(false);
-  const [appBootAuthResolved, setAppBootAuthResolved] = useState(false);
-  const markAppBootAuthResolved = useCallback(() => {
-    if (appBootAuthResolvedRef.current) return;
-    appBootAuthResolvedRef.current = true;
-    setAppBootAuthResolved(true);
-  }, []);
-
-  const [appBootMinMsElapsed, setAppBootMinMsElapsed] = useState(false);
   const [appLifecycleState, setAppLifecycleState] = useState(AppState.currentState);
-  useEffect(() => {
-    const t = setTimeout(() => setAppBootMinMsElapsed(true), APP_BOOT_SPLASH_MIN_MS);
-    return () => clearTimeout(t);
-  }, []);
 
   /**
-   * Tracks whether the one-shot boot-time server pull has been kicked off
-   * for this signed-in session. The splash **no longer waits** for it (see
-   * `showBootSplash` below) — the home renders as soon as auth resolves and
-   * the 500 ms minimum has elapsed, even for a true first sign-in on this
-   * device.
-   *
-   * The boot-time pull (`listMyFriends` + `getUserProfiles` +
-   * `listEncryptedMessages`) still runs *in the background* because it does
-   * two important things the snapshot listeners don't:
-   *   1. Backfills `participantAuthUids` onto legacy `friendships` /
-   *      `encryptedPosts` / `encryptedProfiles` / `privatePostThreads` docs
-   *      that pre-date the auth-UID mirror (so the snapshot listeners can
-   *      see them after the next deploy).
-   *   2. Seeds friend display names / bios for any friend the snapshot
-   *      listener delivers without a profile cached locally.
-   *
-   * The state is still tracked here so the boot-sync effect knows whether to
-   * run (it should only run once per session).
+   * The one-shot boot-time server pull (`listMyFriends` + `getUserProfiles` +
+   * `listEncryptedMessages`) still runs in the background after auth resolves.
+   * Splash gating is owned by `useSignedInSession` (`showBootSplash`).
    */
-  const [initialServerSyncDone, setInitialServerSyncDone] = useState(false);
   const [notificationGateReady, setNotificationGateReady] = useState(false);
   const [showNotificationPrePrompt, setShowNotificationPrePrompt] = useState(false);
   const [notificationPrePromptBusy, setNotificationPrePromptBusy] = useState(false);
@@ -888,12 +861,6 @@ function MainAppInner() {
     );
     setNotificationGateReady(true);
   }, [signedIn]);
-
-  useEffect(() => {
-    if (initialServerSyncDone) {
-      initialServerSyncCompletedAtRef.current = Date.now();
-    }
-  }, [initialServerSyncDone]);
 
   useEffect(() => {
     if (!signedIn) {
@@ -1085,6 +1052,7 @@ function MainAppInner() {
   );
 
   useEffect(() => {
+    if (!EMAIL_OTP_ENABLED) return;
     if (Platform.OS !== "android") return;
     if (authMode !== "loginOtp" && authMode !== "signupOtp") return;
 
@@ -1179,7 +1147,16 @@ function MainAppInner() {
   }, []);
 
   useEffect(() => {
-    const sub = AppState.addEventListener("change", setAppLifecycleState);
+    const sub = AppState.addEventListener("change", (next) => {
+      // #region agent log
+      debugSessionLog("MainApp.tsx:AppState", "lifecycle change", "H3", {
+        next,
+        signedIn: signedInRef.current,
+        hasFirebaseUser: Boolean(firebaseAuth.currentUser),
+      });
+      // #endregion
+      setAppLifecycleState(next);
+    });
     return () => sub.remove();
   }, []);
 
@@ -1499,13 +1476,12 @@ function MainAppInner() {
 
   const syncServerAcceptedFriendBackendUids = useCallback(
     (uids: Set<string>) => {
-      acceptedFriendBackendUidsRef.current = uids;
-      setServerAcceptedFriendBackendUids(new Set(uids));
+      setServerAcceptedFriendUids(uids);
       for (const uid of uids) {
         queueSharePostsWithNewFriend(uid);
       }
     },
-    [queueSharePostsWithNewFriend]
+    [queueSharePostsWithNewFriend, setServerAcceptedFriendUids]
   );
   useEffect(() => {
     if (!signedIn || DEMO_OFFLINE_MODE || !osNotificationGranted) return;
@@ -2422,22 +2398,7 @@ function MainAppInner() {
         addedFriendsFromRitualRef.current
       );
       if (cancelled) return;
-      setAddedFriendsFromRitual((current) => {
-        const next = refreshed;
-        if (
-          next.length === current.length &&
-          next.every(
-            (f, i) =>
-              current[i]?.id === f.id &&
-              current[i]?.profilePictureUrl === f.profilePictureUrl &&
-              current[i]?.displayName === f.displayName &&
-              current[i]?.bio === f.bio
-          )
-        ) {
-          return current;
-        }
-        return next;
-      });
+      replaceFriendsIfChanged(refreshed);
     };
     void run();
     const id = setInterval(() => void run(), FRIEND_PROFILE_REFRESH_MS);
@@ -2445,7 +2406,7 @@ function MainAppInner() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [signedIn, initialServerSyncDone, friendBackendUidsKey, getBackendSession]);
+  }, [signedIn, initialServerSyncDone, friendBackendUidsKey, getBackendSession, replaceFriendsIfChanged]);
 
   const isFriendFeedMuted = useCallback(
     (friendId: string) => {
@@ -3581,20 +3542,17 @@ function MainAppInner() {
   }, [prioritizedOnlineFriends.length, onlineStripLayout]);
 
   const resetLocalSocialStateForSignedOut = useCallback(() => {
-    const allSeedIds = FRIENDS.map((f) => f.id);
     resetMessagingState();
     resetPosts();
+    resetFriendsState();
     deletedPostIdsRef.current = new Set();
-    setUnfriendedIds(allSeedIds);
-    setFriendLinksState(cloneFriendLinks(FRIEND_LINKS));
-    setAddedFriendsFromRitual([]);
     setMyBio("");
     setMyBioTextEntryOpen(true);
     setMyProfilePictureUrl(null);
     myDisplayNameRef.current = "";
     void storageRemoveItem(POSTS_STORAGE_KEY);
     void clearEncryptedMediaCaches();
-  }, [resetMessagingState, resetPosts]);
+  }, [resetMessagingState, resetPosts, resetFriendsState]);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
@@ -3829,12 +3787,6 @@ function MainAppInner() {
     [initializeBackendSessionForAccount]
   );
 
-  const isRestoringAuthRef = useRef(false);
-  const signedInRef = useRef(false);
-  useEffect(() => {
-    signedInRef.current = signedIn;
-  }, [signedIn]);
-
   const applySignedInAccount = useCallback(
     async (account: MockAuthAccount) => {
       const emailKey = account.email.trim().toLowerCase();
@@ -3993,16 +3945,8 @@ function MainAppInner() {
       // Prevent data bleed across accounts: reset local social timeline state on every sign-in.
       replaceInbox(nextChats, nextMessages);
       setPosts(nextPosts);
-      setUnfriendedIds(nextUnfriendedIds);
       setIdentityLockedChatIds(nextIdentityLockedChatIds);
-      setFriendLinksState(() => {
-        let next = cloneFriendLinks(FRIEND_LINKS);
-        for (const f of ritualFriendsFiltered) {
-          next = addUndirectedEdge(next, CURRENT_USER_ID, f.id);
-        }
-        return next;
-      });
-      setAddedFriendsFromRitual(dedupeFriendsByBackendUid(ritualFriendsFiltered));
+      hydrateFriends(ritualFriendsFiltered, nextUnfriendedIds);
       setPresenceOnlineByBackendUid({});
       setFeedMutedUntilByFriendId(nextFeedMutes);
       const [persistedProfilePic, persistedBio] = await Promise.all([
@@ -4027,8 +3971,12 @@ function MainAppInner() {
       setInitialServerSyncDone(false);
 
       // Stay in the app shell while the backend session is (re)claimed — Firebase already persisted the user.
-      setSignedIn(true);
-      signedInRef.current = true;
+      markSignedIn();
+      // #region agent log
+      debugSessionLog("MainApp.tsx:applySignedInAccount", "set signedIn true", "H1", {
+        hasFirebaseUser: Boolean(firebaseAuth.currentUser),
+      });
+      // #endregion
       setAuthMode("login");
       setView({ screen: "home" });
       setHomeTab("feed");
@@ -4093,7 +4041,7 @@ function MainAppInner() {
         }
       })();
     },
-    [initializeBackendSessionForAccount, retryInitializeBackendForAccount, markSessionReady, clearSession]
+    [initializeBackendSessionForAccount, retryInitializeBackendForAccount, markSessionReady, clearSession, hydrateFriends, markSignedIn]
   );
 
   const applySignedInAccountRef = useRef(applySignedInAccount);
@@ -4105,10 +4053,29 @@ function MainAppInner() {
       return () => {};
     }
     const unsub = onAuthStateChanged(firebaseAuth, (user) => {
+      // #region agent log
+      debugSessionLog("MainApp.tsx:onAuthStateChanged", "auth state event", "H1", {
+        hasEventUser: Boolean(user),
+        hasEventEmail: Boolean(user?.email?.trim()),
+        hasCurrentUser: Boolean(firebaseAuth.currentUser),
+        hasCurrentEmail: Boolean(firebaseAuth.currentUser?.email?.trim()),
+        signedInRef: signedInRef.current,
+        isRestoring: isRestoringAuthRef.current,
+        bootResolved: appBootAuthResolvedRef.current,
+      });
+      // #endregion
       if (!user?.email) {
         if (signedInRef.current) {
           const stillSignedIn = firebaseAuth.currentUser?.email?.trim();
           if (stillSignedIn) {
+            // #region agent log
+            debugSessionLog(
+              "MainApp.tsx:onAuthStateChanged",
+              "ignored spurious null auth event",
+              "H5",
+              { signedInRef: true }
+            );
+            // #endregion
             return;
           }
           const navEmail = sessionEmailRef.current;
@@ -4131,13 +4098,33 @@ function MainAppInner() {
           setSignedIn(false);
           setView({ screen: "home" });
           setAuthMode("login");
-          setEncryptedSyncState({ profile: "idle", posts: "idle", messages: "idle", lastSuccessAt: null });
-          setInitialServerSyncDone(false);
+          resetSyncChannelsIdle();
+          // #region agent log
+          debugSessionLog(
+            "MainApp.tsx:onAuthStateChanged",
+            "cleared signed-in UI from null auth event",
+            "H1",
+            { hadSessionEmail: Boolean(navEmail) }
+          );
+          // #endregion
         }
         markAppBootAuthResolved();
         return;
       }
-      if (signedInRef.current || isRestoringAuthRef.current) return;
+      if (signedInRef.current || isRestoringAuthRef.current) {
+        // #region agent log
+        debugSessionLog(
+          "MainApp.tsx:onAuthStateChanged",
+          "skipped restore (already signed in or restoring)",
+          "H5",
+          {
+            signedInRef: signedInRef.current,
+            isRestoring: isRestoringAuthRef.current,
+          }
+        );
+        // #endregion
+        return;
+      }
       isRestoringAuthRef.current = true;
       const restoredEmail = user.email;
       void (async () => {
@@ -4202,6 +4189,12 @@ function MainAppInner() {
   }, [resetLocalSocialStateForSignedOut, markAppBootAuthResolved]);
 
   const logout = () => {
+    // #region agent log
+    debugSessionLog("MainApp.tsx:logout", "logout invoked", "H3", {
+      hasEmail: Boolean(sessionEmailRef.current),
+      hasFirebaseUser: Boolean(firebaseAuth.currentUser),
+    });
+    // #endregion
     const email = sessionEmailRef.current;
     if (email) {
       void storageRemoveItem(lastViewStorageKey(email)).catch(() => {
@@ -4236,8 +4229,7 @@ function MainAppInner() {
     messagesLastFullSyncAtRef.current = 0;
     postsWatermarkMsRef.current = 0;
     postsLastFullSyncAtRef.current = 0;
-    setEncryptedSyncState({ profile: "idle", posts: "idle", messages: "idle", lastSuccessAt: null });
-    setInitialServerSyncDone(false);
+    resetSyncChannelsIdle();
     setSignedIn(false);
     setView({ screen: "home" });
     setChatOverflowOpen(false);
@@ -4304,8 +4296,7 @@ function MainAppInner() {
     messagesLastFullSyncAtRef.current = 0;
     postsWatermarkMsRef.current = 0;
     postsLastFullSyncAtRef.current = 0;
-    setEncryptedSyncState({ profile: "idle", posts: "idle", messages: "idle", lastSuccessAt: null });
-    setInitialServerSyncDone(false);
+    resetSyncChannelsIdle();
     setSignedIn(false);
     setView({ screen: "home" });
     setChatOverflowOpen(false);
@@ -4378,6 +4369,10 @@ function MainAppInner() {
       Alert.alert("Login", "Use a valid email address.");
       return;
     }
+    if (!EMAIL_OTP_ENABLED) {
+      void completeLoginAfterPassword(email, password);
+      return;
+    }
     setLoginOtp("");
     setIssuedOtpCode(null);
     setIssuedOtpForEmail(null);
@@ -4403,7 +4398,7 @@ function MainAppInner() {
   };
 
   const requestLoginOtpCode = async () => {
-    if (DEMO_OFFLINE_MODE) return;
+    if (DEMO_OFFLINE_MODE || !EMAIL_OTP_ENABLED) return;
     const email = loginEmail.trim().toLowerCase();
     const password = loginPassword;
     if (!email || !password) {
@@ -4434,7 +4429,7 @@ function MainAppInner() {
   };
 
   const completeLoginWithOtp = async () => {
-    if (DEMO_OFFLINE_MODE) return;
+    if (DEMO_OFFLINE_MODE || !EMAIL_OTP_ENABLED) return;
     const email = loginEmail.trim().toLowerCase();
     const password = loginPassword;
     const otp = loginOtp.replace(/\D/g, "").slice(0, 6);
@@ -4473,6 +4468,7 @@ function MainAppInner() {
   };
 
   const requestSignupOtp = async () => {
+    if (!EMAIL_OTP_ENABLED) return;
     const email = signupEmail.trim().toLowerCase();
     const phone = signupPhoneNumber.trim();
     if (!email || !phone) {
@@ -4540,11 +4536,48 @@ function MainAppInner() {
       );
       return;
     }
-    void requestSignupOtp();
+    if (EMAIL_OTP_ENABLED) {
+      void requestSignupOtp();
+      return;
+    }
+    void finishSignupAccount(email, password, username, phone);
+  };
+
+  const finishSignupAccount = async (
+    email: string,
+    password: string,
+    username: string,
+    phone: string
+  ) => {
+    try {
+      await createUserWithEmailAndPassword(firebaseAuth, email, password);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Could not complete signup.";
+      logAppError("auth.signup_create", e, { email });
+      Alert.alert("Signup failed", message);
+      return;
+    }
+    const account: MockAuthAccount = {
+      email,
+      password,
+      username,
+      phoneNumber: phone,
+      bio: "",
+      profilePictureUrl: null,
+    };
+    sessionEmailRef.current = account.email;
+    try {
+      await storageSetItem(profileUsernameStorageKey(email), username.trim());
+      myDisplayNameRef.current = username.trim();
+    } catch {
+      /* ignore */
+    }
+    await clearLocalSocialCacheForEmail(email);
+    await applySignedInAccount(account);
   };
 
   const completeSignupWithOtp = async () => {
-    if (DEMO_OFFLINE_MODE) return;
+    if (DEMO_OFFLINE_MODE || !EMAIL_OTP_ENABLED) return;
     const email = signupEmail.trim().toLowerCase();
     const password = signupPassword;
     const username = signupUsername.trim();
@@ -4568,7 +4601,6 @@ function MainAppInner() {
         purpose: "signup",
         code: otp,
       });
-      await createUserWithEmailAndPassword(firebaseAuth, email, password);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Could not complete signup.";
       logAppError("auth.signup_verify", e, { email });
@@ -4592,23 +4624,7 @@ function MainAppInner() {
       Alert.alert("Signup failed", message);
       return;
     }
-    const account: MockAuthAccount = {
-      email,
-      password,
-      username,
-      phoneNumber: phone,
-      bio: "",
-      profilePictureUrl: null,
-    };
-    sessionEmailRef.current = account.email;
-    try {
-      await storageSetItem(profileUsernameStorageKey(email), username.trim());
-      myDisplayNameRef.current = username.trim();
-    } catch {
-      /* ignore */
-    }
-    await clearLocalSocialCacheForEmail(email);
-    await applySignedInAccount(account);
+    await finishSignupAccount(email, password, username, phone);
   };
 
   const toggleFriendSelection = (friendId: string) => {
@@ -5073,25 +5089,11 @@ function MainAppInner() {
       if (!session || DEMO_OFFLINE_MODE) return;
       void refreshFriendProfilesFromServer(session, addedFriendsFromRitualRef.current).then(
         (refreshed) => {
-          setAddedFriendsFromRitual((current) => {
-            if (
-              refreshed.length === current.length &&
-              refreshed.every(
-                (f, i) =>
-                  current[i]?.id === f.id &&
-                  current[i]?.profilePictureUrl === f.profilePictureUrl &&
-                  current[i]?.displayName === f.displayName &&
-                  current[i]?.bio === f.bio
-              )
-            ) {
-              return current;
-            }
-            return refreshed;
-          });
+          replaceFriendsIfChanged(refreshed);
         }
       );
     },
-    [getBackendSession]
+    [getBackendSession, replaceFriendsIfChanged]
   );
 
   const openFriendProfile = async (
@@ -5267,13 +5269,10 @@ function MainAppInner() {
         if (!(friendsRes.friendUids ?? []).includes(friendUid)) {
           return friend;
         }
-        setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
-        setFriendLinksState((prev) => addUndirectedEdge(prev, CURRENT_USER_ID, friend.id));
+        acceptFriend(friend, { withLink: true });
         syncServerAcceptedFriendBackendUids(
           new Set([...acceptedFriendBackendUidsRef.current, friendUid])
         );
-        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
-        setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
         persistSocialMessagingNow();
         const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
         if (firebaseAuthUid) {
@@ -5294,7 +5293,7 @@ function MainAppInner() {
       }
       return friend;
     },
-    [syncServerAcceptedFriendBackendUids, persistSocialMessagingNow]
+    [syncServerAcceptedFriendBackendUids, persistSocialMessagingNow, acceptFriend]
   );
 
   const collectPairingProximityEvidence = useCallback(
@@ -5345,9 +5344,7 @@ function MainAppInner() {
         setDemoPendingAddableQueue((q) => q.slice(1));
         const friend = FRIENDS.find((f) => f.id === nextId) ?? null;
         if (!friend) return null;
-        setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
-        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
-        setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
+        acceptFriend(friend);
         return friend;
       }
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
@@ -5386,7 +5383,7 @@ function MainAppInner() {
       }
       return null;
     },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue, acceptFriend]
   );
 
   const pairingConfirmPinReadParent = useCallback(
@@ -5403,9 +5400,7 @@ function MainAppInner() {
             bio: "Demo mode account A",
             messageCount: 0,
           };
-          setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
-          stickyUnfriendedFriendIdsRef.current.delete(friend.id);
-          setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
+          acceptFriend(friend);
           return friend;
         }
         const nextId = demoPendingAddableQueue[0];
@@ -5413,9 +5408,7 @@ function MainAppInner() {
         setDemoPendingAddableQueue((q) => q.slice(1));
         const friend = FRIENDS.find((f) => f.id === nextId) ?? null;
         if (!friend) return null;
-        setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
-        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
-        setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
+        acceptFriend(friend);
         return friend;
       }
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
@@ -5488,7 +5481,7 @@ function MainAppInner() {
 
       return quickFriend;
     },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, collectPairingProximityEvidence, demoPendingAddableQueue]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, collectPairingProximityEvidence, demoPendingAddableQueue, acceptFriend]
   );
 
   const pairingConfirmRedeemerDualConfirmParent = useCallback(
@@ -5566,10 +5559,7 @@ function MainAppInner() {
         const seed = FRIENDS.find((f) => f.id === nextId) ?? null;
         if (!seed) return null;
         const friend: Friend = { ...seed, online: false };
-        setAddedFriendsFromRitual((prev) => upsertRitualFriend(prev, friend));
-        stickyUnfriendedFriendIdsRef.current.delete(friend.id);
-        setUnfriendedIds((prev) => prev.filter((id) => id !== friend.id));
-        setFriendLinksState((prev) => addUndirectedEdge(prev, CURRENT_USER_ID, friend.id));
+        acceptFriend(friend, { withLink: true });
         return friend;
       }
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
@@ -5616,7 +5606,7 @@ function MainAppInner() {
       void publishActivePresence(session, Date.now()).catch(() => undefined);
       return hydrated;
     },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue, syncServerAcceptedFriendBackendUids]
+    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue, syncServerAcceptedFriendBackendUids, acceptFriend]
   );
 
   const pairingCancelPinOfferParent = useCallback(async (pin: string): Promise<void> => {
@@ -5720,8 +5710,7 @@ function MainAppInner() {
             const session = getBackendSession();
             const friendRow = friendMap[friendId];
             const otherUid = friendRow?.backendUid?.trim();
-            stickyUnfriendedFriendIdsRef.current.add(friendId);
-            setUnfriendedIds((cur) => (cur.includes(friendId) ? cur : [...cur, friendId]));
+            unfriendLocally(friendId, otherUid);
             const chatIdsToLock = collectDirectChatIdsToLockForFriend(
               chatsRef.current ?? [],
               friendId,
@@ -5735,20 +5724,6 @@ function MainAppInner() {
             if (chatIdsToLock.length > 0) {
               setIdentityLockedChatIds((cur) => mergeIdentityLockedChatIds(cur, chatIdsToLock));
             }
-            setAddedFriendsFromRitual((prev) =>
-              prev.filter(
-                (f) =>
-                  f.id !== friendId &&
-                  (!otherUid || f.backendUid?.trim() !== otherUid)
-              )
-            );
-            setFriendLinksState((prev) => {
-              let next = removeUndirectedEdge(prev, CURRENT_USER_ID, friendId);
-              if (otherUid) {
-                next = removeUndirectedEdge(next, CURRENT_USER_ID, backendUidForFriendId(otherUid));
-              }
-              return next;
-            });
             if (!DEMO_OFFLINE_MODE && session && otherUid) {
               try {
                 await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {
@@ -8891,7 +8866,6 @@ function MainAppInner() {
    * listeners + the once-per-session boot-time callable pull, all of which
    * stream into a rendered home rather than gating it.
    */
-  const showBootSplash = !appBootAuthResolved || !appBootMinMsElapsed;
   if (showBootSplash) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.background, paddingTop: safeTop }}>
@@ -8982,7 +8956,7 @@ function MainAppInner() {
         ]}
       >
         <StatusBar style={isDarkMode ? "light" : "dark"} />
-        {authMode === "login" ? (
+        {authMode === "login" || (!EMAIL_OTP_ENABLED && authMode === "loginOtp") ? (
           <View style={styles.authLoginRoot}>
             <View style={styles.authTopBar}>
               <View style={styles.authTopSideSpacer} />
@@ -9040,7 +9014,7 @@ function MainAppInner() {
               </View>
             </ScrollViewUntilScroll>
           </View>
-        ) : authMode === "loginOtp" ? (
+        ) : EMAIL_OTP_ENABLED && authMode === "loginOtp" ? (
           <View style={styles.authLoginRoot}>
             <View style={styles.authTopBar}>
               <Pressable onPress={() => setAuthMode("login")} style={styles.authTopLinkButton}>
@@ -9081,7 +9055,7 @@ function MainAppInner() {
               </View>
             </ScrollViewUntilScroll>
           </View>
-        ) : authMode === "signup" ? (
+        ) : authMode === "signup" || (!EMAIL_OTP_ENABLED && authMode === "signupOtp") ? (
           <ScrollViewUntilScroll
             style={{ flex: 1 }}
             contentContainerStyle={[

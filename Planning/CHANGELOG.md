@@ -16,7 +16,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Canonical workspace is Desktop\\Erdos:** Implementation and APK builds live at `C:\Users\dunca\OneDrive\Desktop\Erdos`. `App FInal V3` is a read-only archive.
 - **Install id stays `com.duncanharper42.appv2build2`** until you add Android apps `com.erdos.app` / `.demo` on existing project `nfc-app-7095e` (do not create a new Firebase project). Kotlin `namespace` is `com.erdos`.
 - **Erdos visual brand:** Launcher/name/icons are Erdos.
-- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`). Backend session refs live in `app/session/useBackendSession`; feed post rows live in `app/feed/useFeedController`; pair-offer register lives in `app/addFriend/`.
+- **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`). Backend session refs live in `app/session/useBackendSession`; signed-in / splash / encrypted-sync flags live in `app/session/useSignedInSession`; feed post rows live in `app/feed/useFeedController`; friend roster / unfriend / link-graph state lives in `app/friends/useFriendsController`; pair-offer register lives in `app/addFriend/`.
+- **Email OTP temporarily off:** Login and signup use email/password only (`EMAIL_OTP_ENABLED = false`). OTP screens and callables remain in the tree; flip the flag to restore 6-digit verification.
 
 ### Fixed (Sep 2026)
 - **Add Friend during session claim:** QR/NFC pair callables wait a few seconds for `claimDeviceSession` instead of failing as if the offer were gone.

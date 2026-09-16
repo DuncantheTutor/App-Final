@@ -19,7 +19,7 @@ Update the **Last recorded** column when you re-run after meaningful changes.
   App uses real Firebase project config and live function routing on device builds.
 
 - [x] **Auth baseline**  
-  Email/password auth works with OTP verification in signup path.
+  Email/password auth works. **6-digit email OTP is temporarily disabled** (`EMAIL_OTP_ENABLED = false`); signup/login skip the OTP step. Flip the flag to restore OTP verification.
 
 - [x] **Private thread permissions**  
   Backend enforces owner/friend participant checks for private post threads.

@@ -16,6 +16,12 @@ import { resolveParticipantDisplay } from "../lib/participantDisplay";
 
 export const CURRENT_USER_ID = "me";
 export const DEMO_OFFLINE_MODE = false;
+/**
+ * Temporary: email/password login and signup skip the 6-digit OTP step.
+ * OTP screens, SMS assist, and `requestEmailOtp` / `verifyEmailOtp` stay in the tree.
+ * Flip to `true` to restore OTP-after-sign-in (product rule R21).
+ */
+export const EMAIL_OTP_ENABLED: boolean = false;
 /** Demo pairing offer token (32 hex) — encodes as AFQR2 in QR. */
 export const DEMO_USER_A_QR_PIN = "42424242424242424242424242424242";
 /** Primary UI accent — blue-teal. */

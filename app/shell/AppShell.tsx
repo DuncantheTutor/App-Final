@@ -1,6 +1,6 @@
 /**
  * App shell: routing and screen composition only.
- * Feature behavior lives in messaging / feed / session / addFriend controllers.
+ * Feature behavior lives in messaging / feed / session / friends / addFriend controllers.
  */
 export { useAppNavigation, type AppNavigation } from "./useAppNavigation";
 export {

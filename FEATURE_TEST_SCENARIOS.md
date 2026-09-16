@@ -6,6 +6,7 @@
 - **Install id stays `com.duncanharper42.appv2build2`** (debug `…appv2build2.demo`) so Auth / pairing / push keep working. Kotlin `namespace` is `com.erdos`. Flip to `com.erdos.app` only after you add that Android app on project `nfc-app-7095e` (do not create a new Firebase project).
 - **Same-app update:** installing this APK replaces the previous build on the current package; you should not get a second icon.
 - **Add Friend after cold start:** Show/Read QR during the brief `claimDeviceSession` window should wait and pair, not abort as if the offer disappeared.
+- **Email OTP temporarily off:** Login and signup complete with **email + password** (and signup username/phone). Do **not** expect the 6-digit OTP screens until `EMAIL_OTP_ENABLED` is flipped back to `true` in `app/theme/preludeConstants.ts`. OTP request/verify code is still in the tree.
 
 ## Jun 2026 — cold start / inbox load (performance)
 

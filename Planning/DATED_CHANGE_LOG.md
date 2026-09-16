@@ -10,6 +10,38 @@
 
 ---
 
+## 2026-09-15 19:34 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:34 +01:00 | Auth | Disabled 6-digit email OTP behind EMAIL_OTP_ENABLED; login/signup use email and password only. |
+
+---
+
+## 2026-09-15 19:26 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:26 +01:00 | Session | Extracted signed-in / splash / encrypted-sync flags from MainApp into useSignedInSession. |
+
+---
+
+## 2026-09-15 19:19 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:19 +01:00 | Friends | Extracted roster / unfriend / link-graph state from MainApp into useFriendsController. |
+
+---
+
+## 2026-09-11 17:47 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:47 +01:00 | Auth | Added debug instrumentation to trace why sign-in does not survive app close. |
+
+---
+
 ## 2026-09-05 19:20 +01:00
 
 | Time | Area | Change |

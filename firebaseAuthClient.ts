@@ -16,6 +16,38 @@ import {
 import { connectStorageEmulator, getStorage, type FirebaseStorage } from "firebase/storage";
 import { Platform } from "react-native";
 
+const DEBUG_INGEST_PATH = "/ingest/81185788-3701-4c9e-b62c-43aa972e97d1";
+const DEBUG_INGEST_ORIGINS = ["http://127.0.0.1:7751", "http://192.168.0.12:7751"];
+
+/** Debug-session ingest (folded). Posts to loopback and LAN so a physical phone can reach the host. */
+export function debugSessionLog(
+  location: string,
+  message: string,
+  hypothesisId: string,
+  data: Record<string, unknown>
+): void {
+  // #region agent log
+  const body = JSON.stringify({
+    sessionId: "cf73d6",
+    runId: "pre-fix",
+    hypothesisId,
+    location,
+    message,
+    data,
+    timestamp: Date.now(),
+  });
+  const headers = { "Content-Type": "application/json", "X-Debug-Session-Id": "cf73d6" };
+  const origins = [...DEBUG_INGEST_ORIGINS];
+  const expoHost = String(Constants.expoConfig?.hostUri ?? "").split(":")[0]?.trim();
+  if (expoHost && expoHost !== "127.0.0.1" && expoHost !== "localhost") {
+    origins.push(`http://${expoHost}:7751`);
+  }
+  for (const origin of [...new Set(origins)]) {
+    fetch(`${origin}${DEBUG_INGEST_PATH}`, { method: "POST", headers, body }).catch(() => {});
+  }
+  // #endregion
+}
+
 type ExpoExtra = {
   firebase?: {
     apiKey?: string;
@@ -61,19 +93,45 @@ const app: FirebaseApp = getApps().length
     });
 
 function createFirebaseAuth(): Auth {
+  const persistenceFnType = typeof getReactNativePersistence;
   if (Platform.OS === "web") {
-    return getAuth(app);
+    const auth = getAuth(app);
+    // #region agent log
+    debugSessionLog("firebaseAuthClient.ts:createFirebaseAuth", "auth init web getAuth", "H2", {
+      platform: Platform.OS,
+      persistenceFnType,
+      path: "getAuth",
+    });
+    // #endregion
+    return auth;
   }
   try {
-    return initializeAuth(app, {
+    const auth = initializeAuth(app, {
       persistence: getReactNativePersistence(AsyncStorage),
     });
+    // #region agent log
+    debugSessionLog(
+      "firebaseAuthClient.ts:createFirebaseAuth",
+      "auth init initializeAuth persistence",
+      "H2",
+      { platform: Platform.OS, persistenceFnType, path: "initializeAuth" }
+    );
+    // #endregion
+    return auth;
   } catch (e: unknown) {
     const code =
       typeof e === "object" && e !== null && "code" in e ? String((e as { code: string }).code) : "";
     if (code === "auth/already-initialized") {
-      // Hot reload / duplicate import — reuse the singleton (persistence was set on first init).
-      return getAuth(app);
+      const auth = getAuth(app);
+      // #region agent log
+      debugSessionLog(
+        "firebaseAuthClient.ts:createFirebaseAuth",
+        "auth init already-initialized fallback getAuth",
+        "H4",
+        { platform: Platform.OS, persistenceFnType, path: "getAuth-fallback", code }
+      );
+      // #endregion
+      return auth;
     }
     throw e;
   }
@@ -85,6 +143,36 @@ export function hasPersistedFirebaseUser(): boolean {
 }
 
 export const firebaseAuth = createFirebaseAuth();
+
+void (async () => {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const authKeys = keys.filter(
+      (k) => k.includes("firebase:authUser") || k.includes("firebase:auth")
+    );
+    // #region agent log
+    debugSessionLog("firebaseAuthClient.ts:storageProbe", "AsyncStorage firebase auth keys", "H2", {
+      authKeyCount: authKeys.length,
+      keyPrefixes: authKeys.map((k) => k.slice(0, 48)),
+      hasCurrentUserNow: Boolean(firebaseAuth.currentUser),
+    });
+    // #endregion
+    const ready = (
+      firebaseAuth as Auth & { authStateReady?: () => Promise<void> }
+    ).authStateReady;
+    if (typeof ready === "function") {
+      await ready.call(firebaseAuth);
+      // #region agent log
+      debugSessionLog("firebaseAuthClient.ts:authStateReady", "authStateReady resolved", "H1", {
+        hasCurrentUser: Boolean(firebaseAuth.currentUser),
+        hasEmail: Boolean(firebaseAuth.currentUser?.email?.trim()),
+      });
+      // #endregion
+    }
+  } catch {
+    /* ignore debug probe */
+  }
+})();
 
 let firebaseStorageSingleton: FirebaseStorage | null = null;
 let storageEmulatorConnected = false;
