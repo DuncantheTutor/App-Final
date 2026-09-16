@@ -11,7 +11,7 @@ Product specs, MVP plans, parity checklists, chat exports, and execution notes f
 ## Entry points
 
 - `MASTER_PRODUCT_PLAN.md` — single planning entry point (scope + tombstone tickets)
-- Client split (in progress): `app/shell/` (routing), `app/messaging/useMessagingController.ts` (chat state), `app/session/useBackendSession.ts` (device session), `app/session/useSignedInSession.ts` (signed-in / splash / sync flags), `app/feed/useFeedController.ts` (post rows), `app/friends/useFriendsController.ts` (roster / unfriend / links), `app/addFriend/` (pair-offer register)
+- Client split (in progress): `app/shell/` (routing), `app/messaging/useMessagingController.ts` (chat state), `app/session/useBackendSession.ts` (device session), `app/session/useSignedInSession.ts` (signed-in / splash / sync flags), `app/feed/useFeedController.ts` (post rows), `app/friends/useFriendsController.ts` (roster / unfriend / links), `app/profile/useProfileController.ts` (my-profile + card cache), `app/addFriend/` (pair-offer register)
 - **Your todo:** add Firebase Android apps `com.erdos.app` + `.demo` on existing project `nfc-app-7095e` (see `MASTER_PRODUCT_PLAN.md`) — do not create a new Firebase project
 - `BUG_AUDIT_MAY2026_V4.md` — latest static bug audit (messaging, reactions, presence)
 - `CHAT_FEED_IMPLEMENTATION_ROADMAP.md` — **May 2026** chat/feed IMPLEMENT vs TODO

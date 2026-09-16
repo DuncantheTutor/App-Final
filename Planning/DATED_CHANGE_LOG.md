@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-16 20:43 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:43 +01:00 | Profile | Extracted my-profile fields and friend profile-card cache from MainApp into useProfileController. |
+
+---
+
 ## 2026-09-16 20:08 +01:00
 
 | Time | Area | Change |
@@ -25,6 +33,8 @@
 | 20:06 +01:00 | UX | Press-ack on Send/Publish/Post without changing button size; top-nav haptic; Settings toggle respects OS haptic-off. |
 
 ---
+
+## 2026-09-15 19:34 +01:00
 
 | Time | Area | Change |
 |---|---|-----|

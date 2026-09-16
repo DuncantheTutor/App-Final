@@ -195,11 +195,6 @@ import {
 import { readAvatarsByMessageId, type ReadByMap } from "./lib/readReceipts";
 import { useInitialServerSync } from "./boot/useInitialServerSync";
 import { clearLocalSocialCacheForEmail } from "./lib/localSocialCache";
-import {
-  readProfileCardCache,
-  writeProfileCardCache,
-  type CachedProfileCard,
-} from "./lib/profileCardCache";
 import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "./lib/e2eeKeyBackup";
 import { pullEncryptedPostsIncremental as pullEncryptedPostsFromServer } from "./boot/pullEncryptedPosts";
 import {
@@ -209,6 +204,7 @@ import {
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
+import { useProfileController } from "./profile";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
 import { promotePendingChatToRow } from "./messaging/promotePendingChat";
@@ -509,8 +505,6 @@ function MainAppInner() {
     clearSession,
   } = useBackendSession();
   const recipientKeyCacheRef = useRef<Record<string, string>>({});
-  /** Username as friends see it — used for outgoing push notification titles. */
-  const myDisplayNameRef = useRef("");
   const sessionConflictNoticeAtRef = useRef(0);
   /** Latest `logout` so session-retry alerts can offer Logout before `logout` is defined in source order. */
   const logoutRef = useRef<() => void>(() => {});
@@ -592,6 +586,21 @@ function MainAppInner() {
     unfriendLocally,
     replaceFriendsIfChanged,
   } = useFriendsController();
+  const {
+    myProfilePictureUrl,
+    setMyProfilePictureUrl,
+    myProfilePictureUrlRef,
+    myBio,
+    setMyBio,
+    myBioTextEntryOpen,
+    setMyBioTextEntryOpen,
+    myDisplayNameRef,
+    resetMyProfile,
+    hydrateMyProfile,
+    mergeRosterIntoCache,
+    resolveFriendProfileCard: resolveFriendProfileCardFromMaps,
+    friendHasCachedProfile: friendHasCachedProfileFromMaps,
+  } = useProfileController({ signedIn, sessionEmailRef });
   const [chatComposerOpen, setChatComposerOpen] = useState(false);
   const [broadcastPickerOpen, setBroadcastPickerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"standard" | "broadcast">("standard");
@@ -720,12 +729,6 @@ function MainAppInner() {
   }, []);
   const publishPostScrollRef = useRef<ScrollView | null>(null);
   const publishCaptionInputRef = useRef<TextInput | null>(null);
-  const [myProfilePictureUrl, setMyProfilePictureUrl] = useState<string | null>(null);
-  const myProfilePictureUrlRef = useRef<string | null>(null);
-  myProfilePictureUrlRef.current = myProfilePictureUrl;
-  const [myBio, setMyBio] = useState("");
-  /** When your bio has text, show read-only styling until long-press to edit (empty bio stays in the editor). */
-  const [myBioTextEntryOpen, setMyBioTextEntryOpen] = useState(true);
   const bioInputRef = useRef<TextInput | null>(null);
   const myProfileScrollRef = useRef<ScrollView | null>(null);
   const [fullScreenPost, setFullScreenPost] = useState<Post | null>(null);
@@ -772,10 +775,6 @@ function MainAppInner() {
   const hydrateInFlightPostIdsRef = useRef<Set<string>>(new Set());
   const hydratedCommentPostAtRef = useRef<Record<string, number>>({});
   const [presenceOnlineByBackendUid, setPresenceOnlineByBackendUid] = useState<Record<string, boolean>>({});
-  /** Persisted profile cards (name/bio/avatar) for every profile opened — fallback when offline. */
-  const [cachedProfileCards, setCachedProfileCards] = useState<Record<string, CachedProfileCard>>({});
-  const cachedProfileCardsRef = useRef<Record<string, CachedProfileCard>>({});
-  cachedProfileCardsRef.current = cachedProfileCards;
   /** Network reachability — drives the "Not connected to internet" profile state. */
   const [isOnline, setIsOnline] = useState(true);
   const autoReplyTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
@@ -1202,24 +1201,6 @@ function MainAppInner() {
     };
   }, []);
 
-  // Load the persisted profile-card cache for the signed-in account.
-  useEffect(() => {
-    if (!signedIn) {
-      setCachedProfileCards({});
-      return;
-    }
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    let cancelled = false;
-    void (async () => {
-      const cards = await readProfileCardCache(email);
-      if (!cancelled) setCachedProfileCards(cards);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [signedIn]);
-
   useEffect(() => {
     if (!signedIn) return;
     const email = sessionEmailRef.current?.trim().toLowerCase();
@@ -1311,73 +1292,19 @@ function MainAppInner() {
   const friendMapRef = useRef(friendMap);
   friendMapRef.current = friendMap;
 
+  const resolveFriendProfileCard = useCallback(
+    (friendId: string) => resolveFriendProfileCardFromMaps(friendId, friendMap),
+    [friendMap, resolveFriendProfileCardFromMaps]
+  );
+
   // Keep the persisted profile-card cache in step with the live roster so a
   // previously-seen friend's name/bio/avatar survive cold starts and offline.
   useEffect(() => {
     if (!signedIn) return;
     const email = sessionEmailRef.current?.trim().toLowerCase();
     if (!email) return;
-    const prior = cachedProfileCardsRef.current;
-    let changed = false;
-    const next = { ...prior };
-    for (const friend of allFriends) {
-      const name = friend.displayName?.trim();
-      if (!name) continue;
-      const existing = prior[friend.id];
-      const card: CachedProfileCard = {
-        friendId: friend.id,
-        backendUid: friend.backendUid?.trim() || undefined,
-        displayName: name,
-        bio: friend.bio ?? "",
-        profilePictureUrl: mergeProfilePictureUrl(
-          friend.profilePictureUrl,
-          existing?.profilePictureUrl
-        ),
-        updatedAt: Date.now(),
-      };
-      if (
-        !existing ||
-        existing.displayName !== card.displayName ||
-        existing.bio !== card.bio ||
-        existing.profilePictureUrl !== card.profilePictureUrl
-      ) {
-        next[friend.id] = card;
-        changed = true;
-      }
-    }
-    if (changed) {
-      setCachedProfileCards(next);
-      void writeProfileCardCache(email, next);
-    }
-  }, [allFriends, signedIn]);
-
-  /** Live roster entry if present, else the persisted profile card (offline fallback). */
-  const resolveFriendProfileCard = useCallback(
-    (
-      friendId: string
-    ): { displayName: string; bio: string; profilePictureUrl: string; online: boolean } | null => {
-      const live = friendMap[friendId];
-      if (live?.displayName?.trim()) {
-        return {
-          displayName: live.displayName,
-          bio: live.bio ?? "",
-          profilePictureUrl: live.profilePictureUrl ?? "",
-          online: !!live.online,
-        };
-      }
-      const cached = cachedProfileCards[friendId];
-      if (cached?.displayName?.trim()) {
-        return {
-          displayName: cached.displayName,
-          bio: cached.bio ?? "",
-          profilePictureUrl: cached.profilePictureUrl ?? "",
-          online: false,
-        };
-      }
-      return null;
-    },
-    [friendMap, cachedProfileCards]
-  );
+    mergeRosterIntoCache(allFriends, email);
+  }, [allFriends, signedIn, mergeRosterIntoCache]);
 
   const serverFriendUidsForDisplay = useMemo(() => {
     if (DEMO_OFFLINE_MODE) return null;
@@ -3567,14 +3494,11 @@ function MainAppInner() {
     resetMessagingState();
     resetPosts();
     resetFriendsState();
+    resetMyProfile();
     deletedPostIdsRef.current = new Set();
-    setMyBio("");
-    setMyBioTextEntryOpen(true);
-    setMyProfilePictureUrl(null);
-    myDisplayNameRef.current = "";
     void storageRemoveItem(POSTS_STORAGE_KEY);
     void clearEncryptedMediaCaches();
-  }, [resetMessagingState, resetPosts, resetFriendsState]);
+  }, [resetMessagingState, resetPosts, resetFriendsState, resetMyProfile]);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
@@ -3770,9 +3694,7 @@ function MainAppInner() {
           phoneNumber: account.phoneNumber,
         });
         const safeProfilePic = normalizeHttpsProfilePictureUrl(resolvedPicture);
-        setMyProfilePictureUrl(safeProfilePic);
-        setMyBio(resolvedBio);
-        setMyBioTextEntryOpen(!resolvedBio.trim());
+        hydrateMyProfile({ bio: resolvedBio, profilePictureUrl: safeProfilePic });
         if (safeProfilePic) {
           void storageSetItem(profilePictureStorageKey(account.email), safeProfilePic).catch(
             () => {}
@@ -3791,7 +3713,7 @@ function MainAppInner() {
         setEncryptedSyncState((current) => ({ ...current, profile: "error" }));
       }
     })();
-  }, [refreshHiddenConversationIdsFromServer, markSessionReady]);
+  }, [refreshHiddenConversationIdsFromServer, markSessionReady, hydrateMyProfile]);
 
   const retryInitializeBackendForAccount = useCallback(
     async (account: MockAuthAccount) => {
@@ -3976,11 +3898,11 @@ function MainAppInner() {
         storageGetItem(profileBioStorageKey(emailKey)).catch(() => null),
       ]);
       const initialBio = persistedBio ?? account.bio ?? "";
-      setMyBio(initialBio);
-      setMyBioTextEntryOpen(!initialBio.trim());
-      setMyProfilePictureUrl(
-        mergeProfilePictureUrl(persistedProfilePic, account.profilePictureUrl) || null
-      );
+      hydrateMyProfile({
+        bio: initialBio,
+        profilePictureUrl:
+          mergeProfilePictureUrl(persistedProfilePic, account.profilePictureUrl) || null,
+      });
 
       /**
        * Re-arm the boot-sync guard so the once-per-session
@@ -4063,7 +3985,7 @@ function MainAppInner() {
         }
       })();
     },
-    [initializeBackendSessionForAccount, retryInitializeBackendForAccount, markSessionReady, clearSession, hydrateFriends, markSignedIn]
+    [initializeBackendSessionForAccount, retryInitializeBackendForAccount, markSessionReady, clearSession, hydrateFriends, hydrateMyProfile, markSignedIn]
   );
 
   const applySignedInAccountRef = useRef(applySignedInAccount);
@@ -5099,10 +5021,8 @@ function MainAppInner() {
   };
 
   const friendHasCachedProfile = useCallback(
-    (friendId: string): boolean =>
-      Boolean(friendMap[friendId]?.displayName?.trim()) ||
-      Boolean(cachedProfileCards[friendId]?.displayName?.trim()),
-    [friendMap, cachedProfileCards]
+    (friendId: string) => friendHasCachedProfileFromMaps(friendId, friendMap),
+    [friendMap, friendHasCachedProfileFromMaps]
   );
 
   const refreshFriendProfileInBackground = useCallback(
