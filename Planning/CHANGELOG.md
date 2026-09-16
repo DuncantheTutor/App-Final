@@ -18,6 +18,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Erdos visual brand:** Launcher/name/icons are Erdos.
 - **Client module split (start):** Routing (`view` / `homeTab`) lives in `app/shell/`; `MainApp` chat/message writes go through `useMessagingController` (`applyChats` / `applyMessages` / `replaceInbox`). Backend session refs live in `app/session/useBackendSession`; signed-in / splash / encrypted-sync flags live in `app/session/useSignedInSession`; feed post rows live in `app/feed/useFeedController`; friend roster / unfriend / link-graph state lives in `app/friends/useFriendsController`; pair-offer register lives in `app/addFriend/`.
 - **Email OTP temporarily off:** Login and signup use email/password only (`EMAIL_OTP_ENABLED = false`). OTP screens and callables remain in the tree; flip the flag to restore 6-digit verification.
+- **Press acknowledgement (no size change):** Chat/comment **Send** (paper-plane nudge inside the circle), **Publish** / photo-editor **Post**/**Send** (in-bounds flash), plus a light haptic. Top nav (chats, friends, feed, …) ticks on tap. Settings → **Haptic feedback** can turn it off; if Android touch haptics are already off (or there is no vibrator), the switch stays off and cannot be enabled.
+
+### Added (Sep 2026)
+- **Haptic settings:** In-app toggle persisted with appearance prefs. OS haptic-off is detected on Android (`HAPTIC_FEEDBACK_ENABLED` / no vibrator) and re-checked when the app returns to the foreground.
+- **New-post camera:** Publish composer can take a photo with the camera (icon or media-slot prompt) as well as pick from the gallery; both still open the photo editor.
 
 ### Fixed (Sep 2026)
 - **Add Friend during session claim:** QR/NFC pair callables wait a few seconds for `claimDeviceSession` instead of failing as if the offer were gone.

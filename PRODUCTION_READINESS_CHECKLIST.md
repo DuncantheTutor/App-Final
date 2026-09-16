@@ -21,6 +21,9 @@ Update the **Last recorded** column when you re-run after meaningful changes.
 - [x] **Auth baseline**  
   Email/password auth works. **6-digit email OTP is temporarily disabled** (`EMAIL_OTP_ENABLED = false`); signup/login skip the OTP step. Flip the flag to restore OTP verification.
 
+- [x] **Haptic press ack**  
+  Send/Publish/Post acknowledge taps without changing button size. Top nav ticks. Settings → Haptic feedback can disable; Android system haptic-off (or no vibrator) keeps the switch off.
+
 - [x] **Private thread permissions**  
   Backend enforces owner/friend participant checks for private post threads.
 

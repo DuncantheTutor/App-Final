@@ -18,11 +18,11 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   View,
-  Vibration,
 } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 
 import { HomeTopNavBar, type HomeNavBadges, type HomeNavHighlight } from "../components/HomeTopNavBar";
+import { playHapticPattern } from "../lib/haptics";
 import {
   cancelInPersonPairingHardware,
 } from "../../addFriend/inPersonPairingGateway";
@@ -266,7 +266,7 @@ export function AddFriendScreen(props: {
       // Celebratory haptic — a short happy "ta-da" buzz pattern. iOS/Android both
       // accept an alternating [wait, vibrate, …] pattern in ms.
       try {
-        Vibration.vibrate([0, 45, 70, 45, 70, 120]);
+        playHapticPattern([0, 45, 70, 45, 70, 120]);
       } catch {
         // ignore — vibration is best-effort
       }
@@ -1061,11 +1061,7 @@ export function AddFriendScreen(props: {
         rafRef.current = null;
       }
       pressStartRef.current = null;
-      if (Platform.OS === "android") {
-        Vibration.vibrate(60);
-      } else {
-        Vibration.vibrate();
-      }
+      playHapticPattern(60);
       Animated.spring(scaleAnim, {
         toValue: 1,
         friction: 7,

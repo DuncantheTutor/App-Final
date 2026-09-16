@@ -4,6 +4,7 @@ import {
   storageRemoveItem,
   storageSetItem,
 } from "./lib/encryptedLocalStorage";
+import { setUserHapticsEnabled, useHapticSettings, playPressHaptic } from "./lib/haptics";
 import { clearEncryptedMediaCaches } from "./lib/encryptedMediaCache";
 import * as ImagePicker from "expo-image-picker";
 import * as NavigationBar from "expo-navigation-bar";
@@ -180,6 +181,7 @@ import { NotificationPrePromptScreen } from "./components/NotificationPrePromptS
 import { PostGridCell } from "./components/PostGridCell";
 import { ImageCropModal } from "./components/ImageCropModal";
 import { HomeTopNavBar } from "./components/HomeTopNavBar";
+import { PressAckButton } from "./components/PressAckButton";
 import { FullscreenMediaViewer } from "./components/FullscreenMediaViewer";
 import { VideoPostThumbnailModal } from "./components/VideoPostThumbnailModal";
 import { OpenSourceLicensesScreen } from "./screens/OpenSourceLicensesScreen";
@@ -431,27 +433,47 @@ function MainAppInner() {
   const { width: windowWidth } = useWindowDimensions();
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [colorThemeId, setColorThemeId] = useState<ColorThemeId>("green");
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
+  const hapticSettings = useHapticSettings();
   useEffect(() => {
     let cancelled = false;
-    void storageGetItem(APPEARANCE_PREFS_STORAGE_KEY).then((raw) => {
-      if (cancelled || !raw) return;
-      try {
-        const o = JSON.parse(raw) as { isDarkMode?: unknown; colorThemeId?: unknown };
-        if (typeof o.isDarkMode === "boolean") setIsDarkMode(o.isDarkMode);
-        if (o.colorThemeId === "green" || o.colorThemeId === "pink") setColorThemeId(o.colorThemeId);
-      } catch {
-        /* ignore */
-      }
-    });
+    void storageGetItem(APPEARANCE_PREFS_STORAGE_KEY)
+      .then((raw) => {
+        if (cancelled) return;
+        if (raw) {
+          try {
+            const o = JSON.parse(raw) as {
+              isDarkMode?: unknown;
+              colorThemeId?: unknown;
+              hapticsEnabled?: unknown;
+            };
+            if (typeof o.isDarkMode === "boolean") setIsDarkMode(o.isDarkMode);
+            if (o.colorThemeId === "green" || o.colorThemeId === "pink") setColorThemeId(o.colorThemeId);
+            if (typeof o.hapticsEnabled === "boolean") setUserHapticsEnabled(o.hapticsEnabled);
+          } catch {
+            /* ignore */
+          }
+        }
+        setPrefsHydrated(true);
+      })
+      .catch(() => {
+        if (!cancelled) setPrefsHydrated(true);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
   useEffect(() => {
-    void storageSetItem(APPEARANCE_PREFS_STORAGE_KEY, JSON.stringify({ isDarkMode, colorThemeId })).catch(
-      () => {}
-    );
-  }, [isDarkMode, colorThemeId]);
+    if (!prefsHydrated) return;
+    void storageSetItem(
+      APPEARANCE_PREFS_STORAGE_KEY,
+      JSON.stringify({
+        isDarkMode,
+        colorThemeId,
+        hapticsEnabled: hapticSettings.userEnabled,
+      })
+    ).catch(() => {});
+  }, [isDarkMode, colorThemeId, hapticSettings.userEnabled, prefsHydrated]);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const {
     signedIn,
@@ -5994,6 +6016,34 @@ function MainAppInner() {
     }
   };
 
+  const capturePostPhoto = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Camera needed", "Allow camera access to take a photo for your post.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    setPostDraftVideoUri(null);
+    openPhotoEditorDirect(
+      { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
+      { target: "post", mediaType: "photo", queue: [] }
+    );
+  };
+
+  const promptPostPhotoSource = () => {
+    Alert.alert("Add photo", "Take a new photo or choose from your gallery.", [
+      { text: "Take photo", onPress: () => void capturePostPhoto() },
+      { text: "Choose from gallery", onPress: () => void pickPostPhotos() },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  };
+
   const pickPostVideo = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return;
@@ -9244,6 +9294,7 @@ function MainAppInner() {
                   <View style={styles.inputAccessoryBar}>
                     <Pressable
                       style={styles.inputAccessoryBarButton}
+                      onPressIn={playPressHaptic}
                       onPress={() => {
                         void submitFullscreenPostComment();
                       }}
@@ -9383,7 +9434,8 @@ function MainAppInner() {
                         }
                       }}
                     />
-                    <Pressable
+                    <PressAckButton
+                      variant="send"
                       disabled={
                         (fullScreenPostLive.authorId === CURRENT_USER_ID &&
                           !postFullscreenThreadReplyKey) ||
@@ -9401,7 +9453,7 @@ function MainAppInner() {
                       accessibilityLabel="Send comment"
                     >
                       <Ionicons name="send" size={16} color="#FFFFFF" />
-                    </Pressable>
+                    </PressAckButton>
                   </View>
                 </View>
               ) : null}
@@ -10202,7 +10254,7 @@ function MainAppInner() {
               nestedScrollEnabled
             >
               <Pressable
-                onPress={() => void pickPostPhotos()}
+                onPress={promptPostPhotoSource}
                 style={[
                   styles.publishMediaSlot,
                   { borderColor: theme.divider, backgroundColor: theme.replyBannerQuotingOtherBg },
@@ -10214,7 +10266,7 @@ function MainAppInner() {
                   <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 24 }}>
                     <Ionicons name="image-outline" size={44} color={theme.subtleText} />
                     <Text style={[styles.subtleText, { marginTop: 8, textAlign: "center", paddingHorizontal: 16 }]}>
-                      Tap to add photos
+                      Take a photo or choose from gallery
                     </Text>
                   </View>
                 ) : postDraftVideoUri ? (
@@ -10240,8 +10292,15 @@ function MainAppInner() {
               <View style={{ flexDirection: "row", gap: 10, marginTop: 10, justifyContent: "center" }}>
                 <Pressable
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
+                  onPress={() => void capturePostPhoto()}
+                  accessibilityLabel="Take photo"
+                >
+                  <Ionicons name="camera-outline" size={22} color={theme.text} />
+                </Pressable>
+                <Pressable
+                  style={[styles.iconActionPill, { borderColor: theme.divider }]}
                   onPress={pickPostPhotos}
-                  accessibilityLabel="Add photos"
+                  accessibilityLabel="Add photos from gallery"
                 >
                   <Ionicons name="image-outline" size={22} color={theme.text} />
                 </Pressable>
@@ -10306,9 +10365,9 @@ function MainAppInner() {
               <Pressable style={styles.publishPostCancelButton} onPress={closePublishPostScreen}>
                 <Text style={styles.publishPostCancelButtonText}>Cancel</Text>
               </Pressable>
-              <Pressable style={styles.publishPostPublishButton} onPress={publishPost}>
+              <PressAckButton variant="flash" style={styles.publishPostPublishButton} onPress={publishPost}>
                 <Text style={styles.publishPostPublishButtonText}>Publish</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -10415,6 +10474,7 @@ function MainAppInner() {
               <View style={styles.inputAccessoryBar}>
                 <Pressable
                   style={styles.inputAccessoryBarButton}
+                  onPressIn={playPressHaptic}
                   onPress={() => {
                     if (readComposerTextTrimmed(chatInputTextRef)) {
                       sendMessage();
@@ -11607,7 +11667,8 @@ function MainAppInner() {
                       }
                     }}
                   />
-                  <Pressable
+                  <PressAckButton
+                    variant={voiceNoteMode ? "flash" : "send"}
                     style={[
                       styles.sendButtonChat,
                       voiceNoteMode && voiceRecordStartedAt
@@ -11636,7 +11697,7 @@ function MainAppInner() {
                       size={16}
                       color="#FFFFFF"
                     />
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               </View>
             </>
@@ -12264,6 +12325,24 @@ function MainAppInner() {
                 <Switch
                   value={isDarkMode}
                   onValueChange={setIsDarkMode}
+                  thumbColor="#FFFFFF"
+                  trackColor={{ false: "#95A1A8", true: theme.accent }}
+                />
+              </View>
+              <View style={[styles.settingsRow, { paddingVertical: 12 }]}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={styles.chatName}>Haptic feedback</Text>
+                  {!hapticSettings.systemEnabled ? (
+                    <Text style={styles.settingsRowHint}>Off in system settings</Text>
+                  ) : null}
+                </View>
+                <Switch
+                  value={hapticSettings.userEnabled && hapticSettings.systemEnabled}
+                  onValueChange={(next) => {
+                    if (!hapticSettings.systemEnabled) return;
+                    hapticSettings.setUserEnabled(next);
+                  }}
+                  disabled={!hapticSettings.systemEnabled}
                   thumbColor="#FFFFFF"
                   trackColor={{ false: "#95A1A8", true: theme.accent }}
                 />

@@ -10,7 +10,21 @@
 
 ---
 
-## 2026-09-15 19:34 +01:00
+## 2026-09-16 20:08 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:08 +01:00 | Feed | New-post composer can take a camera photo, not only pick from the gallery. |
+
+---
+
+## 2026-09-16 20:06 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:06 +01:00 | UX | Press-ack on Send/Publish/Post without changing button size; top-nav haptic; Settings toggle respects OS haptic-off. |
+
+---
 
 | Time | Area | Change |
 |---|---|-----|

@@ -25,6 +25,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ImageCropModal } from "./app/components/ImageCropModal";
+import { PressAckButton } from "./app/components/PressAckButton";
 import { probeVideoDisplayDimensions } from "./app/lib/videoDisplayDimensions";
 import { keyboardScrollPadding } from "./app/lib/keyboardInputScroll";
 import { useScrollPinnedInput } from "./app/lib/useScrollPinnedInput";
@@ -1697,7 +1698,7 @@ export function PhotoEditorModal({
                   },
                 ]}
               >
-                <Pressable
+                <PressAckButton
                   style={[
                     styles.primaryWide,
                     styles.editFooterPrimary,
@@ -1714,7 +1715,7 @@ export function PhotoEditorModal({
                   ) : (
                     <Text style={styles.primaryWideText}>{editContinueLabel}</Text>
                   )}
-                </Pressable>
+                </PressAckButton>
               </View>
             </SafeAreaView>
           </View>
@@ -1811,13 +1812,13 @@ export function PhotoEditorModal({
                 >
                   <Text style={styles.previewBackBtnText}>Back</Text>
                 </Pressable>
-                <Pressable
+                <PressAckButton
                   style={styles.previewPostBtn}
                   onPress={confirmPost}
                   accessibilityLabel={previewSubmitLabel}
                 >
                   <Text style={styles.previewPostBtnText}>{previewSubmitLabel}</Text>
-                </Pressable>
+                </PressAckButton>
               </View>
             </SafeAreaView>
           </View>

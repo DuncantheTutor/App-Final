@@ -2,9 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-
-
 import type { ThemePalette } from "../domain/types";
+import { playPressHaptic } from "../lib/haptics";
 
 
 
@@ -303,6 +302,8 @@ export function HomeTopNavBar({
             key={item.key}
 
             onPress={item.onPress}
+
+            onPressIn={playPressHaptic}
 
             style={[
 
