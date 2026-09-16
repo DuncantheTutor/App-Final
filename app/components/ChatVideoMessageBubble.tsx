@@ -4,6 +4,7 @@ import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "rea
 
 import { useVideoPoster } from "../hooks/useVideoPosterUri";
 import { CHAT_MESSAGE_LONG_PRESS_MS } from "../theme/preludeConstants";
+import { PressAckButton } from "./PressAckButton";
 import { VideoWithFadeControls } from "./VideoWithFadeControls";
 
 type Props = {
@@ -121,14 +122,14 @@ export function ChatVideoMessageBubble({
         <View style={styles.prepareOverlay} pointerEvents="box-none">
           <ActivityIndicator color={accentColor} size="large" />
           <Text style={styles.prepareLabel}>Preparing video…</Text>
-          <Pressable
+          <PressAckButton
             style={styles.cancelBtn}
             onPress={onCancelPrepare}
             accessibilityRole="button"
             accessibilityLabel="Cancel preparing video"
           >
             <Text style={styles.cancelBtnText}>Cancel</Text>
-          </Pressable>
+          </PressAckButton>
         </View>
       ) : showPlayOverlay ? (
         <View style={styles.playOverlay} pointerEvents="none">

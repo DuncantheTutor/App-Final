@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
+import { PressAckButton } from "./PressAckButton";
 import type { ThemePalette } from "../domain/types";
 
 type NotificationPrePromptScreenProps = {
@@ -87,7 +88,7 @@ export function NotificationPrePromptScreen({
           <Text style={styles.primaryButtonText}>Allow notifications</Text>
         )}
       </Pressable>
-      <Pressable
+      <PressAckButton
         style={{ alignSelf: "center", paddingVertical: 12, paddingHorizontal: 16 }}
         onPress={onDecline}
         disabled={busy}
@@ -95,7 +96,7 @@ export function NotificationPrePromptScreen({
         accessibilityLabel="Not now"
       >
         <Text style={{ fontSize: 16, fontWeight: "600", color: theme.subtleText }}>Not now</Text>
-      </Pressable>
+      </PressAckButton>
     </View>
   );
 }

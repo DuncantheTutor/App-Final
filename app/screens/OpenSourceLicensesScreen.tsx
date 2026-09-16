@@ -1,5 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
+
+import { PressAckButton } from "../components/PressAckButton";
 
 import { OPEN_SOURCE_LICENSES } from "../lib/openSourceLicenses";
 import type { ThemePalette } from "../domain/types";
@@ -16,9 +18,9 @@ export function OpenSourceLicensesScreen({ theme, styles, safeTop, bottomPadding
   return (
     <View style={[styles.fullScreen as object, { paddingTop: safeTop, backgroundColor: theme.background }]}>
       <View style={[styles.authTopBar as object, { marginBottom: 8 }]}>
-        <Pressable onPress={onBack} style={styles.authTopLinkButton as object} accessibilityLabel="Back to settings">
+        <PressAckButton onPress={onBack} style={styles.authTopLinkButton as object} accessibilityLabel="Back to settings">
           <Ionicons name="arrow-back" size={22} color={theme.text} />
-        </Pressable>
+        </PressAckButton>
         <Text style={[styles.chatScreenTitle as object, { flex: 1, textAlign: "center" }]}>Open source licences</Text>
         <View style={styles.authTopSideSpacer as object} />
       </View>

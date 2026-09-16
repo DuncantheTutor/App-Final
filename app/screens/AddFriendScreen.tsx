@@ -22,6 +22,7 @@ import {
 import QRCode from "react-native-qrcode-svg";
 
 import { HomeTopNavBar, type HomeNavBadges, type HomeNavHighlight } from "../components/HomeTopNavBar";
+import { PressAckButton } from "../components/PressAckButton";
 import { playHapticPattern } from "../lib/haptics";
 import {
   cancelInPersonPairingHardware,
@@ -1436,7 +1437,7 @@ export function AddFriendScreen(props: {
             >
               Authenticating
             </Text>
-            <Pressable
+            <PressAckButton
               onPress={() => void cancelPairingHandshake()}
               style={{
                 marginTop: 28,
@@ -1448,7 +1449,7 @@ export function AddFriendScreen(props: {
               accessibilityLabel="Cancel pairing"
             >
               <Text style={{ color: textColor, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
-            </Pressable>
+            </PressAckButton>
           </View>
         ) : null}
 
@@ -1498,7 +1499,7 @@ export function AddFriendScreen(props: {
                 {pairingStatusLabel}
               </Text>
             ) : null}
-            <Pressable
+            <PressAckButton
               onPress={() => void cancelPairingHandshake()}
               style={{
                 marginTop: 22,
@@ -1510,7 +1511,7 @@ export function AddFriendScreen(props: {
               accessibilityLabel="Cancel pairing"
             >
               <Text style={{ color: textColor, fontSize: 16, fontWeight: "500" }}>Cancel</Text>
-            </Pressable>
+            </PressAckButton>
           </View>
         ) : null}
 
@@ -1573,7 +1574,7 @@ export function AddFriendScreen(props: {
               {`Confirm adding ${pendingVerifiedFriend?.displayName?.trim() || "this person"} as friend?`}
             </Text>
             <View style={{ width: "100%", maxWidth: 420, flexDirection: "row", gap: 10 }}>
-              <Pressable
+              <PressAckButton
                 onPress={cancelVerifiedFriend}
                 disabled={confirmSubmitting}
                 style={[
@@ -1582,7 +1583,7 @@ export function AddFriendScreen(props: {
                 ]}
               >
                 <Text style={{ color: textColor, fontSize: 16, fontWeight: "600" }}>Cancel</Text>
-              </Pressable>
+              </PressAckButton>
               <Pressable
                 onPress={() => void confirmVerifiedFriend()}
                 disabled={confirmSubmitting}

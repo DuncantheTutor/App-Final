@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { PressAckButton } from "./PressAckButton";
 import { ScrollViewUntilScroll } from "../../ScrollUntilScroll";
 import { VideoWithFadeControls } from "./VideoWithFadeControls";
 
@@ -127,13 +128,13 @@ export function FullscreenMediaViewer({ item, onClose, onGalleryIndexChange }: P
     <View style={styles.host} accessibilityViewIsModal importantForAccessibility="yes">
       <StatusBar style="light" hidden={Platform.OS === "android"} />
       <View style={styles.root}>
-        <Pressable
+        <PressAckButton
           style={[styles.closeBtn, { top: insets.top + 8 }]}
           onPress={onClose}
           accessibilityLabel="Close"
         >
           <Ionicons name="close" size={30} color="#fff" />
-        </Pressable>
+        </PressAckButton>
         {item.kind === "video" ? (
           <View style={styles.videoStage}>
             <VideoWithFadeControls

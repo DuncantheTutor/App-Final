@@ -1442,9 +1442,9 @@ export function PhotoEditorModal({
           </InputAccessoryView>
         ) : null}
         <View style={styles.headerRow}>
-          <Pressable onPress={onClose} style={styles.headerBtn} accessibilityLabel="Cancel">
+          <PressAckButton onPress={onClose} style={styles.headerBtn} accessibilityLabel="Cancel">
             <Feather name="x" size={22} color={theme.accent} />
-          </Pressable>
+          </PressAckButton>
           <Text style={styles.headerTitle}>
             {step === "edit" ? (isVideo ? "Edit video" : "Edit photo") : "Preview"}
           </Text>
@@ -1805,13 +1805,13 @@ export function PhotoEditorModal({
                   },
                 ]}
               >
-                <Pressable
+                <PressAckButton
                   style={styles.previewBackBtn}
                   onPress={() => setStep("edit")}
                   accessibilityLabel="Back to edit"
                 >
                   <Text style={styles.previewBackBtnText}>Back</Text>
-                </Pressable>
+                </PressAckButton>
                 <PressAckButton
                   style={styles.previewPostBtn}
                   onPress={confirmPost}
@@ -1892,9 +1892,9 @@ export function PhotoEditorModal({
               </ScrollView>
               <Text style={styles.rgbHexLabel}>{rgbToHex(rgbDraft.r, rgbDraft.g, rgbDraft.b)}</Text>
               <View style={styles.rgbPickerActions}>
-                <Pressable style={styles.rgbPickerSecondaryBtn} onPress={() => setRgbPickerOpen(false)}>
+                <PressAckButton style={styles.rgbPickerSecondaryBtn} onPress={() => setRgbPickerOpen(false)}>
                   <Text style={styles.rgbPickerSecondaryBtnText}>Cancel</Text>
-                </Pressable>
+                </PressAckButton>
                 <Pressable style={styles.rgbPickerPrimaryBtn} onPress={applyRgb}>
                   <Text style={styles.rgbPickerPrimaryBtnText}>Apply</Text>
                 </Pressable>
@@ -2000,9 +2000,9 @@ export function PhotoEditorModal({
                   </Pressable>
                 </View>
                 <View style={styles.textModalActions}>
-                  <Pressable style={styles.textModalActionBtnSecondary} onPress={() => setTextModalOpen(false)}>
+                  <PressAckButton style={styles.textModalActionBtnSecondary} onPress={() => setTextModalOpen(false)}>
                     <Text style={styles.textModalActionBtnSecondaryText}>Cancel</Text>
-                  </Pressable>
+                  </PressAckButton>
                   <Pressable style={styles.textModalActionBtnPrimary} onPress={addTextOverlay}>
                     <Text style={styles.textModalActionBtnPrimaryText}>Add</Text>
                   </Pressable>

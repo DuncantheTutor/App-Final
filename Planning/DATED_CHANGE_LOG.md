@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-16 22:39 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 22:39 +01:00 | UX / Session | Stopped send-ack clip, dropped notification updates after logout, and cleared feed mute/seen on sign-out so prefs cannot leak across accounts. |
+
+---
+
+## 2026-09-16 21:14 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 21:14 +01:00 | Feed / UX | Moved feed mute/seen/paging and notification pre-prompt into controllers; Cancel/Back/Close use the same size-stable press flash. |
+
+---
+
 ## 2026-09-16 20:43 +01:00
 
 | Time | Area | Change |

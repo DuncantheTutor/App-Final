@@ -46,7 +46,7 @@ Friend row ids stay `f_*` (UI keys only). Server identity is `u_*` on `friend.ba
 | R2 | `registerFirebaseAuthUid` / device session | Send fails or listener silent | Clear app data; one active device per account; deploy latest functions |
 | R3 | Friendship docs without `participantAuthUids` | Friends list empty until boot `listMyFriends` | Boot sync + listener; deploy functions |
 | R4 | Group `grp_*` ids are device-local hash | Two devices may use different local ids for same group until server group-id story exists | Accept for MVP; groups are secondary to 1:1 |
-| R5 | `MainApp.tsx` still hosts feed pull/listeners and profile **screens** | Harder to maintain | Profile *state* is in `app/profile/useProfileController`; next extract feed pull/listeners |
+| R5 | `MainApp.tsx` still hosts feed pull/listeners and profile **screens** | Harder to maintain | Profile *state* is in `app/profile/useProfileController`; feed mute/seen/paging in `useFeedController`; notification pre-prompt in `useNotificationPermissionGate`; next extract feed pull/listeners |
 | R6 | Inbound payload still carries `chatId` | Wrong row if sender on old APK | `resolveIncomingDirectChatId` maps using sender `u_*` |
 
 ## Recommended test matrix (two phones, clean Firestore)

@@ -8,6 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type Props = {
@@ -86,9 +87,9 @@ export function VideoPostThumbnailModal({
           >
             <Text style={[styles.secondaryBtnText, { color: theme.text }]}>Choose custom thumbnail</Text>
           </Pressable>
-          <Pressable style={styles.cancelBtn} onPress={onCancel}>
+          <PressAckButton style={styles.cancelBtn} onPress={onCancel}>
             <Text style={[styles.cancelBtnText, { color: theme.subtleText }]}>Cancel</Text>
-          </Pressable>
+          </PressAckButton>
         </View>
       </View>
     </Modal>

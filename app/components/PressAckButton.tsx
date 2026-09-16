@@ -22,6 +22,7 @@ type Props = Omit<PressableProps, "style" | "children"> & {
 /**
  * Press acknowledgement that keeps the outer button size unchanged.
  * Haptic + inner motion run in parallel with `onPress` (press is not delayed).
+ * Flash clips to the button bounds; send does not clip so the paper-plane nudge can travel 5px.
  */
 export function PressAckButton({
   style,
@@ -64,7 +65,7 @@ export function PressAckButton({
         playAck();
         onPressIn?.(event);
       }}
-      style={[style, styles.clip]}
+      style={[style, variant === "flash" ? styles.clip : null]}
     >
       {variant === "send" ? (
         <Animated.View

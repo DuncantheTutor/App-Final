@@ -142,7 +142,6 @@ import {
 } from "./lib/mergeFriendsCatalog";
 import {
   registerPushTokenWithBackend,
-  requestOsNotificationPermission,
   getOsNotificationPermissionStatus,
   isOsNotificationPermissionGranted,
   addNotificationReceivedListener,
@@ -150,10 +149,6 @@ import {
   conversationIdFromNotificationData,
   pushNotificationType,
 } from "./lib/pushNotifications";
-import {
-  markNotificationPrePromptOsRequested,
-  readNotificationPrePromptOsRequested,
-} from "./lib/notificationPermissionGate";
 import { inferOutgoingMediaKind } from "./lib/mediaKind";
 import { chatCaptionedMediaLayout, chatPhotoMessageSize } from "./lib/chatMediaLayout";
 import { probeVideoDisplayDimensions } from "./lib/videoDisplayDimensions";
@@ -219,6 +214,7 @@ import {
 } from "./shell";
 import { useBackendSession, useSignedInSession } from "./session";
 import { useFeedController } from "./feed";
+import { useNotificationPermissionGate } from "./notifications";
 import { registerPairOfferToken, resolvePairingSession } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
@@ -275,16 +271,11 @@ import {
   resolveParticipantDisplay,
   TOMBSTONE_DISPLAY_NAME,
 } from "./lib/participantDisplay";
-import {
-  pruneExpiredFeedMutes,
-  readFeedMutesForEmail,
-  writeFeedMutesForEmail,
-} from "./lib/feedMutePersistence";
+import { readFeedMutesForEmail } from "./lib/feedMutePersistence";
 import {
   countUnreadFeedReactionPosts,
   markOwnedPostReactionsSeen,
   readFeedReactionSeenForEmail,
-  writeFeedReactionSeenForEmail,
 } from "./lib/feedReactionUnread";
 import { maxCreatedAtMs, mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
 import { mapServerPostReactionsToFeed } from "./lib/mapPostFeedReactions";
@@ -566,7 +557,10 @@ function MainAppInner() {
     replaceInbox,
     resetMessagingState,
   } = useMessagingController();
-  const { posts, setPosts, postsRef, resetPosts } = useFeedController();
+  const { posts, setPosts, postsRef, resetPosts, feedMutedUntilByFriendId, setFeedMutedUntilByFriendId, seenFeedReactionSigByPostId, setSeenFeedReactionSigByPostId, feedRefreshing, setFeedRefreshing, feedLoadingMore, setFeedLoadingMore, feedHasMore, setFeedHasMore, feedDisplayLimit, setFeedDisplayLimit, resetFeedPrefs } = useFeedController({
+    signedIn,
+    sessionEmailRef,
+  });
   const {
     addedFriendsFromRitual,
     setAddedFriendsFromRitual,
@@ -749,18 +743,8 @@ function MainAppInner() {
     null
   );
   const [videoThumbnailPreviewLoading, setVideoThumbnailPreviewLoading] = useState(false);
-  const [feedMutedUntilByFriendId, setFeedMutedUntilByFriendId] = useState<
-    Record<string, number | null>
-  >({});
-  const [seenFeedReactionSigByPostId, setSeenFeedReactionSigByPostId] = useState<
-    Record<string, string>
-  >({});
   const identityLockedChatIdsRef = useRef<string[]>([]);
   identityLockedChatIdsRef.current = identityLockedChatIds;
-  const [feedRefreshing, setFeedRefreshing] = useState(false);
-  const [feedLoadingMore, setFeedLoadingMore] = useState(false);
-  const [feedHasMore, setFeedHasMore] = useState(true);
-  const [feedDisplayLimit, setFeedDisplayLimit] = useState(FEED_UI_INITIAL_COUNT);
   const [feedMediaResolveIds, setFeedMediaResolveIds] = useState<Set<string>>(() => new Set());
   const [chatLoadingOlder, setChatLoadingOlder] = useState(false);
   const [chatHasMoreOlder, setChatHasMoreOlder] = useState<Record<string, boolean>>({});
@@ -852,65 +836,23 @@ function MainAppInner() {
    * The one-shot boot-time server pull (`listMyFriends` + `getUserProfiles` +
    * `listEncryptedMessages`) still runs in the background after auth resolves.
    * Splash gating is owned by `useSignedInSession` (`showBootSplash`).
+   * Notification pre-prompt + OS snapshot live in `useNotificationPermissionGate`.
    */
-  const [notificationGateReady, setNotificationGateReady] = useState(false);
-  const [showNotificationPrePrompt, setShowNotificationPrePrompt] = useState(false);
-  const [notificationPrePromptBusy, setNotificationPrePromptBusy] = useState(false);
-  const [osNotificationGranted, setOsNotificationGranted] = useState(false);
-  const notificationPrePromptDismissedSessionRef = useRef(false);
-
-  const refreshNotificationPermissionGate = useCallback(async () => {
-    if (!signedIn || DEMO_OFFLINE_MODE) {
-      setNotificationGateReady(false);
-      setShowNotificationPrePrompt(false);
-      setOsNotificationGranted(false);
-      return;
-    }
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) {
-      setNotificationGateReady(true);
-      setShowNotificationPrePrompt(false);
-      return;
-    }
-    const osStatus = await getOsNotificationPermissionStatus();
-    const osRequested = await readNotificationPrePromptOsRequested(email);
-    setOsNotificationGranted(isOsNotificationPermissionGranted(osStatus));
-    setShowNotificationPrePrompt(
-      !notificationPrePromptDismissedSessionRef.current &&
-        !osRequested &&
-        (osStatus === "undetermined" || osStatus === "denied")
-    );
-    setNotificationGateReady(true);
-  }, [signedIn]);
-
-  useEffect(() => {
-    if (!signedIn) {
-      notificationPrePromptDismissedSessionRef.current = false;
-      setNotificationGateReady(false);
-      setShowNotificationPrePrompt(false);
-      setOsNotificationGranted(false);
-      return;
-    }
-    if (DEMO_OFFLINE_MODE) {
-      setNotificationGateReady(true);
-      setShowNotificationPrePrompt(false);
-      setOsNotificationGranted(false);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      await refreshNotificationPermissionGate();
-      if (cancelled) return;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [signedIn, refreshNotificationPermissionGate]);
-
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE || appLifecycleState !== "active") return;
-    void refreshNotificationPermissionGate();
-  }, [signedIn, appLifecycleState, refreshNotificationPermissionGate]);
+  const {
+    notificationGateReady,
+    showNotificationPrePrompt,
+    notificationPrePromptBusy,
+    osNotificationGranted,
+    setOsNotificationGranted,
+    onAllowNotificationsPrePrompt,
+    onDeclineNotificationsPrePrompt,
+  } = useNotificationPermissionGate({
+    signedIn,
+    sessionEmailRef,
+    appLifecycleState,
+    getBackendSession,
+    waitForBackendSession,
+  });
 
   useEffect(() => {
     return () => {
@@ -1214,38 +1156,6 @@ function MainAppInner() {
       });
     }
   }, [view, signedIn, homeTab]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setFeedMutedUntilByFriendId((current) => {
-        const next = pruneExpiredFeedMutes(current);
-        const keys = Object.keys(current);
-        const prunedKeys = Object.keys(next);
-        const unchanged =
-          keys.length === prunedKeys.length && keys.every((id) => next[id] === current[id]);
-        return unchanged ? current : next;
-      });
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!signedIn) return;
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    void writeFeedMutesForEmail(email, feedMutedUntilByFriendId).catch(() => {
-      logAppError("feedMutes.persist", new Error("write failed"), { email });
-    });
-  }, [feedMutedUntilByFriendId, signedIn]);
-
-  useEffect(() => {
-    if (!signedIn) return;
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    void writeFeedReactionSeenForEmail(email, seenFeedReactionSigByPostId).catch(() => {
-      logAppError("feedReactionSeen.persist", new Error("write failed"), { email });
-    });
-  }, [seenFeedReactionSigByPostId, signedIn]);
 
   useEffect(() => {
     if (!signedIn) return;
@@ -3503,8 +3413,7 @@ function MainAppInner() {
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
     resetLocalSocialStateForSignedOut();
-    setFeedMutedUntilByFriendId({});
-    setSeenFeedReactionSigByPostId({});
+    resetFeedPrefs();
     postsSharedWithFriendsRef.current = new Set();
     setView({ screen: "home" });
     setHomeTab("feed");
@@ -3512,7 +3421,7 @@ function MainAppInner() {
       void clearLocalSocialCacheForEmail(email);
     }
     logAppEvent("local_state.reset_current_user", { email: email ?? "" });
-  }, [resetLocalSocialStateForSignedOut]);
+  }, [resetLocalSocialStateForSignedOut, resetFeedPrefs]);
 
   const initializeBackendSessionForAccount = useCallback(async (account: MockAuthAccount) => {
     const uid = backendUidForEmail(account.email);
@@ -4175,6 +4084,7 @@ function MainAppInner() {
     postsLastFullSyncAtRef.current = 0;
     resetSyncChannelsIdle();
     setSignedIn(false);
+    resetFeedPrefs();
     setView({ screen: "home" });
     setChatOverflowOpen(false);
     setMembersModalOpen(false);
@@ -4242,6 +4152,7 @@ function MainAppInner() {
     postsLastFullSyncAtRef.current = 0;
     resetSyncChannelsIdle();
     setSignedIn(false);
+    resetFeedPrefs();
     setView({ screen: "home" });
     setChatOverflowOpen(false);
     setMembersModalOpen(false);
@@ -4768,33 +4679,6 @@ function MainAppInner() {
     setView({ screen: "chat", chatId: targetChatId });
   };
 
-  const onAllowNotificationsPrePrompt = useCallback(async () => {
-    setNotificationPrePromptBusy(true);
-    notificationPrePromptDismissedSessionRef.current = true;
-    setShowNotificationPrePrompt(false);
-    try {
-      const status = await requestOsNotificationPermission();
-      const granted = isOsNotificationPermissionGranted(status);
-      setOsNotificationGranted(granted);
-      const email = sessionEmailRef.current?.trim().toLowerCase();
-      if (email) await markNotificationPrePromptOsRequested(email);
-      if (granted) {
-        const session = (await waitForBackendSession()) ?? getBackendSession();
-        if (session) {
-          await registerPushTokenWithBackend(session);
-        }
-      }
-    } catch (err) {
-      logAppError("push.pre_prompt_allow", err, {});
-    } finally {
-      setNotificationPrePromptBusy(false);
-    }
-  }, [getBackendSession, waitForBackendSession]);
-
-  const onDeclineNotificationsPrePrompt = useCallback(async () => {
-    notificationPrePromptDismissedSessionRef.current = true;
-    setShowNotificationPrePrompt(false);
-  }, []);
 
   useEffect(() => {
     if (!signedIn || DEMO_OFFLINE_MODE) return;
@@ -8987,9 +8871,9 @@ function MainAppInner() {
         ) : EMAIL_OTP_ENABLED && authMode === "loginOtp" ? (
           <View style={styles.authLoginRoot}>
             <View style={styles.authTopBar}>
-              <Pressable onPress={() => setAuthMode("login")} style={styles.authTopLinkButton}>
+              <PressAckButton onPress={() => setAuthMode("login")} style={styles.authTopLinkButton}>
                 <Ionicons name="arrow-back" size={20} color={theme.text} />
-              </Pressable>
+              </PressAckButton>
               <View style={styles.authTopSideSpacer} />
             </View>
             <ScrollViewUntilScroll
@@ -9040,9 +8924,9 @@ function MainAppInner() {
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.authTopBar}>
-              <Pressable onPress={() => setAuthMode("login")} style={styles.authTopLinkButton}>
+              <PressAckButton onPress={() => setAuthMode("login")} style={styles.authTopLinkButton}>
                 <Ionicons name="arrow-back" size={20} color={theme.text} />
-              </Pressable>
+              </PressAckButton>
               <View style={styles.authTopSideSpacer} />
             </View>
             <Text style={styles.authHeading}>Sign Up</Text>
@@ -9123,9 +9007,9 @@ function MainAppInner() {
         ) : (
           <View style={styles.authLoginRoot}>
             <View style={styles.authTopBar}>
-              <Pressable onPress={() => setAuthMode("signup")} style={styles.authTopLinkButton}>
+              <PressAckButton onPress={() => setAuthMode("signup")} style={styles.authTopLinkButton}>
                 <Ionicons name="arrow-back" size={20} color={theme.text} />
-              </Pressable>
+              </PressAckButton>
               <View style={styles.authTopSideSpacer} />
             </View>
             <ScrollViewUntilScroll
@@ -9233,13 +9117,13 @@ function MainAppInner() {
                 </InputAccessoryView>
               ) : null}
               <View style={styles.fullScreenPostHeader}>
-                <Pressable
+                <PressAckButton
                   style={styles.iconButton}
                   onPress={closeFullscreenPost}
                   accessibilityLabel="Close full screen post"
                 >
                   <Ionicons name="close" size={26} color={theme.text} />
-                </Pressable>
+                </PressAckButton>
                 <Text style={styles.profileHeaderTitle} numberOfLines={1}>
                   Post
                 </Text>
@@ -9286,13 +9170,13 @@ function MainAppInner() {
                       <Text style={styles.replyBannerText} numberOfLines={2}>
                         Replying in a private thread
                       </Text>
-                      <Pressable
+                      <PressAckButton
                         onPress={() => setPostFullscreenThreadReplyKey(null)}
                         style={styles.replyBannerClose}
                         accessibilityLabel="Leave thread reply"
                       >
                         <Ionicons name="close" size={16} color={theme.text} />
-                      </Pressable>
+                      </PressAckButton>
                     </View>
                   ) : fullScreenPostLive.authorId === CURRENT_USER_ID ? (
                     <View
@@ -9398,13 +9282,13 @@ function MainAppInner() {
             <View style={[styles.reactionDetailModalCard, { backgroundColor: theme.background }]}>
               <View style={styles.reactionDetailModalHeader}>
                 <Text style={styles.reactionDetailModalTitle}>Reactions</Text>
-                <Pressable
+                <PressAckButton
                   style={styles.iconButton}
                   onPress={() => setReactionDetailPost(null)}
                   accessibilityLabel="Close reactions"
                 >
                   <Ionicons name="close" size={22} color={theme.text} />
-                </Pressable>
+                </PressAckButton>
               </View>
               <FlatListUntilScroll
                 data={feedReactionDetailRows}
@@ -10019,13 +9903,13 @@ function MainAppInner() {
         >
           <View style={{ flex: 1, paddingTop: safeTop, paddingHorizontal: 12 }}>
             <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
-              <Pressable
+              <PressAckButton
                 onPress={() => setView({ screen: "chat", chatId: view.chatId })}
                 style={styles.iconButton}
                 accessibilityLabel="Back to chat"
               >
                 <Ionicons name="arrow-back" size={22} color={theme.text} />
-              </Pressable>
+              </PressAckButton>
               <Text style={[styles.chatScreenTitle, { flex: 1, textAlign: "center", marginRight: 38 }]}>
                 Shared media
               </Text>
@@ -10282,9 +10166,9 @@ function MainAppInner() {
                 },
               ]}
             >
-              <Pressable style={styles.publishPostCancelButton} onPress={closePublishPostScreen}>
+              <PressAckButton style={styles.publishPostCancelButton} onPress={closePublishPostScreen}>
                 <Text style={styles.publishPostCancelButtonText}>Cancel</Text>
-              </Pressable>
+              </PressAckButton>
               <PressAckButton variant="flash" style={styles.publishPostPublishButton} onPress={publishPost}>
                 <Text style={styles.publishPostPublishButtonText}>Publish</Text>
               </PressAckButton>
@@ -10409,9 +10293,9 @@ function MainAppInner() {
           ) : null}
           <View style={styles.chatHeader}>
             <View style={[styles.chatHeaderSideRail, styles.chatHeaderSideRailLeft]}>
-              <Pressable style={styles.iconButton} onPress={onBackFromChat}>
+              <PressAckButton style={styles.iconButton} onPress={onBackFromChat}>
                 <Ionicons name="chevron-back" size={24} color={theme.accent} />
-              </Pressable>
+              </PressAckButton>
               <Pressable
                 disabled={
                   !canEditActiveGroupMeta && !(activeDirectCounterpartPd?.canOpenProfile ?? false)
@@ -11306,9 +11190,9 @@ function MainAppInner() {
                   <Text style={styles.replyBannerText} numberOfLines={1}>
                     Editing message
                   </Text>
-                  <Pressable onPress={() => setEditingMessageId(null)} style={styles.replyBannerClose}>
+                  <PressAckButton onPress={() => setEditingMessageId(null)} style={styles.replyBannerClose}>
                     <Ionicons name="close" size={16} color={theme.text} />
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               ) : null}
 
@@ -11485,13 +11369,13 @@ function MainAppInner() {
                         })()}
                       />
                     </ScrollViewUntilScroll>
-                    <Pressable
+                    <PressAckButton
                       onPress={() => setReplyTargetMessageId(null)}
                       style={styles.replyPreviewClose}
                       accessibilityLabel="Cancel reply"
                     >
                       <Ionicons name="close" size={18} color={theme.text} />
-                    </Pressable>
+                    </PressAckButton>
                   </View>
                 ) : null}
                 <View
@@ -11647,9 +11531,9 @@ function MainAppInner() {
         >
           <View style={styles.modalHeader}>
             <Text style={styles.chatScreenTitle}>Start Chat</Text>
-            <Pressable onPress={closeComposer} style={styles.iconButton}>
+            <PressAckButton onPress={closeComposer} style={styles.iconButton}>
               <Ionicons name="close" size={22} color={theme.accent} />
-            </Pressable>
+            </PressAckButton>
           </View>
 
           <Pressable style={styles.broadcastOptionRow} onPress={openBroadcastPicker}>
@@ -11728,9 +11612,9 @@ function MainAppInner() {
             >
               <Text style={styles.chatScreenTitle}>{buildComposerHeaderTitle()}</Text>
             </Pressable>
-            <Pressable onPress={closeBroadcastPicker} style={styles.iconButton}>
+            <PressAckButton onPress={closeBroadcastPicker} style={styles.iconButton}>
               <Ionicons name="close" size={22} color={theme.accent} />
-            </Pressable>
+            </PressAckButton>
           </View>
           <Text style={styles.subtleText}>
             Select friends for a one-to-many broadcast. Replies stay private per friend thread.
@@ -11833,7 +11717,7 @@ function MainAppInner() {
               Save friend selection for future broadcast?
             </Text>
             <View style={styles.broadcastModalActionRow}>
-              <Pressable
+              <PressAckButton
                 style={[styles.broadcastModalBtn, styles.broadcastModalBtnOutline]}
                 onPress={() => {
                   const ids = pendingBroadcastCreateIds;
@@ -11844,7 +11728,7 @@ function MainAppInner() {
                 }}
               >
                 <Text style={styles.broadcastModalBtnOutlineText}>No</Text>
-              </Pressable>
+              </PressAckButton>
               <Pressable
                 style={[styles.broadcastModalBtn, styles.broadcastModalBtnPrimary]}
                 onPress={() => {
@@ -11886,7 +11770,7 @@ function MainAppInner() {
                 style={styles.searchInput}
               />
               <View style={styles.broadcastModalActionRow}>
-                <Pressable
+                <PressAckButton
                   style={[styles.broadcastModalBtn, styles.broadcastModalBtnOutline]}
                   onPress={() => {
                     setSaveBroadcastGroupNameModalOpen(false);
@@ -11894,7 +11778,7 @@ function MainAppInner() {
                   }}
                 >
                   <Text style={styles.broadcastModalBtnOutlineText}>Back</Text>
-                </Pressable>
+                </PressAckButton>
                 <Pressable
                   style={[styles.broadcastModalBtn, styles.broadcastModalBtnPrimary]}
                   onPress={handleBroadcastGroupNameConfirm}
@@ -11962,7 +11846,7 @@ function MainAppInner() {
                     style={styles.searchInput}
                   />
                   <View style={styles.broadcastModalActionRow}>
-                    <Pressable
+                    <PressAckButton
                       style={[styles.broadcastModalBtn, styles.broadcastModalBtnOutline]}
                       onPress={() => {
                         setPendingStandardGroupCreateAfterTitle(false);
@@ -11971,7 +11855,7 @@ function MainAppInner() {
                       }}
                     >
                       <Text style={styles.broadcastModalBtnOutlineText}>Cancel</Text>
-                    </Pressable>
+                    </PressAckButton>
                     <Pressable
                       style={[styles.broadcastModalBtn, styles.broadcastModalBtnPrimary]}
                       onPress={() => {
@@ -12002,7 +11886,7 @@ function MainAppInner() {
                   style={styles.searchInput}
                 />
                 <View style={styles.settingsRow}>
-                  <Pressable
+                  <PressAckButton
                     style={styles.secondaryButton}
                     onPress={() => {
                       setPendingStandardGroupCreateAfterTitle(false);
@@ -12011,7 +11895,7 @@ function MainAppInner() {
                     }}
                   >
                     <Text style={styles.secondaryButtonText}>Cancel</Text>
-                  </Pressable>
+                  </PressAckButton>
                   <Pressable
                     style={styles.primaryButton}
                     onPress={() => {
@@ -12047,9 +11931,9 @@ function MainAppInner() {
               style={styles.searchInput}
             />
             <View style={styles.settingsRow}>
-              <Pressable style={styles.secondaryButton} onPress={() => setEditChatMetaOpen(false)}>
+              <PressAckButton style={styles.secondaryButton} onPress={() => setEditChatMetaOpen(false)}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </Pressable>
+              </PressAckButton>
               <Pressable style={styles.primaryButton} onPress={saveChatTitle}>
                 <Text style={styles.primaryButtonText}>Save</Text>
               </Pressable>
@@ -12082,9 +11966,9 @@ function MainAppInner() {
               style={styles.searchInput}
             />
             <View style={styles.settingsRow}>
-              <Pressable style={styles.secondaryButton} onPress={() => setEditChatPictureOpen(false)}>
+              <PressAckButton style={styles.secondaryButton} onPress={() => setEditChatPictureOpen(false)}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </Pressable>
+              </PressAckButton>
               <Pressable style={styles.primaryButton} onPress={saveChatPicture}>
                 <Text style={styles.primaryButtonText}>Save</Text>
               </Pressable>
@@ -12471,9 +12355,9 @@ function MainAppInner() {
                 );
               }}
             />
-            <Pressable style={styles.primaryButton} onPress={() => setMembersModalOpen(false)}>
+            <PressAckButton style={styles.primaryButton} onPress={() => setMembersModalOpen(false)}>
               <Text style={styles.primaryButtonText}>Close</Text>
-            </Pressable>
+            </PressAckButton>
           </View>
         </View>
       </Modal>
@@ -12529,7 +12413,7 @@ function MainAppInner() {
                   </Text>
                 }
               />
-              <Pressable
+              <PressAckButton
                 style={styles.primaryButton}
                 onPress={() => {
                   setAddMemberModalOpen(false);
@@ -12537,7 +12421,7 @@ function MainAppInner() {
                 }}
               >
                 <Text style={styles.primaryButtonText}>Close</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         </KeyboardAvoidingView>
