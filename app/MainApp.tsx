@@ -67,7 +67,6 @@ import {
   mediaUriNeedsFirebaseUpload,
   uploadSharedMediaFromDevice,
 } from "../mediaStorageUpload";
-import { resolvePostMediaForEncrypt } from "./lib/tierBMedia/postMedia";
 import { parseMessageMediaFromPlain } from "./lib/tierBMedia/messageMedia";
 import {
   ChatMessageMediaResolver,
@@ -210,7 +209,15 @@ import { registerPairOfferToken, resolvePairingSession } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
-import { shareOwnedPostsWithNewFriend } from "./posts/shareOwnedPostsWithNewFriend";
+import {
+  capturePostPhoto as capturePostPhotoFromDevice,
+  pickPostPhotos as pickPostPhotosFromLibrary,
+  pickPostVideo as pickPostVideoFromLibrary,
+  promptPostPhotoSource as promptPostPhotoSourceAlert,
+  shareOwnedPostsWithNewFriend,
+  uploadEncryptedPost,
+  usePublishComposer,
+} from "./posts";
 import {
   readPostsSharedWithFriends,
   writePostsSharedWithFriends,
@@ -549,6 +556,24 @@ function MainAppInner() {
     sessionEmailRef,
   });
   const {
+    postDraftText,
+    setPostDraftText,
+    postDraftImageUris,
+    setPostDraftImageUris,
+    postDraftVideoUri,
+    setPostDraftVideoUri,
+    queuedPostPhotoAssets,
+    setQueuedPostPhotoAssets,
+    videoThumbnailModalOpen,
+    videoThumbnailDefaultPosterUri,
+    videoThumbnailPreviewLoading,
+    resetPublishDraft,
+    openPostComposer,
+    appendEditedPostPhoto,
+    openVideoThumbnailModal,
+    closeVideoThumbnailModal,
+  } = usePublishComposer({ goToPublishPost });
+  const {
     addedFriendsFromRitual,
     setAddedFriendsFromRitual,
     addedFriendsFromRitualRef,
@@ -662,9 +687,6 @@ function MainAppInner() {
     width: number;
     height: number;
   } | null>(null);
-  const [queuedPostPhotoAssets, setQueuedPostPhotoAssets] = useState<
-    Array<{ uri: string; width: number; height: number }>
-  >([]);
   const [imageCropVisible, setImageCropVisible] = useState(false);
   const [imageCropUri, setImageCropUri] = useState<string | null>(null);
   const [imageCropAspect, setImageCropAspect] = useState<number | undefined>(undefined);
@@ -722,14 +744,6 @@ function MainAppInner() {
   const [reactionDetailPost, setReactionDetailPost] = useState<Post | null>(null);
   const [commentDraftByPostId, setCommentDraftByPostId] = useState<Record<string, string>>({});
   const [threadDraftByChainKey, setThreadDraftByChainKey] = useState<Record<string, string>>({});
-  const [postDraftText, setPostDraftText] = useState("");
-  const [postDraftImageUris, setPostDraftImageUris] = useState<string[]>([]);
-  const [postDraftVideoUri, setPostDraftVideoUri] = useState<string | null>(null);
-  const [videoThumbnailModalOpen, setVideoThumbnailModalOpen] = useState(false);
-  const [videoThumbnailDefaultPosterUri, setVideoThumbnailDefaultPosterUri] = useState<string | null>(
-    null
-  );
-  const [videoThumbnailPreviewLoading, setVideoThumbnailPreviewLoading] = useState(false);
   const identityLockedChatIdsRef = useRef<string[]>([]);
   identityLockedChatIdsRef.current = identityLockedChatIds;
   const [feedMediaResolveIds, setFeedMediaResolveIds] = useState<Set<string>>(() => new Set());
@@ -5176,79 +5190,51 @@ function MainAppInner() {
     setImageCropVisible(true);
   };
 
-  const openPostComposer = () => {
-    setPostDraftText("");
-    setPostDraftImageUris([]);
-    setPostDraftVideoUri(null);
-    setQueuedPostPhotoAssets([]);
-    goToPublishPost();
-  };
-
   const closePublishPostScreen = useCallback(() => {
     goHome("feed");
   }, [goHome]);
 
+  const openPostPhotoEditor: Parameters<typeof pickPostPhotosFromLibrary>[0] = (asset, pending) => {
+    openPhotoEditorDirect(asset, pending);
+  };
+
   const pickPostPhotos = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: true,
-      quality: 0.85,
-      allowsEditing: false,
-    });
-    if (!result.canceled && result.assets.length > 0) {
-      setPostDraftVideoUri(null);
-      const normalized = result.assets.map((asset) => ({
-        uri: asset.uri,
-        width: asset.width ?? 1,
-        height: asset.height ?? 1,
-      }));
-      const [first, ...rest] = normalized;
-      if (!first) return;
-      openPhotoEditorDirect(first, { target: "post", mediaType: "photo", queue: rest });
-    }
+    await pickPostPhotosFromLibrary(openPostPhotoEditor, () => setPostDraftVideoUri(null));
   };
 
   const capturePostPhoto = async () => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert("Camera needed", "Allow camera access to take a photo for your post.");
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.85,
-      allowsEditing: false,
-    });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    setPostDraftVideoUri(null);
-    openPhotoEditorDirect(
-      { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
-      { target: "post", mediaType: "photo", queue: [] }
-    );
+    await capturePostPhotoFromDevice(openPostPhotoEditor, () => setPostDraftVideoUri(null));
   };
 
   const promptPostPhotoSource = () => {
-    Alert.alert("Add photo", "Take a new photo or choose from your gallery.", [
-      { text: "Take photo", onPress: () => void capturePostPhoto() },
-      { text: "Choose from gallery", onPress: () => void pickPostPhotos() },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    promptPostPhotoSourceAlert(openPostPhotoEditor, () => setPostDraftVideoUri(null));
   };
 
   const pickPostVideo = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      quality: 0.85,
+    const uri = await pickPostVideoFromLibrary();
+    if (!uri) return;
+    setPostDraftImageUris([]);
+    setPostDraftVideoUri(uri);
+  };
+
+  const commitEncryptedPost = async (newPost: Post) => {
+    const session = getBackendSession();
+    if (!session) throw new Error("Account session is not ready. Please wait a moment and try again.");
+    const serverPostId = await uploadEncryptedPost({
+      session,
+      post: newPost,
+      visibleFriendIds,
+      allFriends,
+      resolveRecipientEncryptionKeys,
+      notificationAuthorName: getSenderDisplayName(),
     });
-    if (!result.canceled && result.assets[0]) {
-      setPostDraftImageUris([]);
-      setPostDraftVideoUri(result.assets[0].uri);
-    }
+    if (!serverPostId) return;
+    setPostMediaGalleryIndexByPostId((current) =>
+      remapPostMediaGalleryIndex(current, newPost.id, serverPostId)
+    );
+    setPosts((current) =>
+      current.map((post) => (post.id === newPost.id ? { ...post, id: serverPostId } : post))
+    );
   };
 
   const finalizeVideoPosterAndPublish = async (mode: "skip" | "pick") => {
@@ -5290,60 +5276,10 @@ function MainAppInner() {
     };
     setPosts((p) => [newPost, ...p]);
     closePublishPostScreen();
-    setPostDraftText("");
-    setPostDraftImageUris([]);
-    setPostDraftVideoUri(null);
+    resetPublishDraft();
     if (!DEMO_OFFLINE_MODE) {
       try {
-        const session = getBackendSession();
-        if (!session) throw new Error("Account session is not ready. Please wait a moment and try again.");
-        const recipientUids = [
-          session.uid,
-          ...visibleFriendIds
-            .map((id) => allFriends.find((friend) => friend.id === id)?.backendUid)
-            .filter((uid): uid is string => !!uid && uid.trim().length > 0),
-        ];
-        const keyMap = await resolveRecipientEncryptionKeys(recipientUids);
-        const authUid = firebaseAuth.currentUser?.uid;
-        if (!authUid) throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
-        const remoteMedia = await resolvePostMediaForEncrypt(
-          newPost.imageUris,
-          newPost.videoUri,
-          newPost.videoPosterUri,
-          authUid
-        );
-        const encrypted = await encryptPayloadForRecipients(
-          session.uid,
-          {
-            postId: newPost.id,
-            authorId: CURRENT_USER_ID,
-            authorUid: session.uid,
-            createdAt: newPost.createdAt,
-            text: newPost.text ?? null,
-            imageUris: remoteMedia.imageUris ?? null,
-            videoUri: remoteMedia.videoUri ?? null,
-            videoPosterUri: remoteMedia.videoPosterUri ?? null,
-            imagesMedia: remoteMedia.imagesMedia ?? null,
-            videoMedia: remoteMedia.videoMedia ?? null,
-            videoPosterMedia: remoteMedia.videoPosterMedia ?? null,
-          },
-          keyMap
-        );
-        const created = await callEmulatorFunction<{ ok?: boolean; postId?: string }>("createEncryptedPost", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          storageObjectPaths: remoteMedia.storageObjectPaths,
-          notificationAuthorName: getSenderDisplayName(),
-          ...encrypted,
-        });
-        if (created.postId && created.postId !== newPost.id) {
-          setPostMediaGalleryIndexByPostId((current) =>
-            remapPostMediaGalleryIndex(current, newPost.id, created.postId!)
-          );
-          setPosts((current) =>
-            current.map((post) => (post.id === newPost.id ? { ...post, id: created.postId! } : post))
-          );
-        }
+        await commitEncryptedPost(newPost);
       } catch (err) {
         setPosts((current) => current.filter((post) => post.id !== newPost.id));
         const message = err instanceof Error ? err.message : "Could not publish post.";
@@ -5351,28 +5287,6 @@ function MainAppInner() {
       }
     }
   };
-
-  const openVideoThumbnailModal = useCallback(async () => {
-    const videoUri = postDraftVideoUri?.trim();
-    if (!videoUri) return;
-    setVideoThumbnailModalOpen(true);
-    setVideoThumbnailPreviewLoading(true);
-    setVideoThumbnailDefaultPosterUri(null);
-    try {
-      const thumb = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 0, quality: 0.85 });
-      setVideoThumbnailDefaultPosterUri(thumb.uri?.trim() || null);
-    } catch {
-      setVideoThumbnailDefaultPosterUri(null);
-    } finally {
-      setVideoThumbnailPreviewLoading(false);
-    }
-  }, [postDraftVideoUri]);
-
-  const closeVideoThumbnailModal = useCallback(() => {
-    setVideoThumbnailModalOpen(false);
-    setVideoThumbnailDefaultPosterUri(null);
-    setVideoThumbnailPreviewLoading(false);
-  }, []);
 
   const publishPost = () => {
     const text = postDraftText.trim();
@@ -5395,61 +5309,11 @@ function MainAppInner() {
     };
     setPosts((p) => [newPost, ...p]);
     closePublishPostScreen();
-    setPostDraftText("");
-    setPostDraftImageUris([]);
-    setPostDraftVideoUri(null);
+    resetPublishDraft();
     if (!DEMO_OFFLINE_MODE) {
       void (async () => {
         try {
-          const session = getBackendSession();
-          if (!session) throw new Error("Account session is not ready. Please wait a moment and try again.");
-          const recipientUids = [
-            session.uid,
-            ...visibleFriendIds
-              .map((id) => allFriends.find((friend) => friend.id === id)?.backendUid)
-              .filter((uid): uid is string => !!uid && uid.trim().length > 0),
-          ];
-          const keyMap = await resolveRecipientEncryptionKeys(recipientUids);
-          const authUid = firebaseAuth.currentUser?.uid;
-          if (!authUid) throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
-          const remoteMedia = await resolvePostMediaForEncrypt(
-            newPost.imageUris,
-            newPost.videoUri,
-            newPost.videoPosterUri,
-            authUid
-          );
-          const encrypted = await encryptPayloadForRecipients(
-            session.uid,
-            {
-              postId: newPost.id,
-              authorId: CURRENT_USER_ID,
-              authorUid: session.uid,
-              createdAt: newPost.createdAt,
-              text: newPost.text ?? null,
-              imageUris: remoteMedia.imageUris ?? null,
-              videoUri: remoteMedia.videoUri ?? null,
-              videoPosterUri: remoteMedia.videoPosterUri ?? null,
-              imagesMedia: remoteMedia.imagesMedia ?? null,
-              videoMedia: remoteMedia.videoMedia ?? null,
-              videoPosterMedia: remoteMedia.videoPosterMedia ?? null,
-            },
-            keyMap
-          );
-          const created = await callEmulatorFunction<{ ok?: boolean; postId?: string }>("createEncryptedPost", {
-            uid: session.uid,
-            deviceId: session.deviceId,
-            storageObjectPaths: remoteMedia.storageObjectPaths,
-            notificationAuthorName: getSenderDisplayName(),
-            ...encrypted,
-          });
-          if (created.postId && created.postId !== newPost.id) {
-            setPostMediaGalleryIndexByPostId((current) =>
-              remapPostMediaGalleryIndex(current, newPost.id, created.postId!)
-            );
-            setPosts((current) =>
-              current.map((p) => (p.id === newPost.id ? { ...p, id: created.postId! } : p))
-            );
-          }
+          await commitEncryptedPost(newPost);
         } catch (err) {
           setPosts((current) => current.filter((post) => post.id !== newPost.id));
           const message = err instanceof Error ? err.message : "Could not publish post.";
@@ -6167,8 +6031,7 @@ function MainAppInner() {
     }
     if (photoEditorTarget === "post") {
       if (result.mediaKind === "photo") {
-        setPostDraftVideoUri(null);
-        setPostDraftImageUris((prev) => [...prev, result.uri]);
+        appendEditedPostPhoto(result.uri);
       }
       if (queuedPostPhotoAssets.length > 0) {
         const [next, ...rest] = queuedPostPhotoAssets;

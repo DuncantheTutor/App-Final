@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-17 18:22 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:22 +01:00 | Feed | Extracted new-post draft, camera/gallery pick, and encrypt-upload from MainApp into app/posts. |
+
+---
+
 ## 2026-09-17 18:02 +01:00
 
 | Time | Area | Change |
