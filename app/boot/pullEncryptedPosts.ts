@@ -1,18 +1,12 @@
-import { callEmulatorFunction, backendUidForFriendId } from "../../backendBridge";
-import { decryptPayloadForRecipient } from "../../e2eeCrypto";
+import { callEmulatorFunction } from "../../backendBridge";
 import { mergeSyncedPosts, maxCreatedAtMs } from "../lib/mergeEncryptedSync";
-import { yieldToUi } from "../lib/yieldToUi";
-import {
-  canonicalEncryptedPostId,
-  mapDecryptedPostPlainToPost,
-} from "../lib/tierBMedia/mapPostFromPlain";
-import type { PostMediaPlainPayload } from "../lib/tierBMedia/postMedia";
 import {
   ENCRYPTED_POSTS_FULL_SYNC_MS,
   ENCRYPTED_POSTS_HOME_FEED_LIMIT,
 } from "../theme/preludeConstants";
 import type { Post } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
+import { decodeEncryptedPostPullItems } from "../feed/decodePostBatch";
 
 export type PullEncryptedPostsParams = {
   session: BackendSession;
@@ -69,57 +63,14 @@ export async function pullEncryptedPostsIncremental(
 
   if (!Array.isArray(res.items)) return { decodedCount: 0, hasMore: false };
 
-  const decoded: Post[] = [];
-  let decodeFailures = 0;
-  let earliestFailureMs: number | null = null;
-  for (const item of res.items) {
-    try {
-      const plain = await decryptPayloadForRecipient<
-        PostMediaPlainPayload & {
-          postId: string;
-          authorUid?: string;
-          createdAt?: number;
-          text?: string | null;
-        }
-      >(session.uid, item.ciphertext, item.nonce, item.envelope);
-      const authorUid =
-        typeof plain.authorUid === "string" && plain.authorUid.trim()
-          ? plain.authorUid.trim()
-          : item.ownerUid;
-      const friendAuthorId =
-        authorUid === session.uid
-          ? currentUserLocalId
-          : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid);
-      const serverReactions = res.reactionsByPostId?.[item.postId];
-      const mappedReactions: Record<string, string> | undefined = serverReactions
-        ? Object.fromEntries(
-            Object.entries(serverReactions).map(([uid, emoji]) => [
-              uid === session.uid ? currentUserLocalId : backendUidToFriendId[uid] ?? backendUidForFriendId(uid),
-              emoji,
-            ])
-          )
-        : undefined;
-      const canonicalPostId = canonicalEncryptedPostId(item.postId, plain.postId);
-      if (!canonicalPostId) continue;
-      decoded.push(
-        mapDecryptedPostPlainToPost({
-          plain,
-          postId: canonicalPostId,
-          authorId: friendAuthorId,
-          createdAtMs: item.createdAtMs ?? plain.createdAt ?? Date.now(),
-          feedReactions: mappedReactions,
-        })
-      );
-      await yieldToUi();
-    } catch {
-      decodeFailures += 1;
-      const failMs = item.createdAtMs ?? 0;
-      if (failMs > 0 && (earliestFailureMs == null || failMs < earliestFailureMs)) {
-        earliestFailureMs = failMs;
-      }
-      /* decrypt failed — wrong/missing key */
-    }
-  }
+  const { decoded, earliestFailureMs } = await decodeEncryptedPostPullItems({
+    sessionUid: session.uid,
+    items: res.items,
+    backendUidToFriendId,
+    currentUserLocalId,
+    reactionsByPostId: res.reactionsByPostId,
+    yieldEach: true,
+  });
 
   const incremental = Boolean(res.incremental);
   setPosts((current) =>

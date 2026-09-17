@@ -68,11 +68,6 @@ import {
   uploadSharedMediaFromDevice,
 } from "../mediaStorageUpload";
 import { resolvePostMediaForEncrypt } from "./lib/tierBMedia/postMedia";
-import {
-  canonicalEncryptedPostId,
-  mapDecryptedPostPlainToPost,
-} from "./lib/tierBMedia/mapPostFromPlain";
-import type { PostMediaPlainPayload } from "./lib/tierBMedia/postMedia";
 import { parseMessageMediaFromPlain } from "./lib/tierBMedia/messageMedia";
 import {
   ChatMessageMediaResolver,
@@ -88,11 +83,8 @@ import { requestReadSmsPermissionIfNeeded, startAndroidOtpAssist } from "../otpS
 import { debugSessionLog, firebaseAuth, getFirestoreDb } from "../firebaseAuthClient";
 import {
   collection,
-  collectionGroup,
   doc as firestoreDoc,
-  limit as firestoreLimit,
   onSnapshot,
-  orderBy,
   query as firestoreQuery,
   where,
 } from "firebase/firestore";
@@ -191,7 +183,6 @@ import { readAvatarsByMessageId, type ReadByMap } from "./lib/readReceipts";
 import { useInitialServerSync } from "./boot/useInitialServerSync";
 import { clearLocalSocialCacheForEmail } from "./lib/localSocialCache";
 import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "./lib/e2eeKeyBackup";
-import { pullEncryptedPostsIncremental as pullEncryptedPostsFromServer } from "./boot/pullEncryptedPosts";
 import {
   restoreSocialSnapshotFromCloud,
   uploadSocialSnapshotToCloud,
@@ -199,7 +190,7 @@ import {
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
-import { useProfileController } from "./profile";
+import { useEncryptedProfileSync, useProfileController } from "./profile";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
 import { promotePendingChatToRow } from "./messaging/promotePendingChat";
@@ -213,7 +204,7 @@ import {
   viewAfterLeavingFriendProfile,
 } from "./shell";
 import { useBackendSession, useSignedInSession } from "./session";
-import { useFeedController } from "./feed";
+import { useFeedController, useFeedReactionListeners, useFeedSync } from "./feed";
 import { useNotificationPermissionGate } from "./notifications";
 import { registerPairOfferToken, resolvePairingSession } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
@@ -277,8 +268,7 @@ import {
   markOwnedPostReactionsSeen,
   readFeedReactionSeenForEmail,
 } from "./lib/feedReactionUnread";
-import { maxCreatedAtMs, mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
-import { mapServerPostReactionsToFeed } from "./lib/mapPostFeedReactions";
+import { mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
 import { ensureCameraForPairing } from "./lib/pairingCamera";
 import {
   collectPrecisePairingProximityEvidence,
@@ -345,11 +335,8 @@ import {
   PRESENCE_HEARTBEAT_MS,
   PRESENCE_ONLINE_WINDOW_MS,
   INITIAL_SERVER_SYNC_TIMEOUT_MS,
-  ENCRYPTED_POSTS_FULL_SYNC_MS,
   ENCRYPTED_POSTS_HOME_FEED_LIMIT,
   ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT,
-  ENCRYPTED_POSTS_PAGE_SIZE,
-  ENCRYPTED_POSTS_LISTENER_LIMIT,
   FEED_UI_INITIAL_COUNT,
   FEED_UI_DISPLAY_PAGE_SIZE,
   ENCRYPTED_MESSAGES_SYNC_LIMIT,
@@ -1476,36 +1463,30 @@ function MainAppInner() {
     setEncryptedSyncState,
   });
 
-  const pullEncryptedPostsIncremental = useCallback(
-    async (options?: { forceFull?: boolean; limit?: number }) => {
-      const session = getBackendSession();
-      if (!session || DEMO_OFFLINE_MODE) return;
-      setEncryptedSyncState((current) => ({ ...current, posts: "syncing" }));
-      try {
-        await pullEncryptedPostsFromServer(
-          {
-            session,
-            backendUidToFriendId,
-            currentUserLocalId: CURRENT_USER_ID,
-            postsWatermarkMsRef,
-            postsLastFullSyncAtRef,
-            suppressedPostIdsRef: deletedPostIdsRef,
-            forceFull:
-              options?.forceFull ||
-              deletedPostIdsRef.current.size > 0 ||
-              postsLastFullSyncAtRef.current <= 0,
-            limit: options?.limit,
-          },
-          setPosts
-        );
-        persistWatermarksNow();
-        setEncryptedSyncState((current) => ({ ...current, posts: "ok", lastSuccessAt: Date.now() }));
-      } catch {
-        setEncryptedSyncState((current) => ({ ...current, posts: "error" }));
-      }
-    },
-    [DEMO_OFFLINE_MODE, backendUidToFriendId, getBackendSession, persistWatermarksNow]
-  );
+  const { pullEncryptedPostsIncremental, loadMoreOlderPosts } = useFeedSync({
+    demoOfflineMode: DEMO_OFFLINE_MODE,
+    signedIn,
+    initialServerSyncDone,
+    viewScreen: view.screen,
+    homeTab,
+    appLifecycleState,
+    feedRefreshing,
+    feedLoadingMore,
+    feedHasMore,
+    feedPullNonce,
+    getBackendSession,
+    backendUidToFriendId,
+    postsWatermarkMsRef,
+    postsLastFullSyncAtRef,
+    deletedPostIdsRef,
+    initialServerSyncCompletedAtRef,
+    persistWatermarksNow,
+    setPosts,
+    setEncryptedSyncState,
+    setFeedRefreshing,
+    setFeedLoadingMore,
+    setFeedHasMore,
+  });
 
   resolveRecipientEncryptionKeysRef.current = resolveRecipientEncryptionKeys;
   sharePostsWithNewFriendHandlerRef.current = (newFriendUid: string) => {
@@ -1646,320 +1627,17 @@ function MainAppInner() {
     friendMap,
   ]);
 
-  /**
-   * Push-based encrypted-profile delivery via Firestore `onSnapshot`. Replaces
-   * the old 45 s `getEncryptedProfile` self-poll. Filters on the
-   * `recipientAuthUids` mirror that `putEncryptedProfile` now populates from
-   * the envelope keys, so a single listener delivers:
-   *
-   * - **self** picture updates pushed from another signed-in device (bio is read
-   *   from `users.bio` via `getUserProfiles`, not this listener), and
-   * - **friend** profile picture updates when ciphertext includes an HTTPS URL.
-   */
-  useEffect(() => {
-    if (DEMO_OFFLINE_MODE) return;
-    const session = getBackendSession();
-    if (!session || !signedIn) return;
-    const firebaseAuthUid = firebaseAuth.currentUser?.uid;
-    if (!firebaseAuthUid) return;
-
-    let cancelled = false;
-    const db = getFirestoreDb();
-    const q = firestoreQuery(
-      collection(db, "encryptedProfiles"),
-      where("recipientAuthUids", "array-contains", firebaseAuthUid)
-    );
-
-    setEncryptedSyncState((current) => ({ ...current, profile: "syncing" }));
-
-    const unsubscribe = onSnapshot(
-      q,
-      async (snap) => {
-        if (cancelled) return;
-        for (const doc of snap.docs) {
-          const data = doc.data() as {
-            ownerUid?: string;
-            ciphertext?: string;
-            nonce?: string;
-            envelopes?: Record<string, string>;
-          };
-          const envelope = data.envelopes?.[session.uid];
-          if (!envelope || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
-          try {
-            const plain = await decryptPayloadForRecipient<{
-              profilePictureUrl?: string | null;
-            }>(session.uid, data.ciphertext, data.nonce, envelope);
-            const rawPic = plain.profilePictureUrl;
-            const safePic =
-              typeof rawPic === "string" && /^https?:\/\//i.test(rawPic) ? rawPic : null;
-            if (data.ownerUid === session.uid) {
-              if (safePic) {
-                setMyProfilePictureUrl(safePic);
-                const email = sessionEmailRef.current?.trim().toLowerCase();
-                if (email) {
-                  void storageSetItem(profilePictureStorageKey(email), safePic).catch(
-                    () => {}
-                  );
-                }
-              } else {
-                const ownerUid = session.uid;
-                void callEmulatorFunction<{
-                  profiles?: Record<
-                    string,
-                    { profilePictureUrl?: string | null } | null
-                  >;
-                }>("getUserProfiles", {
-                  uid: session.uid,
-                  deviceId: session.deviceId,
-                  targetUids: [ownerUid],
-                })
-                  .then((res) => {
-                    if (cancelled) return;
-                    const fromUsers = res.profiles?.[ownerUid]?.profilePictureUrl;
-                    const merged = mergeProfilePictureUrl(
-                      fromUsers,
-                      myProfilePictureUrlRef.current
-                    );
-                    if (!merged) return;
-                    setMyProfilePictureUrl(merged);
-                    const email = sessionEmailRef.current?.trim().toLowerCase();
-                    if (email) {
-                      void storageSetItem(profilePictureStorageKey(email), merged).catch(
-                        () => {}
-                      );
-                    }
-                  })
-                  .catch(() => {
-                    /* keep local HTTPS preview / AsyncStorage cache */
-                  });
-              }
-            } else if (data.ownerUid?.startsWith("u_")) {
-              if (safePic !== null) {
-                setAddedFriendsFromRitual((current) =>
-                  current.map((f) =>
-                    f.backendUid === data.ownerUid
-                      ? {
-                          ...f,
-                          profilePictureUrl: safePic ?? "",
-                        }
-                      : f
-                  )
-                );
-              } else {
-                const ownerUid = data.ownerUid;
-                void refreshFriendProfilesFromServer(session, addedFriendsFromRitualRef.current).then(
-                  (refreshed) => {
-                    if (cancelled) return;
-                    setAddedFriendsFromRitual((current) => {
-                      const row = refreshed.find((f) => f.backendUid === ownerUid);
-                      if (!row?.profilePictureUrl) return current;
-                      return current.map((f) =>
-                        f.backendUid === ownerUid
-                          ? {
-                              ...f,
-                              profilePictureUrl: row.profilePictureUrl,
-                            }
-                          : f
-                      );
-                    });
-                  }
-                );
-              }
-            }
-          } catch {
-            /* Skip un-decodable profile doc (key mismatch, malformed envelope). */
-          }
-        }
-        if (cancelled) return;
-        setEncryptedSyncState((current) => ({
-          ...current,
-          profile: "ok",
-          lastSuccessAt: Date.now(),
-        }));
-      },
-      () => {
-        if (cancelled) return;
-        setEncryptedSyncState((current) => ({ ...current, profile: "error" }));
-      }
-    );
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [signedIn, getBackendSession]);
-
-  // Posts are pulled **on open** of a post-bearing surface (feed tab, my
-  // profile, a friend's profile) rather than on a recurring timer. This effect
-  // re-fires whenever `view.screen` / `homeTab` change (i.e. the user navigates
-  // away and back) or when the app foregrounds, which gives the user the same
-  // freshness guarantee without the cost of background polling while they sit
-  // on the screen. A user-initiated refresh affordance (button + pull-to-
-  // refresh) is still backlog — `MASTER_PRODUCT_PLAN.md` Feed and ranking
-  // breadth.
-  useEffect(() => {
-    const session = getBackendSession();
-    if (!session || !signedIn) return;
-    if (!initialServerSyncDone) return;
-    if (appLifecycleState !== "active") return;
-    const isHomeFeed = view.screen === "home" && homeTab === "feed";
-    const isProfileSurface = view.screen === "myProfile" || view.screen === "friendProfile";
-    if (!isHomeFeed && !isProfileSurface) return;
-    // Boot pull already fetched the same first page — skip redundant decrypt on first feed paint.
-    if (
-      isHomeFeed &&
-      !feedRefreshing &&
-      postsWatermarkMsRef.current > 0 &&
-      Date.now() - initialServerSyncCompletedAtRef.current < 12_000
-    ) {
-      return;
-    }
-    const pageLimit = isHomeFeed
-      ? ENCRYPTED_POSTS_HOME_FEED_LIMIT
-      : ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT;
-    let cancelled = false;
-    const tick = async () => {
-      const now = Date.now();
-      // Home feed: incremental unless pull-to-refresh / first watermark (listener handles deletes on feed tab).
-      // Profile grids: periodic full-catalog pull so older posts and deletions reconcile.
-      const fullSync = isHomeFeed
-        ? feedRefreshing || postsWatermarkMsRef.current <= 0
-        : feedRefreshing ||
-          postsWatermarkMsRef.current <= 0 ||
-          now - postsLastFullSyncAtRef.current > ENCRYPTED_POSTS_FULL_SYNC_MS;
-      setEncryptedSyncState((current) => ({ ...current, posts: "syncing" }));
-      try {
-        const request: {
-          uid: string;
-          deviceId: string;
-          limit: number;
-          sinceMs?: number;
-        } = {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          limit: pageLimit,
-        };
-        if (!fullSync && postsWatermarkMsRef.current > 0) {
-          request.sinceMs = Math.max(0, postsWatermarkMsRef.current - 5_000);
-        }
-        const res = await callEmulatorFunction<{
-          items: Array<{
-            postId: string;
-            ownerUid: string;
-            ciphertext: string;
-            nonce: string;
-            envelope: string;
-            createdAtMs?: number;
-          }>;
-          reactionsByPostId?: Record<string, Record<string, string>>;
-          incremental?: boolean;
-          hasMore?: boolean;
-        }>("listEncryptedPosts", request);
-        if (!Array.isArray(res.items)) return;
-        const decoded: Post[] = [];
-        let postDecodeFailures = 0;
-        let postsEarliestFailureMs: number | null = null;
-        for (const item of res.items) {
-          try {
-            const plain = await decryptPayloadForRecipient<
-              PostMediaPlainPayload & {
-                postId: string;
-                authorId?: string;
-                authorUid?: string;
-                createdAt?: number;
-                text?: string | null;
-              }
-            >(session.uid, item.ciphertext, item.nonce, item.envelope);
-            const authorUid =
-              typeof plain.authorUid === "string" && plain.authorUid.trim()
-                ? plain.authorUid.trim()
-                : item.ownerUid;
-            const friendAuthorId =
-              authorUid === session.uid
-                ? CURRENT_USER_ID
-                : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid);
-            const serverReactions = res.reactionsByPostId?.[item.postId];
-            const mappedReactions: Record<string, string> | undefined = serverReactions
-              ? Object.fromEntries(
-                  Object.entries(serverReactions).map(([uid, emoji]) => [
-                    uid === session.uid
-                      ? CURRENT_USER_ID
-                      : backendUidToFriendId[uid] ?? backendUidForFriendId(uid),
-                    emoji,
-                  ])
-                )
-              : undefined;
-            const canonicalPostId = canonicalEncryptedPostId(item.postId, plain.postId);
-            if (!canonicalPostId) continue;
-            decoded.push(
-              mapDecryptedPostPlainToPost({
-                plain: { ...plain, postId: canonicalPostId },
-                postId: canonicalPostId,
-                authorId: friendAuthorId,
-                createdAtMs: item.createdAtMs ?? plain.createdAt ?? Date.now(),
-                feedReactions: mappedReactions,
-              })
-            );
-            await yieldToUi();
-          } catch {
-            postDecodeFailures += 1;
-            const failMs = item.createdAtMs ?? 0;
-            if (failMs > 0 && (postsEarliestFailureMs == null || failMs < postsEarliestFailureMs)) {
-              postsEarliestFailureMs = failMs;
-            }
-          }
-        }
-        if (cancelled) return;
-        const incremental = Boolean(res.incremental);
-        setPosts((current) =>
-          mergeSyncedPosts(current, decoded, {
-            incremental,
-            optimisticWindowMs: 90_000,
-            suppressedPostIds: deletedPostIdsRef.current,
-          })
-        );
-        if (decoded.length > 0) {
-          // Cap watermark just below the earliest undecryptable post so it is
-          // retried on the next pull instead of being skipped permanently.
-          let candidate = maxCreatedAtMs(decoded);
-          if (postsEarliestFailureMs != null) {
-            candidate = Math.min(candidate, postsEarliestFailureMs - 1);
-          }
-          postsWatermarkMsRef.current = Math.max(postsWatermarkMsRef.current, candidate);
-        }
-        if (fullSync) {
-          postsLastFullSyncAtRef.current = now;
-        }
-        if (isHomeFeed) {
-          setFeedHasMore(res.hasMore ?? decoded.length >= pageLimit);
-        }
-        persistWatermarksNow();
-        setEncryptedSyncState((current) => ({ ...current, posts: "ok", lastSuccessAt: Date.now() }));
-      } catch {
-        if (cancelled) return;
-        setEncryptedSyncState((current) => ({ ...current, posts: "error" }));
-      } finally {
-        if (!cancelled) {
-          setFeedRefreshing(false);
-          setFeedLoadingMore(false);
-        }
-      }
-    };
-    void tick();
-    return () => {
-      cancelled = true;
-    };
-  }, [
+  useEncryptedProfileSync({
+    demoOfflineMode: DEMO_OFFLINE_MODE,
     signedIn,
     getBackendSession,
-    backendUidToFriendId,
-    appLifecycleState,
-    view.screen,
-    homeTab,
-    persistWatermarksNow,
-    feedPullNonce,
-    initialServerSyncDone,
-  ]);
+    sessionEmailRef,
+    myProfilePictureUrlRef,
+    setMyProfilePictureUrl,
+    addedFriendsFromRitualRef,
+    setAddedFriendsFromRitual,
+    setEncryptedSyncState,
+  });
 
   useFriendRosterSync({
     demoOfflineMode: DEMO_OFFLINE_MODE,
@@ -1975,160 +1653,6 @@ function MainAppInner() {
     removeUndirectedEdge,
     stickyUnfriendedFriendIdsRef,
   });
-
-  /**
-   * Push-based encrypted-post delivery via Firestore `onSnapshot`. Filters on
-   * the `recipientAuthUids` mirror that `createEncryptedPost` now populates
-   * (with opportunistic backfill on every `listEncryptedPosts` callable read
-   * for pre-migration docs). New posts from friends — and deletions via
-   * `deleteEncryptedPost` — propagate in real time without waiting for the
-   * user to navigate back to a feed surface.
-   *
-   * The poll-on-open `listEncryptedPosts` effect above still runs on each
-   * surface entry: it serves both as the backlog fetch on first sign-in
-   * (where the snapshot listener has no cached docs) and as the trigger for
-   * the server-side `recipientAuthUids` backfill on older posts.
-   */
-  useEffect(() => {
-    if (DEMO_OFFLINE_MODE) return;
-    if (!signedIn) return;
-    if (!initialServerSyncDone) return;
-    if (view.screen !== "home" || homeTab !== "feed") return;
-    const session = getBackendSession();
-    if (!session || !signedIn) return;
-    const firebaseAuthUid = firebaseAuth.currentUser?.uid;
-    if (!firebaseAuthUid) return;
-
-    let cancelled = false;
-    const db = getFirestoreDb();
-    const q = firestoreQuery(
-      collection(db, "encryptedPosts"),
-      where("recipientAuthUids", "array-contains", firebaseAuthUid),
-      orderBy("createdAt", "desc"),
-      firestoreLimit(ENCRYPTED_POSTS_LISTENER_LIMIT)
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      async (snap) => {
-        if (cancelled) return;
-
-        // Handle removals first (server-side `deleteEncryptedPost`).
-        const removedIds: string[] = [];
-        for (const change of snap.docChanges()) {
-          if (change.type === "removed") {
-            const removedId = change.doc.id;
-            const data = change.doc.data() as { postId?: string };
-            removedIds.push(data.postId || removedId);
-          }
-        }
-        if (removedIds.length > 0) {
-          const removedSet = new Set(removedIds);
-          setPosts((current) => {
-            const next = current.filter((p) => !removedSet.has(p.id));
-            return next.length === current.length ? current : next;
-          });
-        }
-
-        const decoded: Post[] = [];
-        let postDecodeFailures = 0;
-        for (const doc of snap.docs) {
-          const data = doc.data() as {
-            postId?: string;
-            ownerUid?: string;
-            envelopes?: Record<string, string>;
-            ciphertext?: string;
-            nonce?: string;
-            createdAt?: { toMillis?: () => number } | number | null;
-          };
-          const envelope = data.envelopes?.[session.uid];
-          if (!envelope || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
-          const createdAtMs =
-            typeof data.createdAt === "number"
-              ? data.createdAt
-              : typeof data.createdAt === "object" && data.createdAt && typeof (data.createdAt as { toMillis?: () => number }).toMillis === "function"
-                ? (data.createdAt as { toMillis: () => number }).toMillis()
-                : Date.now();
-          // Skip docs older than what we've already seen — avoids double-decoding
-          // the historical backlog the boot pull already processed.
-          if (createdAtMs > 0 && createdAtMs <= postsWatermarkMsRef.current - 5_000) {
-            continue;
-          }
-          try {
-            const plain = await decryptPayloadForRecipient<
-              PostMediaPlainPayload & {
-                postId: string;
-                authorId?: string;
-                authorUid?: string;
-                createdAt?: number;
-                text?: string | null;
-              }
-            >(session.uid, data.ciphertext, data.nonce, envelope);
-            const authorUid =
-              typeof plain.authorUid === "string" && plain.authorUid.trim()
-                ? plain.authorUid.trim()
-                : data.ownerUid;
-            decoded.push(
-              mapDecryptedPostPlainToPost({
-                plain: { ...plain, postId: data.postId || doc.id },
-                postId: data.postId || doc.id,
-                authorId:
-                  authorUid === session.uid
-                    ? CURRENT_USER_ID
-                    : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid),
-                createdAtMs: createdAtMs || plain.createdAt || Date.now(),
-              })
-            );
-            await yieldToUi();
-          } catch {
-            postDecodeFailures += 1;
-          }
-        }
-
-        if (cancelled) return;
-        if (decoded.length > 0) {
-          setPosts((current) =>
-            mergeSyncedPosts(current, decoded, {
-              incremental: true,
-              optimisticWindowMs: 90_000,
-              suppressedPostIds: deletedPostIdsRef.current,
-            })
-          );
-          if (postDecodeFailures === 0) {
-            postsWatermarkMsRef.current = Math.max(
-              postsWatermarkMsRef.current,
-              maxCreatedAtMs(decoded)
-            );
-            persistWatermarksNow();
-          }
-        }
-        setEncryptedSyncState((current) => ({
-          ...current,
-          posts: "ok",
-          lastSuccessAt: Date.now(),
-        }));
-      },
-      () => {
-        if (cancelled) return;
-        /* Listener torn down (network error, rules denial, etc.). The
-         * poll-on-open callable path remains the durable fallback. */
-        setEncryptedSyncState((current) => ({ ...current, posts: "error" }));
-      }
-    );
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [
-    signedIn,
-    getBackendSession,
-    backendUidToFriendId,
-    persistWatermarksNow,
-    initialServerSyncDone,
-    view.screen,
-    homeTab,
-  ]);
 
   useInitialServerSync({
     demoOfflineMode: DEMO_OFFLINE_MODE,
@@ -2306,61 +1830,17 @@ function MainAppInner() {
     return [...ids].slice(0, ENCRYPTED_POSTS_HOME_FEED_LIMIT);
   }, [displayedFeedPosts, fullScreenPost?.id]);
 
-  /**
-   * Realtime feed reaction pills via `encryptedPostReactions/{postId}`.
-   * Post ciphertext listener above does not include reaction docs.
-   */
-  useEffect(() => {
-    if (DEMO_OFFLINE_MODE) return;
-    if (!signedIn) return;
-    if (!initialServerSyncDone) return;
-    if (view.screen !== "home" || homeTab !== "feed") return;
-    const session = getBackendSession();
-    if (!session) return;
-    if (feedReactionListenPostIds.length === 0) return;
-
-    const db = getFirestoreDb();
-    const sessionUid = session.uid;
-    const friendMapSnapshot = { ...backendUidToFriendId };
-    const unsubs = feedReactionListenPostIds.map((postId) =>
-      onSnapshot(firestoreDoc(db, "encryptedPostReactions", postId), (snap) => {
-        const serverReactions = snap.exists()
-          ? ((snap.data()?.reactions ?? {}) as Record<string, string>)
-          : {};
-        const feedReactions = mapServerPostReactionsToFeed(
-          serverReactions,
-          sessionUid,
-          friendMapSnapshot
-        );
-        setPosts((current) => {
-          const idx = current.findIndex((p) => p.id === postId);
-          if (idx < 0) return current;
-          const existing = current[idx]!;
-          const prevRx = existing.feedReactions ?? {};
-          const same =
-            Object.keys(prevRx).length === Object.keys(feedReactions).length &&
-            Object.entries(feedReactions).every(([k, v]) => prevRx[k] === v);
-          if (same) return current;
-          const next = [...current];
-          next[idx] = { ...existing, feedReactions };
-          return next;
-        });
-      })
-    );
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [
-    DEMO_OFFLINE_MODE,
+  useFeedReactionListeners({
+    demoOfflineMode: DEMO_OFFLINE_MODE,
     signedIn,
     initialServerSyncDone,
-    view.screen,
+    viewScreen: view.screen,
     homeTab,
     getBackendSession,
     backendUidToFriendId,
-    feedReactionListenPostIds,
-  ]);
+    listenPostIds: feedReactionListenPostIds,
+    setPosts,
+  });
 
   const markFeedPostsForMediaResolve = useCallback((postIds: string[]) => {
     if (postIds.length === 0) return;
@@ -2384,91 +1864,10 @@ function MainAppInner() {
   }, [feedPosts, markFeedPostsForMediaResolve]);
 
   const loadMoreFeedPosts = useCallback(() => {
-    if (feedLoadingMore || !feedHasMore || DEMO_OFFLINE_MODE) return;
-    const session = getBackendSession();
-    if (!session) return;
     const oldest = feedPosts[feedPosts.length - 1];
     if (!oldest) return;
-    setFeedLoadingMore(true);
-    void (async () => {
-      try {
-        const res = await callEmulatorFunction<{
-          items: Array<{
-            postId: string;
-            ownerUid: string;
-            ciphertext: string;
-            nonce: string;
-            envelope: string;
-            createdAtMs?: number;
-          }>;
-          reactionsByPostId?: Record<string, Record<string, string>>;
-          hasMore?: boolean;
-        }>("listEncryptedPosts", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          limit: ENCRYPTED_POSTS_PAGE_SIZE,
-          beforeMs: oldest.createdAt - 1,
-        });
-        const decoded: Post[] = [];
-        for (const item of res.items ?? []) {
-          try {
-            const plain = await decryptPayloadForRecipient<
-              PostMediaPlainPayload & {
-                postId?: string;
-                authorUid?: string;
-                createdAt?: number;
-                text?: string | null;
-              }
-            >(session.uid, item.ciphertext, item.nonce, item.envelope);
-            const authorUid = plain.authorUid?.trim() || item.ownerUid;
-            const serverReactions = res.reactionsByPostId?.[item.postId];
-            const mappedReactions: Record<string, string> | undefined = serverReactions
-              ? Object.fromEntries(
-                  Object.entries(serverReactions).map(([uid, emoji]) => [
-                    uid === session.uid
-                      ? CURRENT_USER_ID
-                      : backendUidToFriendId[uid] ?? backendUidForFriendId(uid),
-                    emoji,
-                  ])
-                )
-              : undefined;
-            const canonicalPostId = canonicalEncryptedPostId(item.postId, plain.postId);
-            if (!canonicalPostId) continue;
-            decoded.push(
-              mapDecryptedPostPlainToPost({
-                plain: { ...plain, postId: canonicalPostId },
-                postId: canonicalPostId,
-                authorId:
-                  authorUid === session.uid
-                    ? CURRENT_USER_ID
-                    : backendUidToFriendId[authorUid] ?? backendUidForFriendId(authorUid),
-                createdAtMs: item.createdAtMs ?? plain.createdAt ?? Date.now(),
-                feedReactions: mappedReactions,
-              })
-            );
-          } catch {
-            /* skip */
-          }
-        }
-        setPosts((current) => {
-          const byId = Object.fromEntries(current.map((p) => [p.id, p] as const));
-          for (const p of decoded) {
-            const prev = byId[p.id];
-            byId[p.id] = {
-              ...prev,
-              ...p,
-              feedReactions: p.feedReactions ?? prev?.feedReactions,
-              comments: prev?.comments ?? p.comments,
-            };
-          }
-          return Object.values(byId).sort((a, b) => b.createdAt - a.createdAt);
-        });
-        setFeedHasMore(res.hasMore ?? (res.items?.length ?? 0) >= ENCRYPTED_POSTS_PAGE_SIZE);
-      } finally {
-        setFeedLoadingMore(false);
-      }
-    })();
-  }, [feedLoadingMore, feedHasMore, feedPosts, getBackendSession, backendUidToFriendId]);
+    loadMoreOlderPosts(oldest.createdAt);
+  }, [feedPosts, loadMoreOlderPosts]);
 
   const onFeedEndReached = useCallback(() => {
     if (feedDisplayLimit < feedPosts.length) {
@@ -3405,23 +2804,30 @@ function MainAppInner() {
     resetPosts();
     resetFriendsState();
     resetMyProfile();
+    resetFeedPrefs();
     deletedPostIdsRef.current = new Set();
+    recipientKeyCacheRef.current = {};
+    messagesWatermarkMsRef.current = 0;
+    messagesLastFullSyncAtRef.current = 0;
+    postsWatermarkMsRef.current = 0;
+    postsLastFullSyncAtRef.current = 0;
+    sharePostsBackfillStartedRef.current = new Set();
+    pendingPostsShareFriendUidsRef.current = new Set();
+    postsSharedWithFriendsRef.current = new Set();
     void storageRemoveItem(POSTS_STORAGE_KEY);
     void clearEncryptedMediaCaches();
-  }, [resetMessagingState, resetPosts, resetFriendsState, resetMyProfile]);
+  }, [resetMessagingState, resetPosts, resetFriendsState, resetMyProfile, resetFeedPrefs]);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
     const email = sessionEmailRef.current?.trim().toLowerCase();
     resetLocalSocialStateForSignedOut();
-    resetFeedPrefs();
-    postsSharedWithFriendsRef.current = new Set();
     setView({ screen: "home" });
     setHomeTab("feed");
     if (email) {
       void clearLocalSocialCacheForEmail(email);
     }
     logAppEvent("local_state.reset_current_user", { email: email ?? "" });
-  }, [resetLocalSocialStateForSignedOut, resetFeedPrefs]);
+  }, [resetLocalSocialStateForSignedOut]);
 
   const initializeBackendSessionForAccount = useCallback(async (account: MockAuthAccount) => {
     const uid = backendUidForEmail(account.email);
@@ -4059,10 +3465,10 @@ function MainAppInner() {
       void clearLocalSocialCacheForEmail(email);
     }
     backendInitGenerationRef.current += 1;
-    resetLocalSocialStateForSignedOut();
-    logAppEvent("auth.logout", { email: email ?? "" });
     sessionTokenRef.current = null;
     sessionEmailRef.current = null;
+    resetLocalSocialStateForSignedOut();
+    logAppEvent("auth.logout", { email: email ?? "" });
     const releaseUid = backendAuthUidRef.current;
     const releaseDeviceId = backendDeviceIdRef.current;
     if (releaseUid && releaseDeviceId) {
@@ -4075,16 +3481,8 @@ function MainAppInner() {
     }
     clearSession();
     setTelemetryContext({ uid: null, deviceId: null });
-    recipientKeyCacheRef.current = {};
-    messagesWatermarkMsRef.current = 0;
-    acceptedFriendBackendUidsRef.current = new Set();
-    sharePostsBackfillStartedRef.current = new Set();
-    messagesLastFullSyncAtRef.current = 0;
-    postsWatermarkMsRef.current = 0;
-    postsLastFullSyncAtRef.current = 0;
     resetSyncChannelsIdle();
     setSignedIn(false);
-    resetFeedPrefs();
     setView({ screen: "home" });
     setChatOverflowOpen(false);
     setMembersModalOpen(false);
@@ -4137,22 +3535,14 @@ function MainAppInner() {
         /* ignore */
       });
     }
-    resetLocalSocialStateForSignedOut();
-    logAppEvent("auth.session_replaced", {});
     sessionTokenRef.current = null;
     sessionEmailRef.current = null;
+    resetLocalSocialStateForSignedOut();
+    logAppEvent("auth.session_replaced", {});
     clearSession();
     setTelemetryContext({ uid: null, deviceId: null });
-    recipientKeyCacheRef.current = {};
-    messagesWatermarkMsRef.current = 0;
-    acceptedFriendBackendUidsRef.current = new Set();
-    sharePostsBackfillStartedRef.current = new Set();
-    messagesLastFullSyncAtRef.current = 0;
-    postsWatermarkMsRef.current = 0;
-    postsLastFullSyncAtRef.current = 0;
     resetSyncChannelsIdle();
     setSignedIn(false);
-    resetFeedPrefs();
     setView({ screen: "home" });
     setChatOverflowOpen(false);
     setMembersModalOpen(false);

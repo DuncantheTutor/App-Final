@@ -42,7 +42,8 @@ export type ProfileController = {
 
 /**
  * Sole owner of my-profile fields and persisted friend profile-card cache.
- * Auth restore, photo upload, and friend-profile navigation still live in MainApp.
+ * Auth restore and photo upload still live in MainApp; encrypted-profile
+ * snapshots live in useEncryptedProfileSync.
  */
 export function useProfileController(params: {
   signedIn: boolean;

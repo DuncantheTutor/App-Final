@@ -9,6 +9,7 @@
 - **Email OTP temporarily off:** Login and signup complete with **email + password** (and signup username/phone). Do **not** expect the 6-digit OTP screens until `EMAIL_OTP_ENABLED` is flipped back to `true` in `app/theme/preludeConstants.ts`. OTP request/verify code is still in the tree.
 - **Haptic press ack:** **Send** / **Publish** / **Post** keep the same button size; send uses a short paper-plane nudge, publish/post a flash, plus a light tick. **Cancel**, **Back**, **Close**, and **Not now** use the same in-bounds flash (no size change). Top nav (chats, friends, feed, profile, …) ticks on tap. Settings → **Haptic feedback** turns it off. If Android **touch haptics** are already off (or the device has no vibrator), the switch stays off and cannot be turned on. Re-open Settings after changing the OS toggle.
 - **New-post camera:** On **Publish**, tap the **camera** icon or the media slot → **Take photo** to capture with the camera (same photo editor as gallery). Gallery pick is unchanged.
+- **Account switch after sign-out:** After Logout **or** a Firebase session drop, the next account must not inherit the previous account's feed mutes, reaction-seen marks, or friend roster. Same-account re-login may still restore that account's own stored mutes.
 
 ## Jun 2026 — cold start / inbox load (performance)
 

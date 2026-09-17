@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-17 18:02 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:02 +01:00 | Feed / Profile | Moved feed load-more, reaction pills, and encrypted-profile snapshots out of MainApp; demo poll-on-open no longer hits the posts callable. |
+
+---
+
+## 2026-09-17 17:54 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:54 +01:00 | Feed / Session | Moved feed pull, poll-on-open, and posts snapshot out of MainApp; Firebase sign-out now clears the same in-memory prefs, watermarks, and friend UID sets as Logout. |
+
+---
+
 ## 2026-09-16 22:39 +01:00
 
 | Time | Area | Change |

@@ -29,7 +29,8 @@ export type FeedController = {
 
 /**
  * Sole owner of in-memory feed post rows, mute/seen prefs, and list paging flags.
- * Pull/merge still live in MainApp; screens should write through this controller.
+ * Pull / poll-on-open / older pages / posts snapshot live in useFeedSync;
+ * reaction pills live in useFeedReactionListeners; screens write through this controller.
  */
 export function useFeedController(params: {
   signedIn: boolean;

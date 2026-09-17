@@ -80,6 +80,9 @@ export function useFriendsController(): FriendsController {
     setUnfriendedIds(FRIENDS.map((f) => f.id));
     setFriendLinksState(cloneFriendLinks(FRIEND_LINKS));
     setAddedFriendsFromRitual([]);
+    stickyUnfriendedFriendIdsRef.current = new Set();
+    acceptedFriendBackendUidsRef.current = new Set();
+    setServerAcceptedFriendBackendUids(new Set());
   }, []);
 
   const hydrateFriends = useCallback((ritualFriends: Friend[], nextUnfriendedIds: string[]) => {

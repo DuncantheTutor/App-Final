@@ -1,3 +1,4 @@
+export { useEncryptedProfileSync } from "./useEncryptedProfileSync";
 export {
   useProfileController,
   type FriendProfileCardView,
