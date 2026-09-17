@@ -347,7 +347,9 @@ export function HomeTopNavBar({
 
             accessibilityHint={
 
-              item.key === "friends" ? "Opens your friends list. You can also swipe right on the chat list." : undefined
+              item.key === "friends"
+                ? "Opens your friends list. Swipe left or right between profile, friends, chats, and feed."
+                : undefined
 
             }
 

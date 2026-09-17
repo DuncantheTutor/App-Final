@@ -102,7 +102,7 @@ type Props = {
   mediaType?: "photo" | "video";
   /** Label for the final confirmation on the preview step (default: Post). */
   previewSubmitLabel?: string;
-  /** Skip preview/caption step — export from edit and return immediately (chat photos). */
+  /** Skip preview/caption step — export from edit and return immediately (chat and new-post photos). */
   externalCaptionComposer?: boolean;
   /** Label for the edit-step continue button (default: Continue). */
   editContinueLabel?: string;

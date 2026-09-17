@@ -49,7 +49,7 @@ export const makeStyles = (theme: ThemePalette) =>
       flex: 1,
       minHeight: 0,
     },
-    /** Fills below the home top bar; swipe-right opens friends (PanResponder). */
+    /** Fills below the home top bar; horizontal swipe moves between main nav screens. */
     homeMainSwipeLayer: {
       flex: 1,
       minHeight: 0,
@@ -1173,21 +1173,23 @@ export const makeStyles = (theme: ThemePalette) =>
     passwordInputRow: {
       flexDirection: "row",
       alignItems: "center",
+      alignSelf: "stretch",
+      width: "100%",
+      borderWidth: 1,
+      borderColor: theme.divider,
+      borderRadius: 10,
+      marginBottom: 10,
     },
     passwordInputField: {
       flex: 1,
+      borderWidth: 0,
       marginBottom: 0,
     },
     passwordVisibilityButton: {
-      marginLeft: 8,
       width: 40,
-      height: 40,
-      borderRadius: 10,
-      borderWidth: 1,
-      borderColor: theme.divider,
+      paddingVertical: 9,
       alignItems: "center",
       justifyContent: "center",
-      marginBottom: 10,
     },
     messageList: {
       paddingTop: 4,
@@ -1468,15 +1470,6 @@ export const makeStyles = (theme: ThemePalette) =>
     photoMessageStackMine: {
       alignSelf: "flex-end",
       maxWidth: "100%",
-    },
-    photoMessageImageDetached: {
-      borderRadius: 10,
-      alignSelf: "flex-start",
-      marginBottom: 0,
-      overflow: "hidden",
-    },
-    photoMessageImageDetachedMine: {
-      alignSelf: "flex-end",
     },
     videoMessageWrap: {
       position: "relative",

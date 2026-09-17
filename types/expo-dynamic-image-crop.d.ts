@@ -1,8 +1,18 @@
+import type { ReactElement, ReactNode } from "react";
+
 declare module "expo-dynamic-image-crop" {
   export type ImageData = {
     uri: string;
     width: number;
     height: number;
+  };
+
+  export type ControlBarActions = {
+    onCancel: () => void;
+    onCrop: () => Promise<void>;
+    onSave: () => void;
+    onBack: () => void;
+    isEdit: boolean;
   };
 
   export type ImageEditorProps = {
@@ -14,7 +24,8 @@ declare module "expo-dynamic-image-crop" {
     dynamicCrop?: boolean;
     useModal?: boolean;
     editorOptions?: Record<string, unknown>;
+    customControlBar?: (actions: ControlBarActions) => ReactNode;
   };
 
-  export function ImageEditor(props: ImageEditorProps): React.ReactElement | null;
+  export function ImageEditor(props: ImageEditorProps): ReactElement | null;
 }

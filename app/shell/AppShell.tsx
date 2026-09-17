@@ -15,4 +15,13 @@ export {
   viewAfterLeavingFriendsList,
   viewFromChatReturn,
 } from "./routes";
+export {
+  createMainNavSwipePan,
+} from "./mainNavSwipe";
+export {
+  mainNavSurfaceFromView,
+  neighborMainNav,
+  MAIN_NAV_ORDER,
+  type MainNavSurface,
+} from "./mainNavOrder";
 export type { HomeNavIconHighlight, HomeTab, ViewState } from "./types";

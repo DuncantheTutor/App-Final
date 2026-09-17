@@ -5,6 +5,7 @@ import type { Friend, Post } from "../domain/types";
 import { resolvePostMediaForEncrypt } from "../lib/tierBMedia/postMedia";
 import type { BackendSession } from "../messaging/types";
 import { CURRENT_USER_ID } from "../theme/preludeConstants";
+import { postPublishRecipientUids } from "./postPublishRecipientUids";
 
 export type UploadEncryptedPostParams = {
   session: BackendSession;
@@ -17,22 +18,7 @@ export type UploadEncryptedPostParams = {
   notificationAuthorName: string;
 };
 
-export function postPublishRecipientUids(params: {
-  sessionUid: string;
-  visibleFriendIds: string[];
-  allFriends: Friend[];
-  acceptedFriendBackendUids?: ReadonlySet<string>;
-}): string[] {
-  const { sessionUid, visibleFriendIds, allFriends, acceptedFriendBackendUids } = params;
-  const fromRoster = visibleFriendIds
-    .map((id) => allFriends.find((friend) => friend.id === id)?.backendUid?.trim())
-    .filter((uid): uid is string => !!uid && uid.startsWith("u_") && uid !== sessionUid);
-  const accepted = acceptedFriendBackendUids
-    ? [...acceptedFriendBackendUids].filter((uid) => uid.startsWith("u_") && uid !== sessionUid)
-    : [];
-  const friendUids = accepted.length > 0 ? accepted : fromRoster;
-  return [...new Set([sessionUid, ...friendUids])];
-}
+export { postPublishRecipientUids } from "./postPublishRecipientUids";
 
 /**
  * Encrypts an optimistic local post and creates it on the server.
@@ -72,6 +58,7 @@ export async function uploadEncryptedPost(params: UploadEncryptedPostParams): Pr
       authorUid: session.uid,
       createdAt: post.createdAt,
       text: post.text ?? null,
+      imageCaptions: post.imageCaptions ?? null,
       imageUris: remoteMedia.imageUris ?? null,
       videoUri: remoteMedia.videoUri ?? null,
       videoPosterUri: remoteMedia.videoPosterUri ?? null,

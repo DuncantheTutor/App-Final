@@ -12,12 +12,15 @@ export type PublishComposer = {
   setPostDraftVideoUri: Dispatch<SetStateAction<string | null>>;
   queuedPostPhotoAssets: PostPhotoAsset[];
   setQueuedPostPhotoAssets: Dispatch<SetStateAction<PostPhotoAsset[]>>;
+  postDraftImageCaptions: string[];
+  setPostDraftImageCaptions: Dispatch<SetStateAction<string[]>>;
   videoThumbnailModalOpen: boolean;
   videoThumbnailDefaultPosterUri: string | null;
   videoThumbnailPreviewLoading: boolean;
   resetPublishDraft: () => void;
   openPostComposer: () => void;
   appendEditedPostPhoto: (uri: string, caption?: string) => void;
+  clearPostDraftMedia: () => void;
   openVideoThumbnailModal: () => Promise<void>;
   closeVideoThumbnailModal: () => void;
 };
@@ -31,6 +34,7 @@ export function usePublishComposer(params: { goToPublishPost: () => void }): Pub
 
   const [postDraftText, setPostDraftText] = useState("");
   const [postDraftImageUris, setPostDraftImageUris] = useState<string[]>([]);
+  const [postDraftImageCaptions, setPostDraftImageCaptions] = useState<string[]>([]);
   const [postDraftVideoUri, setPostDraftVideoUri] = useState<string | null>(null);
   const [queuedPostPhotoAssets, setQueuedPostPhotoAssets] = useState<PostPhotoAsset[]>([]);
   const [videoThumbnailModalOpen, setVideoThumbnailModalOpen] = useState(false);
@@ -42,8 +46,15 @@ export function usePublishComposer(params: { goToPublishPost: () => void }): Pub
   const resetPublishDraft = useCallback(() => {
     setPostDraftText("");
     setPostDraftImageUris([]);
+    setPostDraftImageCaptions([]);
     setPostDraftVideoUri(null);
     setQueuedPostPhotoAssets([]);
+  }, []);
+
+  const clearPostDraftMedia = useCallback(() => {
+    setPostDraftImageUris([]);
+    setPostDraftImageCaptions([]);
+    setPostDraftVideoUri(null);
   }, []);
 
   const openPostComposer = useCallback(() => {
@@ -54,14 +65,7 @@ export function usePublishComposer(params: { goToPublishPost: () => void }): Pub
   const appendEditedPostPhoto = useCallback((uri: string, caption?: string) => {
     setPostDraftVideoUri(null);
     setPostDraftImageUris((prev) => [...prev, uri]);
-    const nextCaption = caption?.trim();
-    if (!nextCaption) return;
-    setPostDraftText((prev) => {
-      const existing = prev.trim();
-      if (!existing) return nextCaption;
-      if (existing.includes(nextCaption)) return prev;
-      return `${existing}\n${nextCaption}`;
-    });
+    setPostDraftImageCaptions((prev) => [...prev, caption?.trim() ?? ""]);
   }, []);
 
   const closeVideoThumbnailModal = useCallback(() => {
@@ -95,12 +99,15 @@ export function usePublishComposer(params: { goToPublishPost: () => void }): Pub
     setPostDraftVideoUri,
     queuedPostPhotoAssets,
     setQueuedPostPhotoAssets,
+    postDraftImageCaptions,
+    setPostDraftImageCaptions,
     videoThumbnailModalOpen,
     videoThumbnailDefaultPosterUri,
     videoThumbnailPreviewLoading,
     resetPublishDraft,
     openPostComposer,
     appendEditedPostPhoto,
+    clearPostDraftMedia,
     openVideoThumbnailModal,
     closeVideoThumbnailModal,
   };

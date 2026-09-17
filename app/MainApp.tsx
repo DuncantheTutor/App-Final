@@ -29,7 +29,6 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Modal,
-  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -197,13 +196,17 @@ import { useMessagingController } from "./messaging/useMessagingController";
 import { useMessagingSync } from "./messaging/useMessagingSync";
 import {
   activeChatIdFromView,
+  createMainNavSwipePan,
+  mainNavSurfaceFromView,
   pendingDraftFromView,
   useAppNavigation,
   viewAfterHardwareBack,
   viewAfterLeavingFriendProfile,
+  type MainNavSurface,
 } from "./shell";
 import { useBackendSession, useSignedInSession } from "./session";
-import { useFeedController, useFeedReactionListeners, useFeedSync } from "./feed";
+import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread } from "./feed";
+import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate } from "./notifications";
 import { usePairingParentActions } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
@@ -560,6 +563,9 @@ function MainAppInner() {
     videoThumbnailPreviewLoading,
     resetPublishDraft,
     openPostComposer,
+    postDraftImageCaptions,
+    setPostDraftImageCaptions,
+    clearPostDraftMedia,
     appendEditedPostPhoto,
     openVideoThumbnailModal,
     closeVideoThumbnailModal,
@@ -664,29 +670,10 @@ function MainAppInner() {
     height: number;
   } | null>(null);
   const [previewVoicePlaying, setPreviewVoicePlaying] = useState(false);
-  const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
-  const [photoEditorInCrop, setPhotoEditorInCrop] = useState(false);
-  const [photoEditorCropExitTick, setPhotoEditorCropExitTick] = useState(0);
   const abortAddFriendPairingRef = useRef<(() => void) | null>(null);
   const registerAddFriendPairingAbort = useCallback((abort: () => void) => {
     abortAddFriendPairingRef.current = abort;
   }, []);
-  const [photoEditorMediaType, setPhotoEditorMediaType] = useState<"photo" | "video">("photo");
-  const [photoEditorTarget, setPhotoEditorTarget] = useState<"chat" | "post" | "profile">("chat");
-  const [photoEditorAsset, setPhotoEditorAsset] = useState<{
-    uri: string;
-    width: number;
-    height: number;
-  } | null>(null);
-  const [imageCropVisible, setImageCropVisible] = useState(false);
-  const [imageCropUri, setImageCropUri] = useState<string | null>(null);
-  const [imageCropAspect, setImageCropAspect] = useState<number | undefined>(undefined);
-  const pendingPhotoEditorRef = useRef<{
-    target: "chat" | "post" | "profile";
-    mediaType: "photo" | "video";
-    queue: Array<{ uri: string; width: number; height: number }>;
-  } | null>(null);
-  const imageCropPurposeRef = useRef<"photoEditor" | "groupPicture">("photoEditor");
   const [playingVideoMessageId, setPlayingVideoMessageId] = useState<string | null>(null);
   const [measuredChatMediaByMessageId, setMeasuredChatMediaByMessageId] = useState<
     Record<string, { width: number; height: number }>
@@ -717,6 +704,52 @@ function MainAppInner() {
   /** Synchronous mirror — Send must read this, not stale React state. */
   const chatInputTextRef = useRef("");
   const chatInputRef = useRef<TextInput | null>(null);
+  const photoEditor = usePhotoEditorSession({
+    extraBlur: () => chatInputRef.current?.blur(),
+    isPublishPost: () => viewRef.current.screen === "publishPost",
+    setQueuedPostPhotoAssets,
+    setCreateGroupPictureUri,
+  });
+  const {
+    photoEditorOpen,
+    photoEditorInCrop,
+    setPhotoEditorInCrop,
+    photoEditorCropExitTick,
+    photoEditorMediaType,
+    setPhotoEditorMediaType,
+    photoEditorTarget,
+    setPhotoEditorTarget,
+    photoEditorAsset,
+    setPhotoEditorAsset,
+    imageCropVisible,
+    imageCropUri,
+    imageCropAspect,
+    cancelImageCropFlow,
+    openPhotoEditorDirect,
+    handleImageCropComplete,
+    beginGroupPictureCrop,
+    cancelPhotoEditor,
+    resetPhotoEditor,
+    setPhotoEditorOpen,
+    setPhotoEditorCropExitTick,
+  } = photoEditor;
+  const {
+    fullScreenPost,
+    setFullScreenPost,
+    fullScreenPostLive,
+    postFullscreenThreadReplyKey,
+    setPostFullscreenThreadReplyKey,
+    postCommentInputRef,
+    postCommentTextRef,
+    postCommentInput,
+    setPostCommentInput,
+    setCommentDraftByPostId,
+    threadDraftByChainKey,
+    setThreadDraftByChainKey,
+    closeFullscreenPost,
+    openPostViewerFromFeed,
+    handlePostCommentInputChange,
+  } = useFullscreenPostThread({ posts });
 
   const setChatInputSynced = useCallback((text: string) => {
     writeComposerText(chatInputTextRef, setChatInput, text);
@@ -725,16 +758,7 @@ function MainAppInner() {
   const publishCaptionInputRef = useRef<TextInput | null>(null);
   const bioInputRef = useRef<TextInput | null>(null);
   const myProfileScrollRef = useRef<ScrollView | null>(null);
-  const [fullScreenPost, setFullScreenPost] = useState<Post | null>(null);
-  /** `${postId}:${commentId}` when post owner is replying in a private thread; else null = new top-level comment. */
-  const [postFullscreenThreadReplyKey, setPostFullscreenThreadReplyKey] = useState<string | null>(null);
-  const [shouldFocusPostCommentInput, setShouldFocusPostCommentInput] = useState(false);
-  const postCommentInputRef = useRef<TextInput | null>(null);
-  const postCommentTextRef = useRef("");
-  const [postCommentInput, setPostCommentInput] = useState("");
   const [reactionDetailPost, setReactionDetailPost] = useState<Post | null>(null);
-  const [commentDraftByPostId, setCommentDraftByPostId] = useState<Record<string, string>>({});
-  const [threadDraftByChainKey, setThreadDraftByChainKey] = useState<Record<string, string>>({});
   const identityLockedChatIdsRef = useRef<string[]>([]);
   identityLockedChatIdsRef.current = identityLockedChatIds;
   const [feedMediaResolveIds, setFeedMediaResolveIds] = useState<Set<string>>(() => new Set());
@@ -937,31 +961,7 @@ function MainAppInner() {
     enabled: view.screen === "publishPost" && !overlaySuppressesKeyboardAvoidance,
   });
 
-  useEffect(() => {
-    if (!fullScreenPost || !shouldFocusPostCommentInput) return;
-    const t = setTimeout(() => {
-      postCommentInputRef.current?.focus();
-      setShouldFocusPostCommentInput(false);
-    }, 120);
-    return () => clearTimeout(t);
-  }, [fullScreenPost, shouldFocusPostCommentInput]);
-
   const styles = useMemo(() => makeStyles(theme), [theme]);
-
-  const closeFullscreenPost = useCallback(() => {
-    setFullScreenPost(null);
-    setPostFullscreenThreadReplyKey(null);
-    setShouldFocusPostCommentInput(false);
-    postCommentTextRef.current = "";
-    setPostCommentInput("");
-    Keyboard.dismiss();
-  }, []);
-
-  const openPostViewerFromFeed = useCallback((post: Post) => {
-    setFullScreenPost(post);
-    setPostFullscreenThreadReplyKey(null);
-    setShouldFocusPostCommentInput(false);
-  }, []);
 
   const setPostMediaGalleryIndex = useCallback((postId: string, index: number) => {
     setPostMediaGalleryIndexByPostId((current) => ({ ...current, [postId]: index }));
@@ -4542,27 +4542,6 @@ function MainAppInner() {
     setDemoPendingAddableQueue,
   });
 
-  /**
-   * Swipe right on the main chat page (chat list + empty space below the online strip).
-   * Uses capture so horizontal intent wins over vertical chat list scroll; excludes the
-   * horizontal online strip (pageY) so that strip keeps scrolling normally.
-   */
-  const homeSwipeOpenFriendsPan = useMemo(() => {
-    const minPageY = safeTop + 148;
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponderCapture: (evt, g) =>
-        evt.nativeEvent.pageY >= minPageY &&
-        g.dx > 10 &&
-        Math.abs(g.dx) > Math.abs(g.dy) + 4,
-      onPanResponderRelease: (_, g) => {
-        if (g.dx > 45 && Math.abs(g.dx) > Math.abs(g.dy)) {
-          openFriendsListFromHome();
-        }
-      },
-    });
-  }, [safeTop, openFriendsListFromHome]);
-
   const confirmUnfriendFriend = (friendId: string, name: string) => {
     Alert.alert("Unfriend?", `Remove ${name} from your friends list?`, [
       { text: "Cancel", style: "cancel" },
@@ -4699,97 +4678,55 @@ function MainAppInner() {
     ]);
   };
 
+  /**
+   * Swipe between main top-nav screens (profile, friends, chats, feed, add friend, settings).
+   * Swipe left goes to the next icon to the right; swipe right goes back.
+   * Feed uses edge swipes so in-post photo carousels still page.
+   */
   const openMyProfile = goToMyProfile;
+  const homeTabRef = useRef(homeTab);
+  homeTabRef.current = homeTab;
 
-  const cancelImageCropFlow = useCallback(() => {
-    setImageCropVisible(false);
-    setImageCropUri(null);
-    setImageCropAspect(undefined);
-    imageCropPurposeRef.current = "photoEditor";
-    pendingPhotoEditorRef.current = null;
-    setQueuedPostPhotoAssets([]);
-    setPhotoEditorOpen(false);
-    setPhotoEditorAsset(null);
-    setPhotoEditorMediaType("photo");
-    setPhotoEditorTarget("chat");
-  }, []);
+  const goToMainNavSurface = useCallback((surface: MainNavSurface) => {
+    switch (surface) {
+      case "myProfile":
+        openMyProfile();
+        break;
+      case "friendsList":
+        openFriendsListFromHome();
+        break;
+      case "chats":
+        openHomeChatsFromNav();
+        break;
+      case "feed":
+        openHomeFeedFromNav();
+        break;
+      case "addFriend":
+        openAddFriendFromHome();
+        break;
+      case "settings":
+        openSettingsScreen();
+        break;
+    }
+  }, [
+    openAddFriendFromHome,
+    openFriendsListFromHome,
+    openHomeChatsFromNav,
+    openHomeFeedFromNav,
+    openMyProfile,
+    openSettingsScreen,
+  ]);
 
-  const openPhotoEditorAfterCrop = useCallback(
-    (cropped: { uri: string; width: number; height: number }) => {
-      const pending = pendingPhotoEditorRef.current;
-      if (!pending) return;
-      Keyboard.dismiss();
-      chatInputRef.current?.blur();
-      setImageCropVisible(false);
-      setImageCropUri(null);
-      setImageCropAspect(undefined);
-      setPhotoEditorTarget(pending.target);
-      setPhotoEditorMediaType(pending.mediaType);
-      setQueuedPostPhotoAssets(pending.queue);
-      setPhotoEditorAsset(cropped);
-      setPhotoEditorOpen(true);
-    },
-    []
-  );
-
-  const openPhotoEditorDirect = useCallback(
-    (
-      asset: { uri: string; width: number; height: number },
-      pending: {
-        target: "chat" | "post" | "profile";
-        mediaType: "photo" | "video";
-        queue: Array<{ uri: string; width: number; height: number }>;
-      }
-    ) => {
-      Keyboard.dismiss();
-      chatInputRef.current?.blur();
-      setPhotoEditorTarget(pending.target);
-      setPhotoEditorMediaType(pending.mediaType);
-      setQueuedPostPhotoAssets(pending.queue);
-      setPhotoEditorAsset(asset);
-      setPhotoEditorOpen(true);
-    },
-    []
-  );
-
-  const openImageCropThenEditor = useCallback(
-    (
-      asset: { uri: string; width: number; height: number },
-      pending: {
-        target: "chat" | "post" | "profile";
-        mediaType: "photo" | "video";
-        queue: Array<{ uri: string; width: number; height: number }>;
-        fixedAspectRatio?: number;
-      }
-    ) => {
-      imageCropPurposeRef.current = "photoEditor";
-      pendingPhotoEditorRef.current = {
-        target: pending.target,
-        mediaType: pending.mediaType,
-        queue: pending.queue,
-      };
-      Keyboard.dismiss();
-      chatInputRef.current?.blur();
-      setImageCropAspect(pending.fixedAspectRatio);
-      setImageCropUri(asset.uri);
-      setImageCropVisible(true);
-    },
-    []
-  );
-
-  const handleImageCropComplete = useCallback(
-    (cropped: { uri: string; width: number; height: number }) => {
-      if (imageCropPurposeRef.current === "groupPicture") {
-        setImageCropVisible(false);
-        setImageCropUri(null);
-        setImageCropAspect(undefined);
-        setCreateGroupPictureUri(cropped.uri);
-        imageCropPurposeRef.current = "photoEditor";
-        return;
-      }
-      openPhotoEditorAfterCrop(cropped);
-    },
-    [openPhotoEditorAfterCrop]
+  const mainNavSwipePan = useMemo(
+    () =>
+      createMainNavSwipePan({
+        getSurface: () => mainNavSurfaceFromView(viewRef.current, homeTabRef.current),
+        goToSurface: goToMainNavSurface,
+        getMinPageY: () => safeTop + 52,
+        getWindowWidth: () => windowWidth,
+        getChatsOnlineStripMaxY: () => safeTop + 148,
+      }),
+    [goToMainNavSurface, safeTop, windowWidth]
   );
 
   const pickProfileImage = async () => {
@@ -4818,10 +4755,7 @@ function MainAppInner() {
     });
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    imageCropPurposeRef.current = "groupPicture";
-    setImageCropAspect(1);
-    setImageCropUri(asset.uri);
-    setImageCropVisible(true);
+    beginGroupPictureCrop(asset.uri);
   };
 
   const closePublishPostScreen = useCallback(() => {
@@ -4848,6 +4782,7 @@ function MainAppInner() {
     const uri = await pickPostVideoFromLibrary();
     if (!uri) return;
     setPostDraftImageUris([]);
+    setPostDraftImageCaptions([]);
     setPostDraftVideoUri(uri);
   };
 
@@ -4941,6 +4876,11 @@ function MainAppInner() {
       createdAt: Date.now(),
       text: text || undefined,
       imageUris: hasImages ? [...postDraftImageUris] : undefined,
+      imageCaptions: hasImages
+        ? postDraftImageCaptions
+            .slice(0, postDraftImageUris.length)
+            .concat(Array(Math.max(0, postDraftImageUris.length - postDraftImageCaptions.length)).fill(""))
+        : undefined,
     };
     setPosts((p) => [newPost, ...p]);
     closePublishPostScreen();
@@ -5676,16 +5616,10 @@ function MainAppInner() {
         return;
       }
       setQueuedPostPhotoAssets([]);
-      setPhotoEditorOpen(false);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("photo");
-      setPhotoEditorTarget(viewRef.current.screen === "publishPost" ? "post" : "chat");
+      resetPhotoEditor();
       return;
     }
-    setPhotoEditorOpen(false);
-    setPhotoEditorAsset(null);
-    setPhotoEditorMediaType("photo");
-    setPhotoEditorTarget(viewRef.current.screen === "publishPost" ? "post" : "chat");
+    resetPhotoEditor();
     if (result.mediaKind === "video") {
       sendPayload({
         text: result.caption,
@@ -5704,22 +5638,6 @@ function MainAppInner() {
       height: result.height,
     });
     setShouldFocusChatInput(true);
-  };
-
-  const cancelPhotoEditor = () => {
-    Keyboard.dismiss();
-    chatInputRef.current?.blur();
-    setPhotoEditorOpen(false);
-    setPhotoEditorAsset(null);
-    setPhotoEditorMediaType("photo");
-    setPhotoEditorTarget(
-      photoEditorTarget === "profile"
-        ? "chat"
-        : viewRef.current.screen === "publishPost"
-          ? "post"
-          : "chat"
-    );
-    setQueuedPostPhotoAssets([]);
   };
 
   const cancelVoiceRecording = useCallback(async () => {
@@ -7529,38 +7447,6 @@ function MainAppInner() {
   const showHome = view.screen === "home";
   /** Keep chat mounted whenever `view.screen === "chat"` — do not gate on `resolvedChat` (send/migrate can briefly drop the row). */
   const showChatScreen = view.screen === "chat";
-  const fullScreenPostLive = useMemo(() => {
-    if (!fullScreenPost) return null;
-    return posts.find((p) => p.id === fullScreenPost.id) ?? fullScreenPost;
-  }, [fullScreenPost, posts]);
-
-  useEffect(() => {
-    if (!fullScreenPost) {
-      postCommentTextRef.current = "";
-      setPostCommentInput("");
-      return;
-    }
-    const text = postFullscreenThreadReplyKey
-      ? (threadDraftByChainKey[postFullscreenThreadReplyKey] ?? "")
-      : (commentDraftByPostId[fullScreenPost.id] ?? "");
-    writeComposerText(postCommentTextRef, setPostCommentInput, text);
-  }, [fullScreenPost?.id, postFullscreenThreadReplyKey]);
-
-  const handlePostCommentInputChange = useCallback(
-    (text: string) => {
-      writeComposerText(postCommentTextRef, setPostCommentInput, text);
-      if (postFullscreenThreadReplyKey) {
-        setThreadDraftByChainKey((current) => ({
-          ...current,
-          [postFullscreenThreadReplyKey]: text,
-        }));
-      } else if (fullScreenPost) {
-        setCommentDraftByPostId((current) => ({ ...current, [fullScreenPost.id]: text }));
-      }
-    },
-    [postFullscreenThreadReplyKey, fullScreenPost?.id]
-  );
-
   const showCompactComposer =
     !!pendingChatMediaAttachment || (keyboardVisible && !!chatInput.trim());
 
@@ -8207,7 +8093,7 @@ function MainAppInner() {
           />
 
           {homeTab === "chats" ? (
-            <View style={styles.homeMainSwipeLayer} {...homeSwipeOpenFriendsPan.panHandlers}>
+            <View style={styles.homeMainSwipeLayer} {...mainNavSwipePan.panHandlers}>
               <View style={styles.onlineStripOuter}>
                 <View style={styles.onlineStripClip}>
                   <FlatListUntilScroll
@@ -8412,7 +8298,7 @@ function MainAppInner() {
               </View>
             </View>
           ) : (
-            <>
+            <View style={styles.homeMainSwipeLayer} {...mainNavSwipePan.panHandlers}>
               <FlatListUntilScroll
                 style={[styles.chatListFlex, styles.feedListFullBleed]}
                 data={displayedFeedPosts}
@@ -8473,7 +8359,7 @@ function MainAppInner() {
                   />
                 )}
               />
-            </>
+            </View>
           )}
         </View>
       ) : null}
@@ -8605,7 +8491,7 @@ function MainAppInner() {
           enabled={composerKavEnabled}
           keyboardVerticalOffset={safeTop}
         >
-          <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
+          <View style={[styles.fullScreen, { paddingTop: safeTop }]} {...mainNavSwipePan.panHandlers}>
             <HomeTopNavBar
               theme={theme}
               styles={styles}
@@ -8737,6 +8623,7 @@ function MainAppInner() {
       {view.screen === "addFriend" ? (
         <View
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 26 }]}
+          {...mainNavSwipePan.panHandlers}
         >
           <AddFriendScreen
             theme={theme}
@@ -8960,8 +8847,18 @@ function MainAppInner() {
                     showsHorizontalScrollIndicator={false}
                     contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 8 }}
                   >
-                    {postDraftImageUris.map((uri) => (
-                      <Image key={uri} source={{ uri }} style={styles.postComposerThumb} />
+                    {postDraftImageUris.map((uri, index) => (
+                      <View key={uri}>
+                        <Image source={{ uri }} style={styles.postComposerThumb} />
+                        {postDraftImageCaptions[index]?.trim() ? (
+                          <Text
+                            numberOfLines={2}
+                            style={{ color: theme.subtleText, fontSize: 11, maxWidth: 72, marginTop: 4 }}
+                          >
+                            {postDraftImageCaptions[index]}
+                          </Text>
+                        ) : null}
+                      </View>
                     ))}
                   </ScrollViewUntilScroll>
                 )}
@@ -8991,10 +8888,7 @@ function MainAppInner() {
                 </Pressable>
                 <Pressable
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
-                  onPress={() => {
-                    setPostDraftImageUris([]);
-                    setPostDraftVideoUri(null);
-                  }}
+                  onPress={clearPostDraftMedia}
                   accessibilityLabel="Clear media"
                 >
                   <Ionicons name="trash-outline" size={22} color={theme.text} />
@@ -9054,6 +8948,7 @@ function MainAppInner() {
       {view.screen === "friendsList" ? (
         <View
           style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 25 }]}
+          {...mainNavSwipePan.panHandlers}
         >
           <View style={[styles.friendsListRoot, { paddingTop: safeTop }]}>
             <HomeTopNavBar
@@ -10876,7 +10771,10 @@ function MainAppInner() {
       ) : null}
 
       {view.screen === "settings" ? (
-        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 30 }]}>
+        <View
+          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 30 }]}
+          {...mainNavSwipePan.panHandlers}
+        >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
             <HomeTopNavBar
               theme={theme}
@@ -11258,10 +11156,14 @@ function MainAppInner() {
                 : "Post"
           }
           externalCaptionComposer={
-            photoEditorTarget === "chat" && photoEditorMediaType === "photo"
+            photoEditorMediaType === "photo" &&
+            (photoEditorTarget === "chat" || photoEditorTarget === "post")
           }
           editContinueLabel={
-            photoEditorTarget === "chat" && photoEditorMediaType === "photo" ? "Done" : "Continue"
+            photoEditorMediaType === "photo" &&
+            (photoEditorTarget === "chat" || photoEditorTarget === "post")
+              ? "Done"
+              : "Continue"
           }
           theme={{
             accent: theme.accent,

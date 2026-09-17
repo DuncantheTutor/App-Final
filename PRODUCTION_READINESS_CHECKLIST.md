@@ -30,7 +30,7 @@ Update the **Last recorded** column when you re-run after meaningful changes.
 - [x] **Two-phone core parity path**  
   Handshake + private comment/reaction flows are implemented and testable.
 
-- [x] **Release feed publish recipients:** Client encrypts for self + accepted `u_*` friends; `createEncryptedPost` skips leftover envelope uids instead of aborting with the friends-only profile error. **Redeploy functions** so the server skip is live.
+- [x] **Release feed publish recipients:** Client encrypts for self + accepted `u_*` friends; `createEncryptedPost` and `updateEncryptedPost` skip leftover envelope uids instead of aborting with the friends-only profile error. Functions redeployed **2026-09-17**; new APK still required for client roster/caption/crop changes.
 
 - [x] **Deploy automation scripts**  
   PowerShell one-command scripts exist for rules/functions deploy and parity report.

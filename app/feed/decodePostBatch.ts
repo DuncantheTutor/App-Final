@@ -43,6 +43,7 @@ export async function decodeEncryptedPostPullItems(params: {
           authorUid?: string;
           createdAt?: number;
           text?: string | null;
+          imageCaptions?: string[] | null;
         }
       >(params.sessionUid, item.ciphertext, item.nonce, item.envelope);
       const authorUid =

@@ -85,6 +85,8 @@ export type Post = {
   createdAt: number;
   text?: string;
   imageUris?: string[];
+  /** Per-image captions aligned with `imageUris` / resolved carousel slides. */
+  imageCaptions?: string[];
   videoUri?: string;
   /** For video posts: chosen thumbnail or default first-frame poster. */
   videoPosterUri?: string;

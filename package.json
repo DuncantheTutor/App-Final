@@ -11,6 +11,7 @@
     "start:tunnel": "expo start --tunnel --clear",
     "android:device": "expo start --android --tunnel",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test app/posts/postPublishRecipientUids.test.ts app/shell/mainNavSwipe.test.ts",
     "apk:debug": "node scripts/gradle-apk.mjs debug",
     "apk:debug:demo": "node scripts/gradle-apk.mjs debug demo",
     "apk:release": "node scripts/gradle-apk.mjs release",

@@ -41,7 +41,6 @@ export async function fetchFriendsOnBoot(
   });
 
   const profiles = profilesRes.profiles ?? {};
-  const serverUids = new Set(friendUids);
   const fromServer = friendUids.map((uid) => {
     const profile = profiles[uid] ?? {};
     const prior = priorByBackendUid.get(uid);
@@ -58,9 +57,5 @@ export async function fetchFriendsOnBoot(
       messageCount: prior?.messageCount ?? 0,
     };
   });
-  const localOnly = priorFriends.filter((f) => {
-    const bu = f.backendUid?.trim();
-    return bu?.startsWith("u_") && bu !== session.uid && !serverUids.has(bu);
-  });
-  return dedupeFriendsByBackendUid([...fromServer, ...localOnly]);
+  return dedupeFriendsByBackendUid(fromServer);
 }

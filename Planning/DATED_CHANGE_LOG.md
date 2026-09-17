@@ -10,6 +10,30 @@
 
 ---
 
+## 2026-09-17 20:17 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:17 +01:00 | Feed / Nav | Skipped the extra Post preview when adding photos; pinch-zoom on fullscreen post photos; swipe left/right between main nav screens. |
+
+---
+
+## 2026-09-17 19:29 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:29 +01:00 | Auth | Moved show-password eye inside the right of the field so login/signup email and password inputs match in width. |
+
+---
+
+## 2026-09-17 19:17 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:17 +01:00 | Feed | Extracted photo-editor session and fullscreen post drafts; per-image captions, one-tap crop Done, leftover friend skip on boot/update, recipient-uid unit test, and live functions deploy. |
+
+---
+
 ## 2026-09-17 18:44 +01:00
 
 | Time | Area | Change |

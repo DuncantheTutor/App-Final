@@ -730,29 +730,43 @@ export const updateEncryptedPost = onCall(async (req) => {
         .map((x) => String(x ?? "").trim())
         .filter((x) => x.length > 0)
     : [];
-  const recipientUids = [
+  const candidateUids = [
     ...new Set(
       (requestedRecipientUids.length > 0 ? requestedRecipientUids : envelopeRecipientUids).filter(Boolean)
     ),
   ];
-  if (recipientUids.length === 0) {
+  if (!candidateUids.includes(uid)) {
+    candidateUids.unshift(uid);
+  }
+  const recipientUids: string[] = [];
+  for (const recipientUid of candidateUids) {
+    if (recipientUid === uid) {
+      recipientUids.push(recipientUid);
+      continue;
+    }
+    if (!recipientUid.startsWith("u_")) continue;
+    try {
+      await assertAcceptedFriendship(uid, recipientUid);
+      recipientUids.push(recipientUid);
+    } catch {
+      /* Stale local-roster uids must not block editing for self and real friends. */
+    }
+  }
+  if (recipientUids.length === 0 || !recipientUids.includes(uid)) {
     throw new HttpsError("invalid-argument", "At least one recipient is required.");
   }
-  if (!recipientUids.includes(uid)) {
-    recipientUids.unshift(uid);
+  const filteredEnvelopes: EnvelopeMap = {};
+  for (const recipientUid of recipientUids) {
+    const envelope = envelopes[recipientUid];
+    if (envelope) filteredEnvelopes[recipientUid] = envelope;
   }
-  await Promise.all(
-    recipientUids.map((recipientUid) =>
-      recipientUid === uid ? Promise.resolve() : assertAcceptedFriendship(uid, recipientUid)
-    )
-  );
 
   const recipientAuthUids = await resolveParticipantAuthUids(recipientUids);
   await postRef.set(
     {
       ciphertext,
       nonce,
-      envelopes,
+      envelopes: filteredEnvelopes,
       recipientUids,
       recipientAuthUids,
       editedAt: admin.firestore.FieldValue.serverTimestamp(),

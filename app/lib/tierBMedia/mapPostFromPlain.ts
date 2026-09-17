@@ -18,6 +18,7 @@ export function mapDecryptedPostPlainToPost(params: {
     authorUid?: string;
     createdAt?: number;
     text?: string | null;
+    imageCaptions?: string[] | null;
   };
   postId: string;
   authorId: string;
@@ -31,6 +32,9 @@ export function mapDecryptedPostPlainToPost(params: {
     authorId,
     createdAt: createdAtMs ?? plain.createdAt ?? Date.now(),
     text: plain.text ?? undefined,
+    imageCaptions: Array.isArray(plain.imageCaptions)
+      ? plain.imageCaptions.map((c) => String(c ?? ""))
+      : undefined,
     imageUris: media.imageUris,
     videoUri: media.videoUri,
     videoPosterUri: media.videoPosterUri,

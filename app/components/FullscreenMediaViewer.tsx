@@ -4,7 +4,6 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -18,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PressAckButton } from "./PressAckButton";
 import { ScrollViewUntilScroll } from "../../ScrollUntilScroll";
 import { VideoWithFadeControls } from "./VideoWithFadeControls";
+import { ZoomableImage } from "./ZoomableImage";
 
 export type FullscreenMediaItem = {
   uri: string;
@@ -157,13 +157,13 @@ export function FullscreenMediaViewer({ item, onClose, onGalleryIndexChange }: P
             onScrollEndDrag={({ nativeEvent }) => syncIndexFromOffset(nativeEvent.contentOffset.x)}
           >
             {galleryUris.map((uri, slideIndex) => (
-              <View key={`${slideIndex}-${uri}`} style={[styles.gallerySlide, { width: windowW }]}>
-                <Image source={{ uri }} style={styles.fullImage} resizeMode="contain" />
+              <View key={`${slideIndex}-${uri}`} style={[styles.gallerySlide, { width: windowW, height: windowH }]}>
+                <ZoomableImage uri={uri} width={windowW} height={windowH} />
               </View>
             ))}
           </ScrollViewUntilScroll>
         ) : (
-          <Image source={{ uri: activeUri }} style={styles.fullImage} resizeMode="contain" />
+          <ZoomableImage uri={activeUri} width={windowW} height={windowH} />
         )}
         {showGalleryChrome ? (
           <>
@@ -218,12 +218,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   gallerySlide: {
-    flex: 1,
-    justifyContent: "center",
-  },
-  fullImage: {
-    flex: 1,
     width: "100%",
+    justifyContent: "center",
   },
   closeBtn: {
     position: "absolute",

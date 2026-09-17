@@ -599,6 +599,23 @@ function FeedPostCardView({
                         });
                       }}
                     />
+                    {post.imageCaptions?.[slideIndex]?.trim() ? (
+                      <View
+                        style={{
+                          position: "absolute",
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          backgroundColor: "rgba(0,0,0,0.45)",
+                        }}
+                      >
+                        <Text style={{ color: "#FFFFFF", fontSize: 14, lineHeight: 18 }}>
+                          {post.imageCaptions?.[slideIndex]}
+                        </Text>
+                      </View>
+                    ) : null}
                   </Pressable>
                 );
               })}
