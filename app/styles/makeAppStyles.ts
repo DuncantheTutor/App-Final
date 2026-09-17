@@ -1508,7 +1508,7 @@ export const makeStyles = (theme: ThemePalette) =>
       borderTopLeftRadius: 12,
       borderTopRightRadius: 12,
     },
-    /** Single bubble wrapping photo/video + caption — 2px media inset; caption padded below. */
+    /** Single bubble wrapping photo/video — even 2px inset hugging rounded media; caption optional below. */
     photoMediaBubble: {
       paddingHorizontal: 0,
       paddingTop: 0,

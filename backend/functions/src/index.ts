@@ -2019,8 +2019,28 @@ export const createEncryptedPost = onCall(async (req) => {
   if (!nonce) throw new HttpsError("invalid-argument", "nonce is required.");
   if (!envelopes[uid]) throw new HttpsError("invalid-argument", "Sender envelope is required.");
 
-  const recipientUids = Object.keys(envelopes);
-  await Promise.all(recipientUids.map((recipientUid) => assertAcceptedFriendship(uid, recipientUid)));
+  const recipientUids: string[] = [];
+  for (const recipientUid of Object.keys(envelopes)) {
+    if (recipientUid === uid) {
+      recipientUids.push(recipientUid);
+      continue;
+    }
+    if (!recipientUid.startsWith("u_")) continue;
+    try {
+      await assertAcceptedFriendship(uid, recipientUid);
+      recipientUids.push(recipientUid);
+    } catch {
+      /* Stale local-roster uids must not block publishing to self and real friends. */
+    }
+  }
+  if (!recipientUids.includes(uid)) {
+    throw new HttpsError("invalid-argument", "Sender envelope is required.");
+  }
+  const filteredEnvelopes: EnvelopeMap = {};
+  for (const recipientUid of recipientUids) {
+    const envelope = envelopes[recipientUid];
+    if (envelope) filteredEnvelopes[recipientUid] = envelope;
+  }
 
   if (uniqueStoragePaths.length > 0) {
     const ownerAuthUid = await resolveFirebaseAuthUidForAppUid(uid);
@@ -2055,7 +2075,7 @@ export const createEncryptedPost = onCall(async (req) => {
     recipientAuthUids,
     ciphertext,
     nonce,
-    envelopes,
+    envelopes: filteredEnvelopes,
     mediaObjectPath: uniqueStoragePaths[0] ?? (mediaObjectPath || null),
     storageObjectPaths: uniqueStoragePaths,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),

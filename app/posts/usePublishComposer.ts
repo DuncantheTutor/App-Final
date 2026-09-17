@@ -17,7 +17,7 @@ export type PublishComposer = {
   videoThumbnailPreviewLoading: boolean;
   resetPublishDraft: () => void;
   openPostComposer: () => void;
-  appendEditedPostPhoto: (uri: string) => void;
+  appendEditedPostPhoto: (uri: string, caption?: string) => void;
   openVideoThumbnailModal: () => Promise<void>;
   closeVideoThumbnailModal: () => void;
 };
@@ -51,9 +51,17 @@ export function usePublishComposer(params: { goToPublishPost: () => void }): Pub
     goToPublishPost();
   }, [goToPublishPost, resetPublishDraft]);
 
-  const appendEditedPostPhoto = useCallback((uri: string) => {
+  const appendEditedPostPhoto = useCallback((uri: string, caption?: string) => {
     setPostDraftVideoUri(null);
     setPostDraftImageUris((prev) => [...prev, uri]);
+    const nextCaption = caption?.trim();
+    if (!nextCaption) return;
+    setPostDraftText((prev) => {
+      const existing = prev.trim();
+      if (!existing) return nextCaption;
+      if (existing.includes(nextCaption)) return prev;
+      return `${existing}\n${nextCaption}`;
+    });
   }, []);
 
   const closeVideoThumbnailModal = useCallback(() => {

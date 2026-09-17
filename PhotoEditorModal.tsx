@@ -1420,9 +1420,11 @@ export function PhotoEditorModal({
                 style={styles.accessoryBarBtn}
                 onPress={() => {
                   Keyboard.dismiss();
+                  confirmPost();
                 }}
+                accessibilityLabel={previewSubmitLabel}
               >
-                <Text style={styles.accessoryBarBtnText}>OK</Text>
+                <Text style={styles.accessoryBarBtnText}>{previewSubmitLabel}</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
@@ -1435,8 +1437,9 @@ export function PhotoEditorModal({
                 onPress={() => {
                   Keyboard.dismiss();
                 }}
+                accessibilityLabel="Done"
               >
-                <Text style={styles.accessoryBarBtnText}>OK</Text>
+                <Text style={styles.accessoryBarBtnText}>Done</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
@@ -1787,6 +1790,7 @@ export function PhotoEditorModal({
                       multiline
                       maxLength={2000}
                       returnKeyType="done"
+                      {...(Platform.OS === "android" ? { returnKeyLabel: previewSubmitLabel } : {})}
                       inputAccessoryViewID={Platform.OS === "ios" ? "photoCaptionAccessory" : undefined}
                     />
                   </View>

@@ -11,9 +11,28 @@ export type UploadEncryptedPostParams = {
   post: Post;
   visibleFriendIds: string[];
   allFriends: Friend[];
+  /** Server-accepted `u_*` friends. Preferred over local roster extras that can fail publish. */
+  acceptedFriendBackendUids?: ReadonlySet<string>;
   resolveRecipientEncryptionKeys: (recipientUids: string[]) => Promise<Record<string, string>>;
   notificationAuthorName: string;
 };
+
+export function postPublishRecipientUids(params: {
+  sessionUid: string;
+  visibleFriendIds: string[];
+  allFriends: Friend[];
+  acceptedFriendBackendUids?: ReadonlySet<string>;
+}): string[] {
+  const { sessionUid, visibleFriendIds, allFriends, acceptedFriendBackendUids } = params;
+  const fromRoster = visibleFriendIds
+    .map((id) => allFriends.find((friend) => friend.id === id)?.backendUid?.trim())
+    .filter((uid): uid is string => !!uid && uid.startsWith("u_") && uid !== sessionUid);
+  const accepted = acceptedFriendBackendUids
+    ? [...acceptedFriendBackendUids].filter((uid) => uid.startsWith("u_") && uid !== sessionUid)
+    : [];
+  const friendUids = accepted.length > 0 ? accepted : fromRoster;
+  return [...new Set([sessionUid, ...friendUids])];
+}
 
 /**
  * Encrypts an optimistic local post and creates it on the server.
@@ -25,16 +44,17 @@ export async function uploadEncryptedPost(params: UploadEncryptedPostParams): Pr
     post,
     visibleFriendIds,
     allFriends,
+    acceptedFriendBackendUids,
     resolveRecipientEncryptionKeys,
     notificationAuthorName,
   } = params;
 
-  const recipientUids = [
-    session.uid,
-    ...visibleFriendIds
-      .map((id) => allFriends.find((friend) => friend.id === id)?.backendUid)
-      .filter((uid): uid is string => !!uid && uid.trim().length > 0),
-  ];
+  const recipientUids = postPublishRecipientUids({
+    sessionUid: session.uid,
+    visibleFriendIds,
+    allFriends,
+    acceptedFriendBackendUids,
+  });
   const keyMap = await resolveRecipientEncryptionKeys(recipientUids);
   const authUid = firebaseAuth.currentUser?.uid;
   if (!authUid) throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");

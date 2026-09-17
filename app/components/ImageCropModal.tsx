@@ -35,6 +35,8 @@ export function ImageCropModal({
 
   const isDark = theme.background.toLowerCase() !== "#ffffff";
 
+  const controlColor = isDark ? "#FFFFFF" : "#111111";
+
   return (
     <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onCancel}>
       <StatusBar style={isDark ? "light" : "dark"} />
@@ -45,6 +47,14 @@ export function ImageCropModal({
         fixedAspectRatio={fixedAspectRatio}
         onEditingComplete={onComplete}
         onEditingCancel={onCancel}
+        editorOptions={{
+          controlBar: {
+            cancelButton: { text: "Cancel", color: controlColor, iconName: "x" },
+            cropButton: { text: "Crop", color: controlColor, iconName: "crop" },
+            backButton: { text: "Back", color: controlColor, iconName: "arrow-left" },
+            saveButton: { text: "Done", color: controlColor, iconName: "check" },
+          },
+        }}
       />
     </Modal>
   );

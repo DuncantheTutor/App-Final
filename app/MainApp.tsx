@@ -141,7 +141,7 @@ import {
   pushNotificationType,
 } from "./lib/pushNotifications";
 import { inferOutgoingMediaKind } from "./lib/mediaKind";
-import { chatCaptionedMediaLayout, chatPhotoMessageSize } from "./lib/chatMediaLayout";
+import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
 import { probeVideoDisplayDimensions } from "./lib/videoDisplayDimensions";
 import { prepareVoicePlaybackAudioMode, VOICE_RECORDING_OPTIONS } from "./lib/voicePlaybackAudio";
 import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri";
@@ -205,7 +205,7 @@ import {
 import { useBackendSession, useSignedInSession } from "./session";
 import { useFeedController, useFeedReactionListeners, useFeedSync } from "./feed";
 import { useNotificationPermissionGate } from "./notifications";
-import { registerPairOfferToken, resolvePairingSession } from "./addFriend";
+import { usePairingParentActions } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
@@ -243,7 +243,6 @@ import type {
   Message,
   MockAuthAccount,
   PendingDraft,
-  PairingProximityEvidence,
   Post,
   PostComment,
   SavedBroadcastGroup,
@@ -276,12 +275,6 @@ import {
   readFeedReactionSeenForEmail,
 } from "./lib/feedReactionUnread";
 import { mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
-import { ensureCameraForPairing } from "./lib/pairingCamera";
-import {
-  collectPrecisePairingProximityEvidence,
-  ensurePreciseLocationForPairing,
-  preciseLocationGateMessage,
-} from "./lib/pairingLocation";
 import { mergeCloudChatsWithLocalReadBy, mergeReadByMaps } from "./lib/mergeChatReadBy";
 import { yieldToUi } from "./lib/yieldToUi";
 import { mergeHydratedPostComments } from "./lib/mergePostComments";
@@ -294,7 +287,6 @@ import {
   ADD_FRIEND_HOLD_MS,
   ADD_FRIEND_OVERLAY_DIM_START,
   ADD_FRIEND_PAIRING_RETRY_COOLDOWN_MS,
-  ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS,
   ADD_FRIEND_PROFILE_FADE_MS,
   ADD_FRIEND_PROFILE_SOLO_MS,
   ADD_FRIEND_PROTOCOL_MAX_ATTEMPTS,
@@ -320,7 +312,6 @@ import {
   DEMO_SHARED_FRIEND_IDS,
   DEMO_USER_A_FRIEND_IDS,
   DEMO_USER_A_ONLY_FRIEND_IDS,
-  DEMO_USER_A_QR_PIN,
   DEMO_USER_B_FRIEND_IDS,
   DEMO_USER_B_ONLY_FRIEND_IDS,
   FAKE_BIOS,
@@ -4526,387 +4517,30 @@ function MainAppInner() {
     [syncServerAcceptedFriendBackendUids, persistSocialMessagingNow, acceptFriend]
   );
 
-  const collectPairingProximityEvidence = useCallback(
-    (): Promise<PairingProximityEvidence> => collectPrecisePairingProximityEvidence(),
-    []
-  );
-
-  const ensurePairingLocationPermission = useCallback(
-    async (options?: { showAlerts?: boolean }): Promise<boolean> => {
-      const gate = await ensurePreciseLocationForPairing({
-        showAlerts: options?.showAlerts !== false,
-      });
-      return gate.ok;
-    },
-    []
-  );
-
-  const ensurePairingCameraPermission = useCallback(
-    async (options?: { showAlerts?: boolean }): Promise<boolean> => {
-      const gate = await ensureCameraForPairing({
-        showAlerts: options?.showAlerts !== false,
-      });
-      return gate.ok;
-    },
-    []
-  );
-
-  const pairingRegisterPinWithRetryParent = useCallback(async (): Promise<string | null> => {
-    if (DEMO_OFFLINE_MODE) {
-      const email = (sessionEmailRef.current ?? "").trim().toLowerCase();
-      if (email === "usera@demo.local") return DEMO_USER_A_QR_PIN;
-      let demoToken = "";
-      for (let i = 0; i < 32; i++) demoToken += Math.floor(Math.random() * 16).toString(16);
-      return demoToken;
-    }
-    const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-    if (!session) return null;
-    const proximityEvidence = await collectPairingProximityEvidence();
-    return registerPairOfferToken(session, proximityEvidence);
-  }, [getBackendSession, waitForBackendSession, collectPairingProximityEvidence]);
-
-  const pairingAwaitPinRedeemParent = useCallback(
-    async (pin: string): Promise<Friend | null> => {
-      if (DEMO_OFFLINE_MODE) {
-        await new Promise<void>((r) => setTimeout(r, 1200));
-        const nextId = demoPendingAddableQueue[0];
-        if (!nextId) return null;
-        setDemoPendingAddableQueue((q) => q.slice(1));
-        const friend = FRIENDS.find((f) => f.id === nextId) ?? null;
-        if (!friend) return null;
-        acceptFriend(friend);
-        return friend;
-      }
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return null;
-      await new Promise<void>((r) => setTimeout(r, 450));
-      const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
-      while (Date.now() < deadline) {
-        try {
-          const res = await callEmulatorFunction<{ status?: string; redeemerUid?: string | null }>(
-            "getNfcPinPairOfferStatus",
-            {
-              uid: session.uid,
-              deviceId: session.deviceId,
-              pin: pin.trim(),
-            }
-          );
-          if (
-            (res.status === "awaiting_redeemer_confirm" || res.status === "awaiting_issuer_confirm") &&
-            res.redeemerUid?.trim()
-          ) {
-            const redeemerUid = res.redeemerUid.trim();
-            try {
-              const hydrated = await hydrateFriendByUid(session, redeemerUid, {
-                pairingPin: pin,
-                previewOnly: true,
-              });
-              if (hydrated) return hydrated;
-            } catch {
-              /* keep polling while session is active; hydration may lag behind status update */
-            }
-          }
-        } catch {
-          /* Keep polling: undeployed function, network blips, cold start, or not-found race. */
-        }
-        await new Promise<void>((r) => setTimeout(r, 700));
-      }
-      return null;
-    },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue, acceptFriend]
-  );
-
-  const pairingConfirmPinReadParent = useCallback(
-    async (pin: string): Promise<Friend | null> => {
-      if (DEMO_OFFLINE_MODE) {
-        const raw = pin.trim();
-        if (raw === DEMO_USER_A_QR_PIN) {
-          const friend: Friend = {
-            id: "demo-user-a",
-            backendUid: "demo-user-a",
-            displayName: "User A",
-            online: false,
-            profilePictureUrl: "https://picsum.photos/seed/demo-user-a/400/400",
-            bio: "Demo mode account A",
-            messageCount: 0,
-          };
-          acceptFriend(friend);
-          return friend;
-        }
-        const nextId = demoPendingAddableQueue[0];
-        if (!nextId) return null;
-        setDemoPendingAddableQueue((q) => q.slice(1));
-        const friend = FRIENDS.find((f) => f.id === nextId) ?? null;
-        if (!friend) return null;
-        acceptFriend(friend);
-        return friend;
-      }
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return null;
-      const locGate = await ensurePreciseLocationForPairing({ showAlerts: true });
-      if (!locGate.ok) {
-        throw new Error(preciseLocationGateMessage(locGate.reason));
-      }
-      const trimmedPin = pin.trim();
-      const buildIssuerPreviewFriend = (
-        issuerUid: string,
-        username?: string,
-        profilePictureUrl?: string | null
-      ): Friend => ({
-        id: backendUidForFriendId(issuerUid),
-        backendUid: issuerUid,
-        displayName: friendDisplayNameFromProfile(username, issuerUid),
-        online: false,
-        profilePictureUrl: profilePictureUrl || "",
-        bio: "",
-        messageCount: 0,
-      });
-
-      let previewFriend: Friend | null = null;
-      try {
-        const preview = await callEmulatorFunction<{
-          issuerUid?: string;
-          username?: string;
-          profilePictureUrl?: string | null;
-        }>("previewNfcPinPairOffer", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          pin: trimmedPin,
-        });
-        const previewUid = preview.issuerUid?.trim() ?? "";
-        if (previewUid) {
-          previewFriend = buildIssuerPreviewFriend(
-            previewUid,
-            preview.username,
-            preview.profilePictureUrl
-          );
-        }
-      } catch {
-        /* preview optional before phase-1 confirm */
-      }
-
-      const proximityEvidence = await collectPairingProximityEvidence();
-      const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>("confirmNfcPinPairOffer", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        pin: trimmedPin,
-        proximityEvidence,
-      });
-      const friendUid = res.friendUid?.trim() ?? previewFriend?.backendUid ?? "";
-      if (!res.accepted || !friendUid) return null;
-
-      const quickFriend =
-        previewFriend?.backendUid === friendUid
-          ? previewFriend
-          : buildIssuerPreviewFriend(
-              friendUid,
-              previewFriend?.displayName,
-              previewFriend?.profilePictureUrl
-            );
-
-      void hydrateFriendByUid(session, friendUid, {
-        pairingPin: trimmedPin,
-        previewOnly: true,
-      }).catch(() => undefined);
-
-      return quickFriend;
-    },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, collectPairingProximityEvidence, demoPendingAddableQueue, acceptFriend]
-  );
-
-  const pairingConfirmRedeemerDualConfirmParent = useCallback(
-    async (pin: string): Promise<boolean> => {
-      if (DEMO_OFFLINE_MODE) return true;
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return false;
-      const res = await callEmulatorFunction<{ accepted?: boolean }>("confirmRedeemerNfcPinPairOffer", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        pin: pin.trim(),
-      });
-      return Boolean(res.accepted);
-    },
-    [getBackendSession, waitForBackendSession]
-  );
-
-  const pairingAwaitIssuerFinalConfirmParent = useCallback(
-    async (pin: string): Promise<Friend | null> => {
-      if (DEMO_OFFLINE_MODE) {
-        const nextId = demoPendingAddableQueue[0];
-        if (!nextId) return null;
-        return FRIENDS.find((f) => f.id === nextId) ?? null;
-      }
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return null;
-      const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
-      while (Date.now() < deadline) {
-        try {
-          const res = await callEmulatorFunction<{ status?: string; issuerUid?: string | null }>(
-            "getNfcPinPairOfferStatus",
-            {
-              uid: session.uid,
-              deviceId: session.deviceId,
-              pin: pin.trim(),
-            }
-          );
-          if (res.status === "joined" && res.issuerUid?.trim()) {
-            const issuerUid = res.issuerUid.trim();
-            try {
-              const friendsRes = await callEmulatorFunction<{ friendUids?: string[] }>("listMyFriends", {
-                uid: session.uid,
-                deviceId: session.deviceId,
-              });
-              if (!(friendsRes.friendUids ?? []).includes(issuerUid)) {
-                continue;
-              }
-              syncServerAcceptedFriendBackendUids(
-                new Set([...acceptedFriendBackendUidsRef.current, issuerUid])
-              );
-              const hydrated = await hydrateFriendByUid(session, issuerUid, { pairingPin: pin });
-              if (hydrated) return hydrated;
-            } catch {
-              /* keep polling while session is active; hydration may lag behind status update */
-            }
-          }
-        } catch {
-          /* transient */
-        }
-        await new Promise<void>((r) => setTimeout(r, 700));
-      }
-      return null;
-    },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue]
-  );
-
-  const pairingFinalizePinOfferParent = useCallback(
-    async (pin: string): Promise<Friend | null> => {
-      if (DEMO_OFFLINE_MODE) {
-        const session = getBackendSession();
-        if (!session) return null;
-        const nextId = demoPendingAddableQueue[0];
-        if (!nextId) return null;
-        setDemoPendingAddableQueue((q) => q.slice(1));
-        const seed = FRIENDS.find((f) => f.id === nextId) ?? null;
-        if (!seed) return null;
-        const friend: Friend = { ...seed, online: false };
-        acceptFriend(friend, { withLink: true });
-        return friend;
-      }
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return null;
-      const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
-      let friendUid = "";
-      while (Date.now() < deadline) {
-        try {
-          const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>(
-            "finalizeNfcPinPairOffer",
-            {
-              uid: session.uid,
-              deviceId: session.deviceId,
-              pin: pin.trim(),
-            }
-          );
-          friendUid = res.friendUid?.trim() ?? "";
-          if (res.accepted && friendUid) break;
-        } catch (e: unknown) {
-          const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
-          if (msg.includes("waiting for your friend to confirm")) {
-            await new Promise<void>((r) => setTimeout(r, 700));
-            continue;
-          }
-          throw e instanceof Error ? e : new Error(String(e));
-        }
-        await new Promise<void>((r) => setTimeout(r, 700));
-      }
-      if (!friendUid) return null;
-      const friendsRes = await callEmulatorFunction<{ friendUids?: string[] }>("listMyFriends", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-      });
-      const onServer = (friendsRes.friendUids ?? []).includes(friendUid);
-      if (!onServer) {
-        throw new Error(
-          "Friendship was not saved on the server. Delete collection nfcPinPairSessions in Firebase (stale pairing sessions), then pair again."
-        );
-      }
-      syncServerAcceptedFriendBackendUids(
-        new Set([...acceptedFriendBackendUidsRef.current, friendUid])
-      );
-      const hydrated = await hydrateFriendByUid(session, friendUid, { pairingPin: pin });
-      void publishActivePresence(session, Date.now()).catch(() => undefined);
-      return hydrated;
-    },
-    [getBackendSession, waitForBackendSession, hydrateFriendByUid, demoPendingAddableQueue, syncServerAcceptedFriendBackendUids, acceptFriend]
-  );
-
-  const pairingCancelPinOfferParent = useCallback(async (pin: string): Promise<void> => {
-    if (DEMO_OFFLINE_MODE) return;
-    const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-    if (!session) return;
-    try {
-      await callEmulatorFunction("cancelNfcPinPairOffer", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        pin: pin.trim(),
-      });
-    } catch {
-      /* ignore */
-    }
-  }, [getBackendSession, waitForBackendSession]);
-
-  /** Dual-confirm UI: session deleted when either side aborts — poll returns false. */
-  const pairingPollOfferStillPresentParent = useCallback(
-    async (pin: string): Promise<boolean> => {
-      if (DEMO_OFFLINE_MODE) return true;
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return false;
-      try {
-        await callEmulatorFunction("getNfcPinPairOfferStatus", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          pin: pin.trim(),
-        });
-        return true;
-      } catch (e) {
-        const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
-        if (msg.includes("not found") || msg.includes("not-found")) {
-          return false;
-        }
-        return true;
-      }
-    },
-    [getBackendSession, waitForBackendSession]
-  );
-
-  const pairingGetOfferStatusParent = useCallback(
-    async (
-      pin: string
-    ): Promise<"pending" | "awaiting_redeemer_confirm" | "awaiting_issuer_confirm" | "joined" | "gone"> => {
-      if (DEMO_OFFLINE_MODE) return "awaiting_redeemer_confirm";
-      const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
-      if (!session) return "gone";
-      try {
-        const res = await callEmulatorFunction<{ status?: string }>("getNfcPinPairOfferStatus", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          pin: pin.trim(),
-        });
-        const status = res.status ?? "pending";
-        if (
-          status === "pending" ||
-          status === "awaiting_redeemer_confirm" ||
-          status === "awaiting_issuer_confirm" ||
-          status === "joined"
-        ) {
-          return status;
-        }
-        return "pending";
-      } catch {
-        return "gone";
-      }
-    },
-    [getBackendSession, waitForBackendSession]
-  );
+  const {
+    ensurePairingLocationPermission,
+    ensurePairingCameraPermission,
+    pairingRegisterPinWithRetryParent,
+    pairingAwaitPinRedeemParent,
+    pairingConfirmPinReadParent,
+    pairingConfirmRedeemerDualConfirmParent,
+    pairingAwaitIssuerFinalConfirmParent,
+    pairingFinalizePinOfferParent,
+    pairingCancelPinOfferParent,
+    pairingPollOfferStillPresentParent,
+    pairingGetOfferStatusParent,
+  } = usePairingParentActions({
+    demoOfflineMode: DEMO_OFFLINE_MODE,
+    sessionEmailRef,
+    getBackendSession,
+    waitForBackendSession,
+    hydrateFriendByUid,
+    acceptFriend,
+    syncServerAcceptedFriendBackendUids,
+    acceptedFriendBackendUidsRef,
+    demoPendingAddableQueue,
+    setDemoPendingAddableQueue,
+  });
 
   /**
    * Swipe right on the main chat page (chat list + empty space below the online strip).
@@ -5225,6 +4859,7 @@ function MainAppInner() {
       post: newPost,
       visibleFriendIds,
       allFriends,
+      acceptedFriendBackendUids: serverAcceptedFriendBackendUids,
       resolveRecipientEncryptionKeys,
       notificationAuthorName: getSenderDisplayName(),
     });
@@ -6031,7 +5666,7 @@ function MainAppInner() {
     }
     if (photoEditorTarget === "post") {
       if (result.mediaKind === "photo") {
-        appendEditedPostPhoto(result.uri);
+        appendEditedPostPhoto(result.uri, result.caption);
       }
       if (queuedPostPhotoAssets.length > 0) {
         const [next, ...rest] = queuedPostPhotoAssets;
@@ -7113,20 +6748,6 @@ function MainAppInner() {
     }));
     setEditChatPictureOpen(false);
   };
-
-  const getPhotoMessageSize = useCallback(
-    (message: Message) => {
-      const measured = measuredChatMediaByMessageId[message.id];
-      const fallbackAspect = message.kind === "video" ? 9 / 16 : 4 / 3;
-      return chatPhotoMessageSize(
-        windowWidth,
-        message.mediaWidth ?? measured?.width,
-        message.mediaHeight ?? measured?.height,
-        fallbackAspect
-      );
-    },
-    [windowWidth, measuredChatMediaByMessageId]
-  );
 
   const getCaptionedMediaLayout = useCallback(
     (message: Message) => {
@@ -9837,9 +9458,7 @@ function MainAppInner() {
                         !!item.replyToMessageId ||
                         !!item.unsentAt ||
                         messageDisplayText(item).trim().length > 0;
-                      const captionedPhotoLayout = hasPhotoBubbleContent
-                        ? getCaptionedMediaLayout(item)
-                        : null;
+                      const captionedPhotoLayout = getCaptionedMediaLayout(item);
                       return (
                   <View
                     style={[
@@ -9861,20 +9480,12 @@ function MainAppInner() {
                         style={messageReactionHostStyle}
                       >
                         <Pressable
-                          style={
-                            hasPhotoBubbleContent
-                              ? [
+                          style={[
                                   ...bubbleCardStyle,
                                   styles.photoMediaBubble,
                                   isMine ? styles.photoMessageStackMine : styles.photoMessageStack,
-                                  captionedPhotoLayout
-                                    ? { width: captionedPhotoLayout.bubbleWidth }
-                                    : null,
-                                ]
-                              : isMine
-                                ? styles.photoMessageStackMine
-                                : styles.photoMessageStack
-                          }
+                                  { width: captionedPhotoLayout.bubbleWidth },
+                                ]}
                           delayLongPress={CHAT_MESSAGE_LONG_PRESS_MS}
                           onLongPress={() => {
                             if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
@@ -9893,12 +9504,12 @@ function MainAppInner() {
                             });
                           }}
                         >
-                          {hasPhotoBubbleContent && captionedPhotoLayout ? (
-                            <>
-                              <View style={styles.photoMediaBubbleImageInset}>
+                          <>
+                              <View style={[styles.photoMediaBubbleImageInset, chatMediaBubbleInsetStyle(hasPhotoBubbleContent)]}>
                                 <View
                                   style={[
                                     styles.photoMediaBubbleImageClip,
+                                    chatMediaInnerClipStyle(hasPhotoBubbleContent),
                                     {
                                       width: captionedPhotoLayout.imageWidth,
                                       height: captionedPhotoLayout.imageHeight,
@@ -9924,31 +9535,10 @@ function MainAppInner() {
                                   />
                                 </View>
                               </View>
-                              <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
+                              {hasPhotoBubbleContent ? (
+                                <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
+                              ) : null}
                             </>
-                          ) : (
-                            <Image
-                              source={{ uri: resolvedUri }}
-                              style={[
-                                styles.photoMessageImageDetached,
-                                isMine ? styles.photoMessageImageDetachedMine : null,
-                                getPhotoMessageSize(item),
-                              ]}
-                              resizeMode="cover"
-                              onLoad={(event) => {
-                                if (item.mediaWidth && item.mediaHeight) return;
-                                const src = event.nativeEvent.source;
-                                const w = Number(src?.width ?? 0);
-                                const h = Number(src?.height ?? 0);
-                                if (!w || !h) return;
-                                setMeasuredChatMediaByMessageId((prev) => {
-                                  const cur = prev[item.id];
-                                  if (cur?.width === w && cur?.height === h) return prev;
-                                  return { ...prev, [item.id]: { width: w, height: h } };
-                                });
-                              }}
-                            />
-                          )}
                         </Pressable>
                       </ReactionBubbleHost>
                       <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
@@ -9992,10 +9582,7 @@ function MainAppInner() {
                     !!item.replyToMessageId ||
                     !!item.unsentAt ||
                     messageDisplayText(item).trim().length > 0;
-                  const videoSize = getPhotoMessageSize(item);
-                  const captionedVideoLayout = hasVideoBubbleContent
-                    ? getCaptionedMediaLayout(item)
-                    : null;
+                  const captionedVideoLayout = getCaptionedMediaLayout(item);
                   const videoIsPlaying = playingVideoMessageId === item.id;
                   const showVideoPlayButton = !videoIsPlaying;
                   const handleVideoMessagePress = () => {
@@ -10053,27 +9640,19 @@ function MainAppInner() {
                         style={messageReactionHostStyle}
                       >
                         <View
-                          style={
-                            hasVideoBubbleContent
-                              ? [
+                          style={[
                                   ...bubbleCardStyle,
                                   styles.photoMediaBubble,
                                   isMine ? styles.photoMessageStackMine : styles.photoMessageStack,
-                                  captionedVideoLayout
-                                    ? { width: captionedVideoLayout.bubbleWidth }
-                                    : null,
-                                ]
-                              : isMine
-                                ? styles.photoMessageStackMine
-                                : styles.photoMessageStack
-                          }
+                                  { width: captionedVideoLayout.bubbleWidth },
+                                ]}
                         >
-                        {hasVideoBubbleContent && captionedVideoLayout ? (
-                          <View style={styles.photoMediaBubbleImageInset}>
+                          <View style={[styles.photoMediaBubbleImageInset, chatMediaBubbleInsetStyle(hasVideoBubbleContent)]}>
                             <View
                               style={[
                                 styles.videoMessageWrap,
                                 styles.photoMediaBubbleVideo,
+                                chatMediaInnerClipStyle(hasVideoBubbleContent),
                                 isMine ? styles.videoMessageWrapMine : null,
                                 {
                                   width: captionedVideoLayout.imageWidth,
@@ -10131,61 +9710,6 @@ function MainAppInner() {
                               ))}
                             </View>
                           </View>
-                        ) : (
-                        <View
-                          style={[
-                            styles.videoMessageWrap,
-                            isMine ? styles.videoMessageWrapMine : null,
-                            { width: videoSize.width, height: videoSize.height },
-                          ]}
-                        >
-                          <ChatVideoMessageBubble
-                            resolvedUri={resolvedUri}
-                            resolving={resolving}
-                            preparePending={videoPlayAfterPrepareId === item.id}
-                            width={videoSize.width}
-                            height={videoSize.height}
-                            isSending={item.deliveryStatus === "sending"}
-                            isPlaying={videoIsPlaying}
-                            showPlayOverlay={showVideoPlayButton}
-                            accentColor={theme.accent}
-                            playbackKey={item.id}
-                            onPressSurface={handleVideoMessagePress}
-                            onLongPress={() => {
-                              if (item.unsentAt || DEMO_OFFLINE_MODE || !getBackendSession()) return;
-                              openReactionPickerForMessage(item.id);
-                            }}
-                            messageId={item.id}
-                            onCancelPrepare={() => cancelVideoPrepare(item.id)}
-                            onPosterDimensions={rememberChatVideoDimensions}
-                            onDidFinish={() => {
-                              setPlayingVideoMessageId((cur) => (cur === item.id ? null : cur));
-                            }}
-                          />
-                          {item.videoTextOverlays?.map((o) => (
-                            <Text
-                              key={o.id}
-                              pointerEvents="none"
-                              style={[
-                                styles.videoOverlayText,
-                                {
-                                  left: o.relX * videoSize.width,
-                                  top: o.relY * videoSize.height,
-                                  width: o.relW * videoSize.width,
-                                  minHeight: o.relH * videoSize.height,
-                                  fontSize: Math.max(10, o.relFontSize * videoSize.width),
-                                  color: o.color,
-                                  fontFamily: o.fontFamily,
-                                  fontWeight: o.fontWeight ?? "700",
-                                  fontStyle: o.fontStyle ?? "normal",
-                                },
-                              ]}
-                            >
-                              {o.text}
-                            </Text>
-                          ))}
-                        </View>
-                        )}
                         {hasVideoBubbleContent ? (
                           <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
                         ) : null}
@@ -10543,10 +10067,11 @@ function MainAppInner() {
                         { width: pendingChatMediaLayout.bubbleWidth },
                       ]}
                     >
-                      <View style={styles.photoMediaBubbleImageInset}>
+                      <View style={[styles.photoMediaBubbleImageInset, chatMediaBubbleInsetStyle(!!chatInput.trim())]}>
                         <View
                           style={[
                             styles.photoMediaBubbleImageClip,
+                            chatMediaInnerClipStyle(!!chatInput.trim()),
                             {
                               width: pendingChatMediaLayout.imageWidth,
                               height: pendingChatMediaLayout.imageHeight,

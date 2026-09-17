@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-17 18:44 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:44 +01:00 | Feed / Chat | Fixed post-editor OK vs Post, photo captions on drafts, publish blocked by leftover friend uids, and even chat media borders. |
+
+---
+
+## 2026-09-17 18:29 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:29 +01:00 | Add Friend | Moved dual-confirm pairing parent callables out of MainApp into usePairingParentActions. |
+
+---
+
 ## 2026-09-17 18:22 +01:00
 
 | Time | Area | Change |

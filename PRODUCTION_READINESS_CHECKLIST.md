@@ -8,8 +8,8 @@ Run from **`Erdos`** root (`C:\Users\dunca\OneDrive\Desktop\Erdos`) before devic
 
 | Step | Command | Last recorded |
 |------|---------|----------------|
-| Client TypeScript | `npm run typecheck` | **PASS** — 2026-09-17 |
-| Cloud Functions compile | `cd backend/functions && npm run build` | **PASS** — 2026-05-03 |
+| Client TypeScript | `npm run typecheck` | **PASS** — 2026-09-17 18:44 |
+| Cloud Functions compile | `cd backend/functions && npm run build` | **PASS** — 2026-09-17 18:44 |
 
 Update the **Last recorded** column when you re-run after meaningful changes.
 
@@ -29,6 +29,8 @@ Update the **Last recorded** column when you re-run after meaningful changes.
 
 - [x] **Two-phone core parity path**  
   Handshake + private comment/reaction flows are implemented and testable.
+
+- [x] **Release feed publish recipients:** Client encrypts for self + accepted `u_*` friends; `createEncryptedPost` skips leftover envelope uids instead of aborting with the friends-only profile error. **Redeploy functions** so the server skip is live.
 
 - [x] **Deploy automation scripts**  
   PowerShell one-command scripts exist for rules/functions deploy and parity report.
