@@ -56,6 +56,8 @@ export type FeedPostCardProps = {
   /** When set with `onMediaGalleryIndexChange`, carousel index is controlled by the parent (e.g. sync with fullscreen gallery). */
   mediaGalleryIndex?: number;
   onMediaGalleryIndexChange?: (index: number) => void;
+  /** True while a finger is on a multi-image photo strip so parent nav swipe can yield. */
+  onHorizontalMediaCarouselTouchChange?: (active: boolean) => void;
   onOpenThreadReply?: (anchorCommentId: string) => void;
   onOpenFriendProfile: (friendId: string) => void;
   onOpenMyProfile: () => void;
@@ -95,6 +97,7 @@ function FeedPostCardView({
   onOpenMedia,
   mediaGalleryIndex,
   onMediaGalleryIndexChange,
+  onHorizontalMediaCarouselTouchChange,
   onOpenThreadReply,
   onOpenFriendProfile,
   onOpenMyProfile,
@@ -268,6 +271,73 @@ function FeedPostCardView({
     onOpenReactionPickerForPost,
     onConfirmDeletePost,
   ]);
+
+  const renderFeedPhotoSlide = (uri: string, slideIndex: number) => {
+    const aspect =
+      imageAspectByUri[uri] ?? getCachedFeedImageAspect(uri) ?? DEFAULT_FEED_IMAGE_ASPECT;
+    const naturalHeight = feedPostImageHeightForAspect(feedMediaWidth, aspect);
+    const slideHeight = mediaUris.length > 1 ? mediaTallestHeight : naturalHeight;
+    return (
+      <Pressable
+        key={`${post.id}-slide-${slideIndex}`}
+        style={[
+          styles.postFeedImageSlide as object,
+          { width: feedMediaWidth, height: slideHeight },
+        ]}
+        onPress={() => {
+          onOpenMedia?.(uri, "photo", {
+            galleryUris: mediaUris,
+            galleryIndex: slideIndex,
+            postId: post.id,
+          });
+        }}
+        onLongPress={handlePostLongPress}
+        delayLongPress={400}
+        accessibilityRole="button"
+        accessibilityLabel="View photo full screen"
+        accessibilityHint={canHoldToReactOnPost ? "Press and hold to react" : undefined}
+      >
+        <Image
+          source={{ uri }}
+          style={[
+            styles.postFeedImageFullWidth as object,
+            { width: feedMediaWidth, height: slideHeight },
+          ]}
+          resizeMode="contain"
+          onLoad={(event) => {
+            const src = event.nativeEvent.source;
+            const w = Number(src?.width ?? 0);
+            const h = Number(src?.height ?? 0);
+            if (!w || !h) return;
+            const stored = rememberFeedImageAspect(uri, w / h);
+            if (stored == null) return;
+            setImageAspectByUri((current) => {
+              if (current[uri] === stored) return current;
+              if (current[uri] != null) return current;
+              return { ...current, [uri]: stored };
+            });
+          }}
+        />
+        {post.imageCaptions?.[slideIndex]?.trim() ? (
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              backgroundColor: "rgba(0,0,0,0.45)",
+            }}
+          >
+            <Text style={{ color: "#FFFFFF", fontSize: 14, lineHeight: 18 }}>
+              {post.imageCaptions?.[slideIndex]}
+            </Text>
+          </View>
+        ) : null}
+      </Pressable>
+    );
+  };
 
   const feedVideoHeight = feedPostImageHeightForAspect(feedMediaWidth, 16 / 9);
 
@@ -531,95 +601,35 @@ function FeedPostCardView({
               mediaUris.length > 1 ? { height: mediaTallestHeight } : null,
             ]}
           >
-            <ScrollViewUntilScroll
-              ref={mediaScrollRef}
-              horizontal
-              pagingEnabled
-              showsHorizontalScrollIndicator={false}
-              style={[
-                styles.postFeedImageStrip as object,
-                { borderRadius: 0 },
-                mediaUris.length > 1 ? { height: mediaTallestHeight } : null,
-              ]}
-              onMomentumScrollEnd={({ nativeEvent }) =>
-                syncPhotoIndexFromOffset(nativeEvent.contentOffset.x)
-              }
-              onScrollEndDrag={({ nativeEvent }) =>
-                syncPhotoIndexFromOffset(nativeEvent.contentOffset.x)
-              }
-            >
-              {mediaUris.map((uri, slideIndex) => {
-                const aspect =
-                  imageAspectByUri[uri] ??
-                  getCachedFeedImageAspect(uri) ??
-                  DEFAULT_FEED_IMAGE_ASPECT;
-                const naturalHeight = feedPostImageHeightForAspect(feedMediaWidth, aspect);
-                const slideHeight =
-                  mediaUris.length > 1 ? mediaTallestHeight : naturalHeight;
-                return (
-                  <Pressable
-                    key={`${post.id}-slide-${slideIndex}`}
-                    style={[
-                      styles.postFeedImageSlide as object,
-                      { width: feedMediaWidth, height: slideHeight },
-                    ]}
-                    onPress={() => {
-                      onOpenMedia?.(uri, "photo", {
-                        galleryUris: mediaUris,
-                        galleryIndex: slideIndex,
-                        postId: post.id,
-                      });
-                    }}
-                    onLongPress={handlePostLongPress}
-                    delayLongPress={400}
-                    accessibilityRole="button"
-                    accessibilityLabel="View photo full screen"
-                    accessibilityHint={
-                      canHoldToReactOnPost ? "Press and hold to react" : undefined
-                    }
-                  >
-                    <Image
-                      source={{ uri }}
-                      style={[
-                        styles.postFeedImageFullWidth as object,
-                        { width: feedMediaWidth, height: slideHeight },
-                      ]}
-                      resizeMode="contain"
-                      onLoad={(event) => {
-                        const src = event.nativeEvent.source;
-                        const w = Number(src?.width ?? 0);
-                        const h = Number(src?.height ?? 0);
-                        if (!w || !h) return;
-                        const stored = rememberFeedImageAspect(uri, w / h);
-                        if (stored == null) return;
-                        setImageAspectByUri((current) => {
-                          if (current[uri] === stored) return current;
-                          if (current[uri] != null) return current;
-                          return { ...current, [uri]: stored };
-                        });
-                      }}
-                    />
-                    {post.imageCaptions?.[slideIndex]?.trim() ? (
-                      <View
-                        style={{
-                          position: "absolute",
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          backgroundColor: "rgba(0,0,0,0.45)",
-                        }}
-                      >
-                        <Text style={{ color: "#FFFFFF", fontSize: 14, lineHeight: 18 }}>
-                          {post.imageCaptions?.[slideIndex]}
-                        </Text>
-                      </View>
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollViewUntilScroll>
+            {mediaUris.length > 1 ? (
+              <ScrollViewUntilScroll
+                ref={mediaScrollRef}
+                horizontal
+                pagingEnabled
+                directionalLockEnabled
+                showsHorizontalScrollIndicator={false}
+                style={[
+                  styles.postFeedImageStrip as object,
+                  { borderRadius: 0 },
+                  { height: mediaTallestHeight },
+                ]}
+                onTouchStart={() => onHorizontalMediaCarouselTouchChange?.(true)}
+                onTouchEnd={() => onHorizontalMediaCarouselTouchChange?.(false)}
+                onTouchCancel={() => onHorizontalMediaCarouselTouchChange?.(false)}
+                onMomentumScrollEnd={({ nativeEvent }) => {
+                  onHorizontalMediaCarouselTouchChange?.(false);
+                  syncPhotoIndexFromOffset(nativeEvent.contentOffset.x);
+                }}
+                onScrollEndDrag={({ nativeEvent }) => {
+                  onHorizontalMediaCarouselTouchChange?.(false);
+                  syncPhotoIndexFromOffset(nativeEvent.contentOffset.x);
+                }}
+              >
+                {mediaUris.map((uri, slideIndex) => renderFeedPhotoSlide(uri, slideIndex))}
+              </ScrollViewUntilScroll>
+            ) : (
+              mediaUris.map((uri, slideIndex) => renderFeedPhotoSlide(uri, slideIndex))
+            )}
             {mediaUris.length > 1 ? (
               <>
                 <Pressable

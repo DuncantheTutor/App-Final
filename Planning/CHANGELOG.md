@@ -20,12 +20,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Email OTP temporarily off:** Login and signup use email/password only (`EMAIL_OTP_ENABLED = false`). OTP screens and callables remain in the tree; flip the flag to restore 6-digit verification.
 - **Login/signup password eye:** Show/hide control sits inside the right of the password field so email and password inputs are the same width.
 - **New-post photo editor:** After editing a photo for a post, **Done** adds it to the composer — no extra **Post** preview step.
-- **Main nav swipe:** Swipe left/right between profile, friends, chats, feed, add friend, and settings (feed uses screen-edge swipes).
+- **Main nav swipe:** Swipe left/right between profile, friends, chats, feed, add friend, and settings; the next screen follows the finger. Feed accepts the swipe anywhere except on a multi-image photo carousel.
 
 ### Added (Sep 2026)
 - **Haptic settings:** In-app toggle persisted with appearance prefs. OS haptic-off is detected on Android (`HAPTIC_FEEDBACK_ENABLED` / no vibrator) and re-checked when the app returns to the foreground.
 - **New-post camera:** Publish composer can take a photo with the camera (icon or media-slot prompt) as well as pick from the gallery; both still open the photo editor.
-- **Post photo zoom:** Full-screen post photos support pinch-to-zoom.
+- **Post photo zoom:** Full-screen post photos support pinch-to-zoom and dragging the zoomed image.
 
 ### Fixed (Sep 2026)
 - **Post photo captions:** Editor captions stay on each photo (`Post.imageCaptions`), not concatenated into the post body. Crop overlay **Done** crops and saves in one tap.

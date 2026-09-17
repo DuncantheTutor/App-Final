@@ -8,7 +8,7 @@ Run from **`Erdos`** root (`C:\Users\dunca\OneDrive\Desktop\Erdos`) before devic
 
 | Step | Command | Last recorded |
 |------|---------|----------------|
-| Client TypeScript | `npm run typecheck` | **PASS** — 2026-09-17 18:44 |
+| Client TypeScript | `npm run typecheck` | **PASS** — 2026-09-17 21:11 |
 | Cloud Functions compile | `cd backend/functions && npm run build` | **PASS** — 2026-09-17 18:44 |
 
 Update the **Last recorded** column when you re-run after meaningful changes.

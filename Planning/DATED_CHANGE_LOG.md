@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-17 21:11 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 21:11 +01:00 | Nav / Feed | Main nav swipe follows the finger like a photo pager; zoomed post photos can be panned; feed swipes change views except on multi-image carousels. |
+
+---
+
 ## 2026-09-17 20:17 +01:00
 
 | Time | Area | Change |

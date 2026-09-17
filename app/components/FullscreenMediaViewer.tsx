@@ -61,9 +61,11 @@ export function FullscreenMediaViewer({ item, onClose, onGalleryIndexChange }: P
 
   const [galleryIndex, setGalleryIndex] = useState(initialIndex);
   const galleryScrollRef = useRef<ScrollView | null>(null);
+  const [imageZoomed, setImageZoomed] = useState(false);
 
   useEffect(() => {
     setGalleryIndex(initialIndex);
+    setImageZoomed(false);
     if (galleryUris && galleryUris.length > 1) {
       requestAnimationFrame(() => {
         galleryScrollRef.current?.scrollTo({ x: initialIndex * windowW, animated: false });
@@ -151,6 +153,7 @@ export function FullscreenMediaViewer({ item, onClose, onGalleryIndexChange }: P
             ref={galleryScrollRef}
             horizontal
             pagingEnabled
+            scrollEnabled={!imageZoomed}
             showsHorizontalScrollIndicator={false}
             style={styles.galleryStrip}
             onMomentumScrollEnd={({ nativeEvent }) => syncIndexFromOffset(nativeEvent.contentOffset.x)}
@@ -158,12 +161,17 @@ export function FullscreenMediaViewer({ item, onClose, onGalleryIndexChange }: P
           >
             {galleryUris.map((uri, slideIndex) => (
               <View key={`${slideIndex}-${uri}`} style={[styles.gallerySlide, { width: windowW, height: windowH }]}>
-                <ZoomableImage uri={uri} width={windowW} height={windowH} />
+                <ZoomableImage
+                  uri={uri}
+                  width={windowW}
+                  height={windowH}
+                  onZoomChange={slideIndex === galleryIndex ? setImageZoomed : undefined}
+                />
               </View>
             ))}
           </ScrollViewUntilScroll>
         ) : (
-          <ZoomableImage uri={activeUri} width={windowW} height={windowH} />
+          <ZoomableImage uri={activeUri} width={windowW} height={windowH} onZoomChange={setImageZoomed} />
         )}
         {showGalleryChrome ? (
           <>

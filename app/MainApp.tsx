@@ -200,6 +200,7 @@ import {
   mainNavSurfaceFromView,
   pendingDraftFromView,
   useAppNavigation,
+  useMainNavSlide,
   viewAfterHardwareBack,
   viewAfterLeavingFriendProfile,
   type MainNavSurface,
@@ -4679,13 +4680,13 @@ function MainAppInner() {
   };
 
   /**
-   * Swipe between main top-nav screens (profile, friends, chats, feed, add friend, settings).
-   * Swipe left goes to the next icon to the right; swipe right goes back.
-   * Feed uses edge swipes so in-post photo carousels still page.
+   * Swipe between main top-nav screens with a follow-the-finger page slide.
+   * Feed swipes from anywhere except a multi-image carousel (single photos still switch views).
    */
   const openMyProfile = goToMyProfile;
   const homeTabRef = useRef(homeTab);
   homeTabRef.current = homeTab;
+  const feedCarouselTouchRef = useRef(false);
 
   const goToMainNavSurface = useCallback((surface: MainNavSurface) => {
     switch (surface) {
@@ -4717,17 +4718,45 @@ function MainAppInner() {
     openSettingsScreen,
   ]);
 
+  const {
+    incoming: mainNavIncoming,
+    isSurfaceVisible,
+    slideStyle: mainNavSlideStyle,
+    onDragMove,
+    onDragRelease,
+    isHomeToHome,
+  } = useMainNavSlide({
+    getCurrent: () => mainNavSurfaceFromView(viewRef.current, homeTabRef.current),
+    goToSurface: goToMainNavSurface,
+    getWidth: () => windowWidth,
+  });
+
   const mainNavSwipePan = useMemo(
     () =>
       createMainNavSwipePan({
         getSurface: () => mainNavSurfaceFromView(viewRef.current, homeTabRef.current),
-        goToSurface: goToMainNavSurface,
         getMinPageY: () => safeTop + 52,
-        getWindowWidth: () => windowWidth,
         getChatsOnlineStripMaxY: () => safeTop + 148,
+        isCarouselTouch: () => feedCarouselTouchRef.current,
+        onMove: onDragMove,
+        onRelease: onDragRelease,
       }),
-    [goToMainNavSurface, safeTop, windowWidth]
+    [onDragMove, onDragRelease, safeTop]
   );
+
+  const currentMainNav = mainNavSurfaceFromView(view, homeTab);
+  const incomingMainNav = mainNavIncoming?.surface ?? null;
+  const homeColumnSlideSurface: MainNavSurface | null = isHomeToHome
+    ? null
+    : isSurfaceVisible("chats") && currentMainNav === "chats"
+      ? "chats"
+      : isSurfaceVisible("feed") && currentMainNav === "feed"
+        ? "feed"
+        : isSurfaceVisible("chats")
+          ? "chats"
+          : isSurfaceVisible("feed")
+            ? "feed"
+            : null;
 
   const pickProfileImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -7423,6 +7452,9 @@ function MainAppInner() {
       onOpenReactionPickerForPost: openReactionPickerForPost,
       onOpenReactionPickerForComment: openReactionPickerForComment,
       onOpenReactionDetail: setReactionDetailPost,
+      onHorizontalMediaCarouselTouchChange: (active: boolean) => {
+        feedCarouselTouchRef.current = active;
+      },
       onOpenMedia: (
         uri: string,
         kind: "photo" | "video",
@@ -7444,7 +7476,7 @@ function MainAppInner() {
     ]
   );
 
-  const showHome = view.screen === "home";
+  const showHome = isSurfaceVisible("chats") || isSurfaceVisible("feed");
   /** Keep chat mounted whenever `view.screen === "chat"` — do not gate on `resolvedChat` (send/migrate can briefly drop the row). */
   const showChatScreen = view.screen === "chat";
   const showCompactComposer =
@@ -7810,7 +7842,7 @@ function MainAppInner() {
   }
 
   return (
-    <View style={[styles.screenRoot, { backgroundColor: theme.background }]}>
+    <View style={[styles.screenRoot, { backgroundColor: theme.background, overflow: "hidden" }]}>
       <StatusBar style={isDarkMode ? "light" : "dark"} />
       {!isOnline ? (
         <View
@@ -8076,7 +8108,13 @@ function MainAppInner() {
       ) : null}
 
       {showHome ? (
-        <View style={[styles.homeColumn, { paddingTop: safeTop }]}>
+        <Animated.View
+          style={[
+            styles.homeColumn,
+            { paddingTop: safeTop, overflow: "hidden" as const, backgroundColor: theme.background },
+            homeColumnSlideSurface ? mainNavSlideStyle(homeColumnSlideSurface) : null,
+          ]}
+        >
           <HomeTopNavBar
             theme={theme}
             styles={styles}
@@ -8092,8 +8130,17 @@ function MainAppInner() {
             onLogout={confirmLogout}
           />
 
-          {homeTab === "chats" ? (
-            <View style={styles.homeMainSwipeLayer} {...mainNavSwipePan.panHandlers}>
+          <View style={{ flex: 1, minHeight: 0, overflow: "hidden" as const }} {...mainNavSwipePan.panHandlers}>
+          {isSurfaceVisible("chats") ? (
+            <Animated.View
+              style={[
+                styles.homeMainSwipeLayer,
+                { backgroundColor: theme.background },
+                isHomeToHome ? StyleSheet.absoluteFillObject : null,
+                isHomeToHome ? mainNavSlideStyle("chats") : null,
+              ]}
+              pointerEvents={incomingMainNav === "chats" && currentMainNav !== "chats" ? "none" : "auto"}
+            >
               <View style={styles.onlineStripOuter}>
                 <View style={styles.onlineStripClip}>
                   <FlatListUntilScroll
@@ -8296,9 +8343,18 @@ function MainAppInner() {
                   />
                 </View>
               </View>
-            </View>
-          ) : (
-            <View style={styles.homeMainSwipeLayer} {...mainNavSwipePan.panHandlers}>
+            </Animated.View>
+          ) : null}
+          {isSurfaceVisible("feed") ? (
+            <Animated.View
+              style={[
+                styles.homeMainSwipeLayer,
+                { backgroundColor: theme.background },
+                isHomeToHome ? StyleSheet.absoluteFillObject : null,
+                isHomeToHome ? mainNavSlideStyle("feed") : null,
+              ]}
+              pointerEvents={incomingMainNav === "feed" && currentMainNav !== "feed" ? "none" : "auto"}
+            >
               <FlatListUntilScroll
                 style={[styles.chatListFlex, styles.feedListFullBleed]}
                 data={displayedFeedPosts}
@@ -8359,9 +8415,10 @@ function MainAppInner() {
                   />
                 )}
               />
-            </View>
-          )}
-        </View>
+            </Animated.View>
+          ) : null}
+          </View>
+        </Animated.View>
       ) : null}
 
       {view.screen === "friendProfile" && resolveFriendProfileCard(view.friendId) ? (
@@ -8484,9 +8541,17 @@ function MainAppInner() {
         </KeyboardAvoidingView>
       ) : null}
 
-      {view.screen === "myProfile" ? (
+      {isSurfaceVisible("myProfile") ? (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: theme.background, zIndex: 20, overflow: "hidden" as const },
+            mainNavSlideStyle("myProfile"),
+          ]}
+          pointerEvents={incomingMainNav === "myProfile" && currentMainNav !== "myProfile" ? "none" : "auto"}
+        >
         <KeyboardAvoidingView
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 20 }]}
+          style={{ flex: 1 }}
           behavior="padding"
           enabled={composerKavEnabled}
           keyboardVerticalOffset={safeTop}
@@ -8618,11 +8683,17 @@ function MainAppInner() {
             </ScrollViewUntilScroll>
           </View>
         </KeyboardAvoidingView>
+        </Animated.View>
       ) : null}
 
-      {view.screen === "addFriend" ? (
-        <View
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 26 }]}
+      {isSurfaceVisible("addFriend") ? (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: theme.background, zIndex: 26, overflow: "hidden" as const },
+            mainNavSlideStyle("addFriend"),
+          ]}
+          pointerEvents={incomingMainNav === "addFriend" && currentMainNav !== "addFriend" ? "none" : "auto"}
           {...mainNavSwipePan.panHandlers}
         >
           <AddFriendScreen
@@ -8655,7 +8726,7 @@ function MainAppInner() {
             onPairingGetOfferStatus={pairingGetOfferStatusParent}
             onRegisterPairingAbort={registerAddFriendPairingAbort}
           />
-        </View>
+        </Animated.View>
       ) : null}
 
       {view.screen === "chatSharedMedia" ? (
@@ -8945,9 +9016,14 @@ function MainAppInner() {
         </KeyboardAvoidingView>
       ) : null}
 
-      {view.screen === "friendsList" ? (
-        <View
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 25 }]}
+      {isSurfaceVisible("friendsList") ? (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: theme.background, zIndex: 25, overflow: "hidden" as const },
+            mainNavSlideStyle("friendsList"),
+          ]}
+          pointerEvents={incomingMainNav === "friendsList" && currentMainNav !== "friendsList" ? "none" : "auto"}
           {...mainNavSwipePan.panHandlers}
         >
           <View style={[styles.friendsListRoot, { paddingTop: safeTop }]}>
@@ -9019,7 +9095,7 @@ function MainAppInner() {
               }
             />
           </View>
-        </View>
+        </Animated.View>
       ) : null}
 
       {showChatScreen ? (
@@ -10770,9 +10846,14 @@ function MainAppInner() {
         </View>
       ) : null}
 
-      {view.screen === "settings" ? (
-        <View
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.background, zIndex: 30 }]}
+      {isSurfaceVisible("settings") ? (
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: theme.background, zIndex: 30, overflow: "hidden" as const },
+            mainNavSlideStyle("settings"),
+          ]}
+          pointerEvents={incomingMainNav === "settings" && currentMainNav !== "settings" ? "none" : "auto"}
           {...mainNavSwipePan.panHandlers}
         >
           <View style={[styles.fullScreen, { paddingTop: safeTop }]}>
@@ -10883,7 +10964,7 @@ function MainAppInner() {
               </Pressable>
             </ScrollViewUntilScroll>
           </View>
-        </View>
+        </Animated.View>
       ) : null}
 
       <Modal

@@ -53,6 +53,7 @@ export const makeStyles = (theme: ThemePalette) =>
     homeMainSwipeLayer: {
       flex: 1,
       minHeight: 0,
+      overflow: "hidden",
     },
     homeBottomChrome: {
       backgroundColor: theme.background,

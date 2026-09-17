@@ -3,6 +3,7 @@
  * Feature behavior lives in messaging / feed / session / friends / addFriend controllers.
  */
 export { useAppNavigation, type AppNavigation } from "./useAppNavigation";
+export { useMainNavSlide, isHomeTabPair } from "./useMainNavSlide";
 export {
   activeChatIdFromView,
   activeScreen,
