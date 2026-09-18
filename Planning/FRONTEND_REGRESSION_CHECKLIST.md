@@ -49,7 +49,7 @@ Use this checklist before publishing an APK intended for UI verification.
 - [ ] New-post composer can take a camera photo or pick from the gallery; both go through the photo editor.
 - [ ] Publish / photo-editor Post keep the same bar size (in-bounds flash + haptic).
 - [ ] Photo-editor Cancel/Back and publish Cancel keep the same size (in-bounds flash).
-- [ ] Top nav (chats, friends, feed, …) ticks on tap. Settings → Haptic feedback can turn it off; if Android touch haptics are already off, the switch stays off.
+- [ ] Top nav (chats, friends, feed, …) ticks on tap. Settings → Haptic feedback can turn Erdos vibration off or on even if Android touch haptics are off.
 - [ ] Error/loading states are visible and understandable.
 
 ## F) Technical Gate

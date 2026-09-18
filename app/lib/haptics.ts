@@ -25,7 +25,7 @@ function bindAppStateOnce() {
 }
 
 export function areHapticsEffective(): boolean {
-  return userEnabled && systemEnabled;
+  return userEnabled;
 }
 
 export function getUserHapticsEnabled(): boolean {
@@ -65,7 +65,7 @@ export function subscribeHapticSettings(listener: () => void): () => void {
   };
 }
 
-/** Light tick for submit / nav presses. No-ops if the user or OS has haptics off. */
+/** Light tick for submit / nav presses. No-ops if the user turned Erdos haptics off. */
 export function playPressHaptic() {
   if (!areHapticsEffective()) return;
   try {
@@ -94,7 +94,7 @@ export function useHapticSettings() {
   const [snapshot, setSnapshot] = useState(() => ({
     userEnabled,
     systemEnabled,
-    effective: userEnabled && systemEnabled,
+    effective: userEnabled,
   }));
 
   useEffect(() => {
@@ -102,7 +102,7 @@ export function useHapticSettings() {
       setSnapshot({
         userEnabled,
         systemEnabled,
-        effective: userEnabled && systemEnabled,
+        effective: userEnabled,
       });
     };
     const unsub = subscribeHapticSettings(sync);

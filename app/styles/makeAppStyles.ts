@@ -48,6 +48,7 @@ export const makeStyles = (theme: ThemePalette) =>
     homeColumn: {
       flex: 1,
       minHeight: 0,
+      marginHorizontal: -14,
     },
     /** Fills below the home top bar; horizontal swipe moves between main nav screens. */
     homeMainSwipeLayer: {
@@ -57,6 +58,7 @@ export const makeStyles = (theme: ThemePalette) =>
     },
     homeBottomChrome: {
       backgroundColor: theme.background,
+      paddingHorizontal: 14,
     },
     homeBottomChromeTransparent: {
       backgroundColor: "transparent",
@@ -65,15 +67,13 @@ export const makeStyles = (theme: ThemePalette) =>
     },
     bottomDeadZone: {
       backgroundColor: theme.background,
-      marginHorizontal: -14,
     },
     chatListFlex: {
       flex: 1,
       minHeight: 0,
     },
-    /** Full-bleed wrapper: cancels `screenRoot` horizontal padding for the online strip. */
+    /** Full-bleed wrapper for the online strip. */
     onlineStripOuter: {
-      marginHorizontal: -14,
       alignSelf: "stretch",
     },
     /**
@@ -798,6 +798,7 @@ export const makeStyles = (theme: ThemePalette) =>
     chatList: {
       paddingTop: 0,
       paddingBottom: 8,
+      paddingHorizontal: 14,
       flexGrow: 0,
     },
     chatRowBlock: {

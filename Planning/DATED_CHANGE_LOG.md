@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-18 08:56 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 08:56 +01:00 | Feed / Haptics / Chat | Home feed photos and videos go edge-to-edge; Erdos haptic switch works even if OS touch haptics are off; extracted reaction picker and Start Chat composer state. |
+
+---
+
+## 2026-09-18 08:47 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 08:47 +01:00 | Chat | Extracted Start Chat / broadcast-picker draft state into `useStartChatComposer` so MainApp only opens the thread. |
+
+---
+
 ## 2026-09-17 21:11 +01:00
 
 | Time | Area | Change |

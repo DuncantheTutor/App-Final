@@ -8,7 +8,7 @@ Run from **`Erdos`** root (`C:\Users\dunca\OneDrive\Desktop\Erdos`) before devic
 
 | Step | Command | Last recorded |
 |------|---------|----------------|
-| Client TypeScript | `npm run typecheck` | **PASS** — 2026-09-17 21:11 |
+| Client TypeScript | `npm run typecheck` | **PASS** — 2026-09-18 08:56 |
 | Cloud Functions compile | `cd backend/functions && npm run build` | **PASS** — 2026-09-17 18:44 |
 
 Update the **Last recorded** column when you re-run after meaningful changes.
@@ -22,7 +22,7 @@ Update the **Last recorded** column when you re-run after meaningful changes.
   Email/password auth works. **6-digit email OTP is temporarily disabled** (`EMAIL_OTP_ENABLED = false`); signup/login skip the OTP step. Flip the flag to restore OTP verification.
 
 - [x] **Haptic press ack**  
-  Send/Publish/Post and Cancel/Back/Close/Not now acknowledge taps without changing button size. Top nav ticks. Settings → Haptic feedback can disable; Android system haptic-off (or no vibrator) keeps the switch off.
+  Send/Publish/Post and Cancel/Back/Close/Not now acknowledge taps without changing button size. Top nav ticks. Settings → Haptic feedback can disable; the switch stays usable even if Android system touch haptics are off (no vibrator still cannot buzz).
 
 - [x] **Private thread permissions**  
   Backend enforces owner/friend participant checks for private post threads.

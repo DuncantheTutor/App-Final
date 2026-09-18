@@ -185,7 +185,9 @@ import {
   restoreSocialSnapshotFromCloud,
   uploadSocialSnapshotToCloud,
 } from "./lib/socialSnapshotBackup";
+import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
+import { useStartChatComposer } from "./chat/useStartChatComposer";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
 import { useEncryptedProfileSync, useProfileController } from "./profile";
@@ -206,7 +208,7 @@ import {
   type MainNavSurface,
 } from "./shell";
 import { useBackendSession, useSignedInSession } from "./session";
-import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread } from "./feed";
+import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread, useReactionPicker } from "./feed";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate } from "./notifications";
 import { usePairingParentActions } from "./addFriend";
@@ -249,7 +251,6 @@ import type {
   PendingDraft,
   Post,
   PostComment,
-  SavedBroadcastGroup,
   ThemePalette,
 } from "./domain/types";
 import {
@@ -605,23 +606,49 @@ function MainAppInner() {
     resolveFriendProfileCard: resolveFriendProfileCardFromMaps,
     friendHasCachedProfile: friendHasCachedProfileFromMaps,
   } = useProfileController({ signedIn, sessionEmailRef });
-  const [chatComposerOpen, setChatComposerOpen] = useState(false);
-  const [broadcastPickerOpen, setBroadcastPickerOpen] = useState(false);
-  const [composerMode, setComposerMode] = useState<"standard" | "broadcast">("standard");
-  const [selectedComposerIds, setSelectedComposerIds] = useState<string[]>([]);
-  const [composerCustomTitle, setComposerCustomTitle] = useState("");
-  const [createTitleEditOpen, setCreateTitleEditOpen] = useState(false);
-  const [createTitleDraft, setCreateTitleDraft] = useState("");
-  const [createGroupPictureUri, setCreateGroupPictureUri] = useState<string | null>(null);
-  const [pendingStandardGroupCreateAfterTitle, setPendingStandardGroupCreateAfterTitle] = useState(false);
-  const [savedBroadcastGroups, setSavedBroadcastGroups] = useState<SavedBroadcastGroup[]>([]);
-  const [selectedBroadcastGroupId, setSelectedBroadcastGroupId] = useState<string | null>(null);
-  const [broadcastGroupDropdownOpen, setBroadcastGroupDropdownOpen] = useState(false);
-  const [saveBroadcastGroupPromptOpen, setSaveBroadcastGroupPromptOpen] = useState(false);
-  const [broadcastGroupNameDraft, setBroadcastGroupNameDraft] = useState("");
-  const [pendingBroadcastCreateIds, setPendingBroadcastCreateIds] = useState<string[] | null>(null);
-  const [saveBroadcastGroupNameModalOpen, setSaveBroadcastGroupNameModalOpen] = useState(false);
-  const [composerSearch, setComposerSearch] = useState("");
+  const {
+    chatComposerOpen,
+    setChatComposerOpen,
+    broadcastPickerOpen,
+    setBroadcastPickerOpen,
+    composerMode,
+    selectedComposerIds,
+    composerCustomTitle,
+    setComposerCustomTitle,
+    createTitleEditOpen,
+    setCreateTitleEditOpen,
+    createTitleDraft,
+    setCreateTitleDraft,
+    createGroupPictureUri,
+    setCreateGroupPictureUri,
+    pendingStandardGroupCreateAfterTitle,
+    setPendingStandardGroupCreateAfterTitle,
+    savedBroadcastGroups,
+    selectedBroadcastGroupId,
+    setSelectedBroadcastGroupId,
+    broadcastGroupDropdownOpen,
+    setBroadcastGroupDropdownOpen,
+    saveBroadcastGroupPromptOpen,
+    setSaveBroadcastGroupPromptOpen,
+    broadcastGroupNameDraft,
+    setBroadcastGroupNameDraft,
+    pendingBroadcastCreateIds,
+    setPendingBroadcastCreateIds,
+    saveBroadcastGroupNameModalOpen,
+    setSaveBroadcastGroupNameModalOpen,
+    composerSearch,
+    setComposerSearch,
+    selectedBroadcastGroup,
+    closeComposer,
+    closeBroadcastPicker,
+    openBroadcastPicker,
+    openStandardComposer,
+    toggleFriendSelection,
+    toggleSelectAllBroadcast,
+    applySavedBroadcastGroup,
+    commitSavedBroadcastGroup,
+    beginGroupTitleStep,
+  } = useStartChatComposer();
   const [chatSearch, setChatSearch] = useState("");
   const [chatSearchVisible, setChatSearchVisible] = useState(false);
   const [friendsListSearch, setFriendsListSearch] = useState("");
@@ -644,14 +671,20 @@ function MainAppInner() {
   const [postMediaGalleryIndexByPostId, setPostMediaGalleryIndexByPostId] = useState<Record<string, number>>(
     {}
   );
-  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
-  const [reactionTargetMessageId, setReactionTargetMessageId] = useState<string | null>(null);
-  const [postReactionTargetId, setPostReactionTargetId] = useState<string | null>(null);
-  const [commentReactionTarget, setCommentReactionTarget] = useState<{
-    postId: string;
-    commentId: string;
-    threadEntryId?: string;
-  } | null>(null);
+  const {
+    reactionPickerOpen,
+    setReactionPickerOpen,
+    reactionTargetMessageId,
+    setReactionTargetMessageId,
+    postReactionTargetId,
+    setPostReactionTargetId,
+    commentReactionTarget,
+    setCommentReactionTarget,
+    closeReactionPicker,
+    openReactionPickerForMessage: openReactionPickerForMessageBase,
+    openReactionPickerForPost: openReactionPickerForPostBase,
+    openReactionPickerForComment: openReactionPickerForCommentBase,
+  } = useReactionPicker();
   const [messageActionTargetId, setMessageActionTargetId] = useState<string | null>(null);
   const [replyTargetMessageId, setReplyTargetMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -2265,9 +2298,6 @@ function MainAppInner() {
   const broadcastRecipientComposerLocked =
     isActiveBroadcastRecipient && !replyTargetMessage;
   const editingMessage = editingMessageId ? messageById[editingMessageId] : undefined;
-  const selectedBroadcastGroup = selectedBroadcastGroupId
-    ? savedBroadcastGroups.find((group) => group.id === selectedBroadcastGroupId)
-    : undefined;
 
   const buildComposerHeaderTitle = () => {
     if (composerMode === "broadcast") {
@@ -2706,41 +2736,18 @@ function MainAppInner() {
     }
   }, [view, pushChatReadPositionToServer]);
 
-  /**
-   * Start Chat modal: selected members are pinned to the top (always visible).
-   * Search filters only the unselected pool. Standard mode applies mutual-friendship rules dynamically.
-   */
-  const availableComposerFriends = useMemo(() => {
-    const base = allFriends.filter((f) => !unfriendedIds.includes(f.id));
-    const q = composerSearch.trim().toLowerCase();
-    const nameMatches = (f: Friend) =>
-      !q || f.displayName.toLowerCase().includes(q);
-
-    const selectedRows = selectedComposerIds
-      .map((id) => base.find((f) => f.id === id))
-      .filter((f): f is Friend => !!f);
-
-    const linkedToAllSelected = (candidateId: string, selection: string[]) => {
-      if (selection.length === 0) return true;
-      return selection.every((sid) => (friendLinksState[sid] ?? []).includes(candidateId));
-    };
-
-    if (composerMode === "broadcast") {
-      const rest = base
-        .filter((f) => !selectedComposerIds.includes(f.id))
-        .filter(nameMatches)
-        .sort((a, b) => a.displayName.localeCompare(b.displayName));
-      return [...selectedRows, ...rest];
-    }
-
-    const rest = base
-      .filter((f) => !selectedComposerIds.includes(f.id))
-      .filter((f) => linkedToAllSelected(f.id, selectedComposerIds))
-      .filter(nameMatches)
-      .sort((a, b) => a.displayName.localeCompare(b.displayName));
-
-    return [...selectedRows, ...rest];
-  }, [composerMode, composerSearch, selectedComposerIds, unfriendedIds, allFriends, friendLinksState]);
+  const availableComposerFriends = useMemo(
+    () =>
+      availableStartChatFriends({
+        allFriends,
+        unfriendedIds,
+        selectedComposerIds,
+        composerSearch,
+        composerMode,
+        friendLinksState,
+      }),
+    [composerMode, composerSearch, selectedComposerIds, unfriendedIds, allFriends, friendLinksState]
+  );
 
   const prioritizedOnlineFriends = useMemo(() => {
     const online = allFriends.filter((friend) => friend.online && !unfriendedIds.includes(friend.id));
@@ -3878,31 +3885,8 @@ function MainAppInner() {
     await finishSignupAccount(email, password, username, phone);
   };
 
-  const toggleFriendSelection = (friendId: string) => {
-    setSelectedComposerIds((current) =>
-      current.includes(friendId)
-        ? current.filter((id) => id !== friendId)
-        : [...current, friendId]
-    );
-    if (composerMode === "broadcast") {
-      setSelectedBroadcastGroupId(null);
-    }
-  };
-
-  const toggleSelectAllBroadcast = () => {
-    if (selectedComposerIds.length === allFriends.length) {
-      setSelectedComposerIds([]);
-    } else {
-      setSelectedComposerIds(allFriends.map((friend) => friend.id));
-    }
-    setSelectedBroadcastGroupId(null);
-  };
-
-  const applySavedBroadcastGroup = (group: SavedBroadcastGroup) => {
-    setSelectedComposerIds(group.memberIds);
-    setSelectedBroadcastGroupId(group.id);
-    setComposerCustomTitle(group.name);
-    setBroadcastGroupDropdownOpen(false);
+  const toggleSelectAllBroadcastFriends = () => {
+    toggleSelectAllBroadcast(allFriends.map((friend) => friend.id));
   };
 
   const continueToBroadcastDraft = (ids: string[], fallbackName?: string) => {
@@ -3918,32 +3902,6 @@ function MainAppInner() {
     closeBroadcastPicker();
   };
 
-  const commitSavedBroadcastGroupAndContinue = (
-    ids: string[],
-    name: string,
-    existingGroupId: string | null
-  ) => {
-    if (existingGroupId) {
-      setSavedBroadcastGroups((current) =>
-        current.map((g) =>
-          g.id === existingGroupId ? { ...g, memberIds: ids, name } : g
-        )
-      );
-      setSelectedBroadcastGroupId(existingGroupId);
-    } else {
-      const group: SavedBroadcastGroup = {
-        id: `bg-${Date.now()}`,
-        name,
-        memberIds: ids,
-      };
-      setSavedBroadcastGroups((current) => [group, ...current]);
-      setSelectedBroadcastGroupId(group.id);
-    }
-    setSaveBroadcastGroupNameModalOpen(false);
-    setPendingBroadcastCreateIds(null);
-    continueToBroadcastDraft(ids, name);
-  };
-
   const handleBroadcastGroupNameConfirm = () => {
     const ids = pendingBroadcastCreateIds;
     if (!ids) return;
@@ -3956,23 +3914,16 @@ function MainAppInner() {
         { text: "No", style: "cancel" },
         {
           text: "Yes",
-          onPress: () => commitSavedBroadcastGroupAndContinue(ids, name, existing.id),
+          onPress: () => {
+            commitSavedBroadcastGroup(ids, name, existing.id);
+            continueToBroadcastDraft(ids, name);
+          },
         },
       ]);
       return;
     }
-    commitSavedBroadcastGroupAndContinue(ids, name, null);
-  };
-
-  const closeComposer = () => {
-    setChatComposerOpen(false);
-    setComposerSearch("");
-    setSelectedComposerIds([]);
-    setComposerCustomTitle("");
-    setCreateGroupPictureUri(null);
-    setSelectedBroadcastGroupId(null);
-    setBroadcastGroupDropdownOpen(false);
-    setComposerMode("standard");
+    commitSavedBroadcastGroup(ids, name, null);
+    continueToBroadcastDraft(ids, name);
   };
 
   const buildDefaultChatName = (friendIds: string[]) => {
@@ -4003,26 +3954,6 @@ function MainAppInner() {
     },
     [resolvePd, identityLockedChatIdsSet]
   );
-
-  const openBroadcastPicker = () => {
-    setComposerMode("broadcast");
-    setBroadcastPickerOpen(true);
-    setChatComposerOpen(false);
-    setComposerSearch("");
-    setComposerCustomTitle("");
-    setSelectedBroadcastGroupId(null);
-    setBroadcastGroupDropdownOpen(false);
-  };
-
-  const closeBroadcastPicker = () => {
-    setBroadcastPickerOpen(false);
-    setComposerSearch("");
-    setSelectedComposerIds([]);
-    setComposerCustomTitle("");
-    setSelectedBroadcastGroupId(null);
-    setBroadcastGroupDropdownOpen(false);
-    setComposerMode("standard");
-  };
 
   const goToChat = (chatId: string) => {
     setChatOverflowOpen(false);
@@ -4272,10 +4203,7 @@ function MainAppInner() {
   const onPressCreateStandardChat = () => {
     if (selectedComposerIds.length === 0) return;
     if (composerMode === "standard" && selectedComposerIds.length > 1) {
-      setPendingStandardGroupCreateAfterTitle(true);
-      setCreateGroupPictureUri(null);
-      setCreateTitleDraft("");
-      setCreateTitleEditOpen(true);
+      beginGroupTitleStep();
       return;
     }
     createOrOpenChat();
@@ -6337,10 +6265,7 @@ function MainAppInner() {
       return true;
     }
     if (reactionPickerOpen) {
-      setReactionPickerOpen(false);
-      setReactionTargetMessageId(null);
-      setPostReactionTargetId(null);
-      setCommentReactionTarget(null);
+      closeReactionPicker();
       return true;
     }
     if (postFullscreenThreadReplyKey) {
@@ -6445,6 +6370,7 @@ function MainAppInner() {
     reactionDetailPost,
     themePickerOpen,
     reactionPickerOpen,
+    closeReactionPicker,
     postFullscreenThreadReplyKey,
     chatOverflowOpen,
     membersModalOpen,
@@ -6591,29 +6517,28 @@ function MainAppInner() {
     applyReaction(emoji);
   }, [reactionPickerActiveEmoji]);
 
-  const openReactionPickerForMessage = useCallback((messageId: string) => {
-    setPostReactionTargetId(null);
-    setCommentReactionTarget(null);
-    setReactionTargetMessageId(messageId);
-    setMessageActionTargetId(messageId);
-    setReactionPickerOpen(true);
-  }, []);
+  const openReactionPickerForMessage = useCallback(
+    (messageId: string) => {
+      setMessageActionTargetId(messageId);
+      openReactionPickerForMessageBase(messageId);
+    },
+    [openReactionPickerForMessageBase]
+  );
 
-  const openReactionPickerForPost = useCallback((postId: string) => {
-    setMessageActionTargetId(null);
-    setCommentReactionTarget(null);
-    setPostReactionTargetId(postId);
-    setReactionPickerOpen(true);
-  }, []);
+  const openReactionPickerForPost = useCallback(
+    (postId: string) => {
+      setMessageActionTargetId(null);
+      openReactionPickerForPostBase(postId);
+    },
+    [openReactionPickerForPostBase]
+  );
 
   const openReactionPickerForComment = useCallback(
     (postId: string, commentId: string, threadEntryId?: string) => {
       setMessageActionTargetId(null);
-      setPostReactionTargetId(null);
-      setCommentReactionTarget({ postId, commentId, threadEntryId });
-      setReactionPickerOpen(true);
+      openReactionPickerForCommentBase(postId, commentId, threadEntryId);
     },
-    []
+    [openReactionPickerForCommentBase]
   );
 
   const unsendTargetMessage = () => {
@@ -7842,7 +7767,7 @@ function MainAppInner() {
   }
 
   return (
-    <View style={[styles.screenRoot, { backgroundColor: theme.background, overflow: "hidden" }]}>
+    <View style={[styles.screenRoot, { backgroundColor: theme.background }]}>
       <StatusBar style={isDarkMode ? "light" : "dark"} />
       {!isOnline ? (
         <View
@@ -8115,6 +8040,7 @@ function MainAppInner() {
             homeColumnSlideSurface ? mainNavSlideStyle(homeColumnSlideSurface) : null,
           ]}
         >
+          <View style={{ paddingHorizontal: 14 }}>
           <HomeTopNavBar
             theme={theme}
             styles={styles}
@@ -8129,6 +8055,7 @@ function MainAppInner() {
             onOpenAddFriend={openAddFriendFromHome}
             onLogout={confirmLogout}
           />
+          </View>
 
           <View style={{ flex: 1, minHeight: 0, overflow: "hidden" as const }} {...mainNavSwipePan.panHandlers}>
           {isSurfaceVisible("chats") ? (
@@ -8317,15 +8244,7 @@ function MainAppInner() {
                 <View style={styles.homeBottomChrome}>
                   <Pressable
                     style={styles.startChatButton}
-                    onPress={() => {
-                      setComposerMode("standard");
-                      setSelectedComposerIds([]);
-                      setComposerSearch("");
-                      setComposerCustomTitle("");
-                      setSelectedBroadcastGroupId(null);
-                      setBroadcastGroupDropdownOpen(false);
-                      setChatComposerOpen(true);
-                    }}
+                    onPress={openStandardComposer}
                   >
                     <MaterialCommunityIcons name="email-plus-outline" size={20} color="#FFFFFF" />
                     <Text style={styles.startChatButtonText}>Start Chat</Text>
@@ -8356,7 +8275,7 @@ function MainAppInner() {
               pointerEvents={incomingMainNav === "feed" && currentMainNav !== "feed" ? "none" : "auto"}
             >
               <FlatListUntilScroll
-                style={[styles.chatListFlex, styles.feedListFullBleed]}
+                style={styles.chatListFlex}
                 data={displayedFeedPosts}
                 keyExtractor={(item) => item.id}
                 initialNumToRender={FEED_UI_INITIAL_COUNT}
@@ -10399,7 +10318,7 @@ function MainAppInner() {
               )}
             </View>
           ) : null}
-          <Pressable style={styles.secondaryActionRow} onPress={toggleSelectAllBroadcast}>
+          <Pressable style={styles.secondaryActionRow} onPress={toggleSelectAllBroadcastFriends}>
             <Text style={styles.secondaryButtonText}>
               {selectedComposerIds.length === allFriends.length ? "Clear all" : "Select all"}
             </Text>
@@ -10894,16 +10813,16 @@ function MainAppInner() {
                 <View style={{ flex: 1, paddingRight: 12 }}>
                   <Text style={styles.chatName}>Haptic feedback</Text>
                   {!hapticSettings.systemEnabled ? (
-                    <Text style={styles.settingsRowHint}>Off in system settings</Text>
+                    <Text style={styles.settingsRowHint}>
+                      System touch haptics are off. Erdos can still vibrate for this app.
+                    </Text>
                   ) : null}
                 </View>
                 <Switch
-                  value={hapticSettings.userEnabled && hapticSettings.systemEnabled}
+                  value={hapticSettings.userEnabled}
                   onValueChange={(next) => {
-                    if (!hapticSettings.systemEnabled) return;
                     hapticSettings.setUserEnabled(next);
                   }}
-                  disabled={!hapticSettings.systemEnabled}
                   thumbColor="#FFFFFF"
                   trackColor={{ false: "#95A1A8", true: theme.accent }}
                 />
