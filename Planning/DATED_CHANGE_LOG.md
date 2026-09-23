@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 18:15 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:15 +01:00 | App shell | Moved sign-in cache restore into `restoreSignedInAccount`, and moved signed-out auth plus the signed-in screen tree out of MainApp. Send and publish still stay in MainApp. |
+
+---
+
 ## 2026-09-23 18:02 +01:00
 
 | Time | Area | Change |

@@ -46,7 +46,7 @@ Friend row ids stay `f_*` (UI keys only). Server identity is `u_*` on `friend.ba
 | R2 | `registerFirebaseAuthUid` / device session | Send fails or listener silent | Clear app data; one active device per account; deploy latest functions |
 | R3 | Friendship docs without `participantAuthUids` | Friends list empty until boot `listMyFriends` | Boot sync + listener; deploy functions |
 | R4 | Group `grp_*` ids are device-local hash | Two devices may use different local ids for same group until server group-id story exists | Accept for MVP; groups are secondary to 1:1 |
-| R5 | `MainApp.tsx` still hosts profile **screens** and send/publish orchestration | Harder to maintain | In-thread text, voice, and pending photo are in `app/chat/useInThreadComposer`; comment/reaction writes are in `app/feed/usePostThreadActions`; next extract is auth restore (`applySignedInAccount`), then screen JSX |
+| R5 | `MainApp.tsx` still hosts send/publish orchestration | Harder to maintain | Sign-in cache restore is `app/session/restoreSignedInAccount`; signed-out auth UI is `app/shell/AuthScreens`; signed-in screens are `app/shell/SignedInTree`. Send and publish still run in MainApp |
 | R6 | Inbound payload still carries `chatId` | Wrong row if sender on old APK | `resolveIncomingDirectChatId` maps using sender `u_*` |
 
 ## Recommended test matrix (two phones, clean Firestore)

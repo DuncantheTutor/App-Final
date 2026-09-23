@@ -1,3 +1,4 @@
+export { restoreSignedInAccount, type RestoreSignedInAccountDeps } from "./restoreSignedInAccount";
 export { useBackendSession, type BackendSessionController } from "./useBackendSession";
 export {
   useSignedInSession,
