@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 20:26 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:26 +01:00 | Media | Moved profile, post, group, and chat camera and gallery pickers out of MainApp. Voice playback and leaving a chat still stay in MainApp. |
+
+---
+
 ## 2026-09-23 20:20 +01:00
 
 | Time | Area | Change |

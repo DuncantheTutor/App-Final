@@ -6,7 +6,6 @@ import {
 } from "./lib/encryptedLocalStorage";
 import { setUserHapticsEnabled, useHapticSettings } from "./lib/haptics";
 import { clearEncryptedMediaCaches } from "./lib/encryptedMediaCache";
-import * as ImagePicker from "expo-image-picker";
 import * as NavigationBar from "expo-navigation-bar";
 import { Audio, ResizeMode, Video } from "expo-av";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
@@ -132,9 +131,7 @@ import {
   conversationIdFromNotificationData,
   pushNotificationType,
 } from "./lib/pushNotifications";
-import { inferOutgoingMediaKind } from "./lib/mediaKind";
 import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
-import { probeVideoDisplayDimensions } from "./lib/videoDisplayDimensions";
 import { prepareVoicePlaybackAudioMode } from "./lib/voicePlaybackAudio";
 import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri";
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
@@ -216,6 +213,17 @@ import {
 } from "./session/firebaseAuthPersistence";
 import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread, usePostThreadActions, useReactionPicker } from "./feed";
 import { completePhotoEditorSession } from "./media/completePhotoEditor";
+import {
+  capturePostPhotoDraft,
+  choosePostVideo,
+  pickChatCameraMedia,
+  pickChatGalleryPhoto,
+  pickChatGalleryVideo,
+  pickGroupPicture,
+  pickPostPhotoDraft,
+  pickProfilePhoto,
+  promptPostPhotoDraft,
+} from "./media/pickMedia";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate } from "./notifications";
 import { usePairingParentActions } from "./addFriend";
@@ -223,10 +231,6 @@ import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
 import {
-  capturePostPhoto as capturePostPhotoFromDevice,
-  pickPostPhotos as pickPostPhotosFromLibrary,
-  pickPostVideo as pickPostVideoFromLibrary,
-  promptPostPhotoSource as promptPostPhotoSourceAlert,
   confirmDeleteOwnedPost,
   createPostPublishActions,
   shareOwnedPostsWithNewFriend,
@@ -4297,62 +4301,29 @@ function MainAppInner() {
             ? "feed"
             : null;
 
-  const pickProfileImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false,
-      quality: 0.92,
-    });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    openPhotoEditorDirect(
-      { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
-      { target: "profile", mediaType: "photo", queue: [] }
-    );
-  };
+  const pickProfileImage = () => pickProfilePhoto({ openPhotoEditorDirect });
 
-  const pickCreateGroupPicture = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false,
-      quality: 0.85,
-    });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    beginGroupPictureCrop(asset.uri);
-  };
+  const pickCreateGroupPicture = () => pickGroupPicture({ beginGroupPictureCrop });
 
   const closePublishPostScreen = useCallback(() => {
     goHome("feed");
   }, [goHome]);
 
-  const openPostPhotoEditor: Parameters<typeof pickPostPhotosFromLibrary>[0] = (asset, pending) => {
-    openPhotoEditorDirect(asset, pending);
-  };
+  const pickPostPhotos = () =>
+    pickPostPhotoDraft({ openPhotoEditorDirect, setPostDraftVideoUri });
 
-  const pickPostPhotos = async () => {
-    await pickPostPhotosFromLibrary(openPostPhotoEditor, () => setPostDraftVideoUri(null));
-  };
+  const capturePostPhoto = () =>
+    capturePostPhotoDraft({ openPhotoEditorDirect, setPostDraftVideoUri });
 
-  const capturePostPhoto = async () => {
-    await capturePostPhotoFromDevice(openPostPhotoEditor, () => setPostDraftVideoUri(null));
-  };
+  const promptPostPhotoSource = () =>
+    promptPostPhotoDraft({ openPhotoEditorDirect, setPostDraftVideoUri });
 
-  const promptPostPhotoSource = () => {
-    promptPostPhotoSourceAlert(openPostPhotoEditor, () => setPostDraftVideoUri(null));
-  };
-
-  const pickPostVideo = async () => {
-    const uri = await pickPostVideoFromLibrary();
-    if (!uri) return;
-    setPostDraftImageUris([]);
-    setPostDraftImageCaptions([]);
-    setPostDraftVideoUri(uri);
-  };
+  const pickPostVideo = () =>
+    choosePostVideo({
+      setPostDraftImageUris,
+      setPostDraftImageCaptions,
+      setPostDraftVideoUri,
+    });
 
   const confirmDeletePost = (post: Post) => {
     confirmDeleteOwnedPost(post, {
@@ -4594,93 +4565,33 @@ function MainAppInner() {
     });
   };
 
-  const sendCameraMedia = async (mode: "photo" | "video") => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) return;
-    setPhotoEditorTarget("chat");
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes:
-        mode === "photo" ? ImagePicker.MediaTypeOptions.Images : ImagePicker.MediaTypeOptions.Videos,
-      quality: mode === "photo" ? 0.85 : 0.72,
-      allowsEditing: false,
+  const sendCameraMedia = (mode: "photo" | "video") =>
+    pickChatCameraMedia(mode, {
+      setPhotoEditorTarget,
+      setPhotoEditorMediaType,
+      setPhotoEditorAsset,
+      setPhotoEditorOpen,
+      openPhotoEditorDirect,
     });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    if (mode === "photo") {
-      openPhotoEditorDirect(
-        { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
-        { target: "chat", mediaType: "photo", queue: [] }
-      );
-      return;
-    }
-    setPhotoEditorMediaType("video");
-    setPhotoEditorAsset({
-      uri: asset.uri,
-      width: asset.width ?? 1,
-      height: asset.height ?? 1,
-    });
-    setPhotoEditorOpen(true);
-  };
 
-  const sendGalleryPhoto = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    setPhotoEditorTarget("chat");
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      quality: 0.92,
-      allowsEditing: false,
+  const sendGalleryPhoto = () =>
+    pickChatGalleryPhoto({
+      setPhotoEditorTarget,
+      setPhotoEditorMediaType,
+      setPhotoEditorAsset,
+      setPhotoEditorOpen,
+      openPhotoEditorDirect,
+      sendPayload,
     });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    const kind = inferOutgoingMediaKind(asset.uri, asset.type);
-    if (kind === "gif") {
-      sendPayload({
-        text: "",
-        kind: "gif",
-        mediaUri: asset.uri,
-        mediaWidth: asset.width ?? undefined,
-        mediaHeight: asset.height ?? undefined,
-      });
-      return;
-    }
-    openPhotoEditorDirect(
-      { uri: asset.uri, width: asset.width ?? 1, height: asset.height ?? 1 },
-      { target: "chat", mediaType: "photo", queue: [] }
-    );
-  };
 
-  const sendGalleryVideo = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    setPhotoEditorTarget("chat");
-    setPhotoEditorOpen(true);
-    setPhotoEditorAsset(null);
-    setPhotoEditorMediaType("video");
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      quality: 0.72,
-      allowsEditing: false,
+  const sendGalleryVideo = () =>
+    pickChatGalleryVideo({
+      setPhotoEditorTarget,
+      setPhotoEditorMediaType,
+      setPhotoEditorAsset,
+      setPhotoEditorOpen,
+      openPhotoEditorDirect,
     });
-    if (result.canceled || !result.assets[0]) {
-      setPhotoEditorOpen(false);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("photo");
-      return;
-    }
-    const asset = result.assets[0];
-    setPhotoEditorAsset({
-      uri: asset.uri,
-      width: asset.width ?? 1,
-      height: asset.height ?? 1,
-    });
-    void probeVideoDisplayDimensions(asset.uri).then((dims) => {
-      if (!dims) return;
-      setPhotoEditorAsset((prev) =>
-        prev ? { ...prev, width: dims.width, height: dims.height } : prev
-      );
-    });
-  };
 
   const completePhotoEditor = (result: PhotoEditorResult) => {
     completePhotoEditorSession(result, {
