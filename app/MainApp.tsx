@@ -59,10 +59,6 @@ import {
   getOrCreateBackendDeviceId,
 } from "../backendBridge";
 import { logAppError, logAppEvent, setTelemetryContext } from "../telemetry";
-import {
-  mediaUriNeedsFirebaseUpload,
-  uploadSharedMediaFromDevice,
-} from "../mediaStorageUpload";
 import { parseMessageMediaFromPlain } from "./lib/tierBMedia/messageMedia";
 import {
   ChatMessageMediaResolver,
@@ -219,6 +215,7 @@ import {
   NULL_AUTH_GRACE_MS,
 } from "./session/firebaseAuthPersistence";
 import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread, usePostThreadActions, useReactionPicker } from "./feed";
+import { completePhotoEditorSession } from "./media/completePhotoEditor";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate } from "./notifications";
 import { usePairingParentActions } from "./addFriend";
@@ -230,6 +227,7 @@ import {
   pickPostPhotos as pickPostPhotosFromLibrary,
   pickPostVideo as pickPostVideoFromLibrary,
   promptPostPhotoSource as promptPostPhotoSourceAlert,
+  confirmDeleteOwnedPost,
   createPostPublishActions,
   shareOwnedPostsWithNewFriend,
   usePublishComposer,
@@ -4357,110 +4355,26 @@ function MainAppInner() {
   };
 
   const confirmDeletePost = (post: Post) => {
-    if (post.authorId !== CURRENT_USER_ID) return;
-    if (!DEMO_OFFLINE_MODE && /^p-\d+$/.test(post.id)) {
-      Alert.alert(
-        "Post still uploading",
-        "Wait until the post finishes publishing, then delete again."
-      );
-      return;
-    }
-    Alert.alert(
-      "Delete post?",
-      "This removes the post for you and for friends who could see it.",
-      [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: () => {
-          setFullScreenPost((cur) => {
-            if (cur?.id === post.id) {
-              setPostFullscreenThreadReplyKey(null);
-              return null;
-            }
-            return cur;
-          });
-          const removedPost = post;
-          deletedPostIdsRef.current.add(post.id);
-          setPosts((list) => list.filter((p) => p.id !== post.id));
-          setPostMediaGalleryIndexByPostId((current) => {
-            if (!(post.id in current)) return current;
-            const next = { ...current };
-            delete next[post.id];
-            return next;
-          });
-          setSeenFeedReactionSigByPostId((current) => {
-            if (!(post.id in current)) return current;
-            const next = { ...current };
-            delete next[post.id];
-            return next;
-          });
-          persistPostsNow();
-          persistWatermarksNow();
-          const postsAfterDelete = postsRef.current.filter((p) => p.id !== post.id);
-          const sessionForSnapshot = getBackendSession();
-          if (sessionForSnapshot && !DEMO_OFFLINE_MODE) {
-            void uploadSocialSnapshotToCloud(sessionForSnapshot.uid, sessionForSnapshot.deviceId, {
-              chats: chatsRef.current,
-              messages: messagesRef.current,
-              posts: postsAfterDelete,
-              messagesWatermarkMs: messagesWatermarkMsRef.current,
-              postsWatermarkMs: postsWatermarkMsRef.current,
-            }).catch(() => undefined);
-          }
-          if (!DEMO_OFFLINE_MODE) {
-            void (async () => {
-              try {
-                let session = getBackendSession();
-                if (!session) session = await waitForBackendSession();
-                if (!session) {
-                  const syncFailed =
-                    encryptedSyncState.profile === "error" ||
-                    encryptedSyncState.posts === "error" ||
-                    encryptedSyncState.messages === "error";
-                  throw new Error(
-                    syncFailed
-                      ? "Could not reach the server. If you saw a connection alert, tap Retry there, then delete again."
-                      : "Account session is still starting. Wait a few seconds on the home screen, then try again."
-                  );
-                }
-                const deletePostId = post.id.trim();
-                await callEmulatorFunction<{ ok?: boolean }>("deleteEncryptedPost", {
-                  uid: session.uid,
-                  deviceId: session.deviceId,
-                  postId: deletePostId,
-                });
-                postsLastFullSyncAtRef.current = 0;
-                persistWatermarksNow();
-                logAppEvent("post.deleted", { postId: deletePostId });
-                void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
-                  chats: chatsRef.current,
-                  messages: messagesRef.current,
-                  posts: postsVisibleForCache(postsRef.current),
-                  messagesWatermarkMs: messagesWatermarkMsRef.current,
-                  postsWatermarkMs: postsWatermarkMsRef.current,
-                }).catch(() => undefined);
-              } catch (err) {
-                deletedPostIdsRef.current.delete(removedPost.id);
-                persistWatermarksNow();
-                const message = err instanceof Error ? err.message : "Could not delete post.";
-                setPosts((list) => {
-                  const restored = { ...removedPost, deletedAt: undefined };
-                  if (list.some((p) => p.id === removedPost.id)) {
-                    return list.map((p) => (p.id === removedPost.id ? restored : p));
-                  }
-                  return [restored, ...list].sort((a, b) => b.createdAt - a.createdAt);
-                });
-                persistPostsNow();
-                Alert.alert("Could not delete post", message);
-              }
-            })();
-          }
-        },
-      },
-    ]
-    );
+    confirmDeleteOwnedPost(post, {
+      setFullScreenPost,
+      setPostFullscreenThreadReplyKey,
+      deletedPostIdsRef,
+      setPosts,
+      setPostMediaGalleryIndexByPostId,
+      setSeenFeedReactionSigByPostId,
+      persistPostsNow,
+      persistWatermarksNow,
+      postsRef,
+      getBackendSession,
+      waitForBackendSession,
+      chatsRef,
+      messagesRef,
+      messagesWatermarkMsRef,
+      postsWatermarkMsRef,
+      postsLastFullSyncAtRef,
+      encryptedSyncState,
+      postsVisibleForCache,
+    });
   };
 
   const handleChatInputChange = (text: string) => {
@@ -4769,116 +4683,26 @@ function MainAppInner() {
   };
 
   const completePhotoEditor = (result: PhotoEditorResult) => {
-    Keyboard.dismiss();
-    chatInputRef.current?.blur();
-    if (photoEditorTarget === "profile") {
-      setPhotoEditorOpen(false);
-      setPhotoEditorAsset(null);
-      setPhotoEditorMediaType("photo");
-      setPhotoEditorTarget("chat");
-      if (result.mediaKind === "photo") {
-        // Local `file://` URIs are unreachable for other devices AND get
-        // evicted from the cache directory between launches, so we MUST upload
-        // to Firebase Storage and persist the resulting HTTPS download URL.
-        // Set a temporary preview from the local URI so the user sees the
-        // change instantly; replace it with the HTTPS URL once the upload
-        // settles. Only the HTTPS URL is ever written to encrypted profile
-        // sync (the debounced `putEncryptedProfile` effect picks it up).
-        setMyProfilePictureUrl(result.uri);
-        void (async () => {
-          try {
-            const authUid = firebaseAuth.currentUser?.uid;
-            if (!authUid || !mediaUriNeedsFirebaseUpload(result.uri)) return;
-            const uploaded = await uploadSharedMediaFromDevice(result.uri, authUid);
-            setMyProfilePictureUrl(uploaded.downloadUrl);
-            const session = getBackendSession();
-            const email = sessionEmailRef.current?.trim();
-            if (email) {
-              void storageSetItem(profilePictureStorageKey(email), uploaded.downloadUrl).catch(() => {});
-            }
-            if (session && email) {
-              const persistedUsername =
-                (await storageGetItem(profileUsernameStorageKey(email)))?.trim() ?? "";
-              let serverUsername = "";
-              try {
-                const profilesRes = await callEmulatorFunction<{
-                  profiles?: Record<string, { username?: string } | null>;
-                }>("getUserProfiles", {
-                  uid: session.uid,
-                  deviceId: session.deviceId,
-                  targetUids: [session.uid],
-                });
-                serverUsername = String(profilesRes.profiles?.[session.uid]?.username ?? "").trim();
-              } catch {
-                /* keep existing server username */
-              }
-              const usernameForUpsert = usernameForProfileUpsert({
-                email,
-                persistedUsername,
-                serverUsername,
-              });
-              await callEmulatorFunction("upsertUserProfile", {
-                uid: session.uid,
-                deviceId: session.deviceId,
-                ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
-                bio: myBio,
-                profilePictureUrl: uploaded.downloadUrl,
-              });
-            }
-          } catch (err) {
-            Alert.alert(
-              "Couldn't save profile picture",
-              err instanceof Error && err.message ? err.message : "Please try again."
-            );
-            const email = sessionEmailRef.current?.trim().toLowerCase();
-            void (async () => {
-              const prior =
-                email
-                  ? (await storageGetItem(profilePictureStorageKey(email)).catch(() => null)) ??
-                    null
-                  : null;
-              const restored = normalizeHttpsProfilePictureUrl(prior) || null;
-              setMyProfilePictureUrl(restored);
-            })();
-          }
-        })();
-      }
-      return;
-    }
-    if (photoEditorTarget === "post") {
-      if (result.mediaKind === "photo") {
-        appendEditedPostPhoto(result.uri, result.caption);
-      }
-      if (queuedPostPhotoAssets.length > 0) {
-        const [next, ...rest] = queuedPostPhotoAssets;
-        if (next) {
-          openPhotoEditorDirect(next, { target: "post", mediaType: "photo", queue: rest });
-        }
-        return;
-      }
-      setQueuedPostPhotoAssets([]);
-      resetPhotoEditor();
-      return;
-    }
-    resetPhotoEditor();
-    if (result.mediaKind === "video") {
-      sendPayload({
-        text: result.caption,
-        kind: "video",
-        mediaUri: result.uri,
-        mediaWidth: result.width,
-        mediaHeight: result.height,
-        videoTextOverlays: result.videoTextOverlays,
-      });
-      return;
-    }
-    setPendingChatMediaAttachment({
-      kind: "photo",
-      uri: result.uri,
-      width: result.width,
-      height: result.height,
+    completePhotoEditorSession(result, {
+      chatInputRef,
+      photoEditorTarget,
+      setPhotoEditorOpen,
+      setPhotoEditorAsset,
+      setPhotoEditorMediaType,
+      setPhotoEditorTarget,
+      setMyProfilePictureUrl,
+      getBackendSession,
+      sessionEmailRef,
+      myBio,
+      appendEditedPostPhoto,
+      queuedPostPhotoAssets,
+      openPhotoEditorDirect,
+      setQueuedPostPhotoAssets,
+      resetPhotoEditor,
+      sendPayload,
+      setPendingChatMediaAttachment,
+      setShouldFocusChatInput,
     });
-    setShouldFocusChatInput(true);
   };
 
   const sendPendingVoiceNote = useCallback(async () => {

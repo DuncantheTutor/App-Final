@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 20:20 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:20 +01:00 | Posts / Media | Moved post delete and photo-editor completion out of MainApp. Camera and gallery pickers still stay in MainApp. |
+
+---
+
 ## 2026-09-23 20:12 +01:00
 
 | Time | Area | Change |

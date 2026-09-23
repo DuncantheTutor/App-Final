@@ -15,7 +15,7 @@ export type PhotoEditorPending = {
 
 /**
  * Photo-editor + crop-overlay session used by chat, publish, profile, and group picture.
- * Complete handlers (upload/send) still compose through the parent.
+ * Completing an edit lives in completePhotoEditorSession.
  */
 export function usePhotoEditorSession(params: {
   extraBlur?: () => void;

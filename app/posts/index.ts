@@ -5,3 +5,4 @@ export { postPublishRecipientUids } from "./postPublishRecipientUids";
 export { shareOwnedPostsWithNewFriend } from "./shareOwnedPostsWithNewFriend";
 export { usePublishComposer, type PublishComposer } from "./usePublishComposer";
 export { createPostPublishActions, type PostPublishActionsDeps } from "./publishPost";
+export { confirmDeleteOwnedPost, type ConfirmDeleteOwnedPostDeps } from "./deletePost";
