@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 20:32 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:32 +01:00 | Chat | Moved voice-note playback and leaving a chat out of MainApp. Mute, kick, and add-member still stay in MainApp. |
+
+---
+
 ## 2026-09-23 20:26 +01:00
 
 | Time | Area | Change |

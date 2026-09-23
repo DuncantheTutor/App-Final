@@ -132,8 +132,6 @@ import {
   pushNotificationType,
 } from "./lib/pushNotifications";
 import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
-import { prepareVoicePlaybackAudioMode } from "./lib/voicePlaybackAudio";
-import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri";
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
 import { readComposerTextTrimmed } from "./lib/syncedComposerText";
 import {
@@ -174,7 +172,9 @@ import {
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
+import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
+import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
 import { useEncryptedProfileSync, useProfileController } from "./profile";
@@ -4649,203 +4649,52 @@ function MainAppInner() {
     sendMessage,
   ]);
 
-  const toggleVoiceMessagePlayback = async (message: Message) => {
-    if (playingVoiceMessageId === message.id && messageSoundRef.current) {
-      await messageSoundRef.current.stopAsync();
-      await messageSoundRef.current.unloadAsync();
-      messageSoundRef.current = null;
-      setPlayingVoiceMessageId(null);
-      setVoicePlaybackProgress(null);
-      return;
-    }
+  const toggleVoiceMessagePlayback = (message: Message) =>
+    toggleVoiceMessagePlaybackImpl(message, {
+      playingVoiceMessageId,
+      messageSoundRef,
+      setPlayingVoiceMessageId,
+      setVoicePlaybackProgress,
+      setVoiceLoadingMessageId,
+    });
 
-    setVoiceLoadingMessageId(message.id);
-    try {
-      const playUri = await resolveVoicePlayUri(message);
-      if (!playUri) {
-        Alert.alert("Voice note", "Could not load this voice note. Ask the sender to send it again.");
-        return;
-      }
-
-      await prepareVoicePlaybackAudioMode();
-
-      if (messageSoundRef.current) {
-        await messageSoundRef.current.unloadAsync();
-        messageSoundRef.current = null;
-      }
-
-      const source = voiceSoundSource(playUri, message.mediaEncrypted?.contentType);
-      const { sound } = await Audio.Sound.createAsync(source, { shouldPlay: false, volume: 1 });
-      await sound.playAsync();
-      messageSoundRef.current = sound;
-      setPlayingVoiceMessageId(message.id);
-      const fallbackDurationMs = Math.max(1, message.durationSec ?? 1) * 1000;
-      setVoicePlaybackProgress({
-        messageId: message.id,
-        positionMs: 0,
-        durationMs: fallbackDurationMs,
-      });
-
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isLoaded) return;
-        if (status.didJustFinish) {
-          void sound.unloadAsync();
-          if (messageSoundRef.current === sound) {
-            messageSoundRef.current = null;
-          }
-          setPlayingVoiceMessageId(null);
-          setVoicePlaybackProgress(null);
-          return;
-        }
-        const nextPosition = status.positionMillis ?? 0;
-        const nextDuration = status.durationMillis ?? fallbackDurationMs;
-        setVoicePlaybackProgress((prev) => {
-          if (prev?.messageId !== message.id) {
-            return { messageId: message.id, positionMs: nextPosition, durationMs: nextDuration };
-          }
-          const positionMs =
-            Math.abs(prev.positionMs - nextPosition) >= 200 ? nextPosition : prev.positionMs;
-          const durationMs = prev.durationMs !== nextDuration ? nextDuration : prev.durationMs;
-          if (
-            positionMs === prev.positionMs &&
-            durationMs === prev.durationMs
-          ) {
-            return prev;
-          }
-          return { messageId: message.id, positionMs, durationMs };
-        });
-      });
-    } catch (err) {
-      logAppError("voice.playback", err, { messageId: message.id });
-      Alert.alert("Voice note", "Could not play this voice note.");
-      setPlayingVoiceMessageId(null);
-      setVoicePlaybackProgress(null);
-    } finally {
-      setVoiceLoadingMessageId((cur) => (cur === message.id ? null : cur));
-    }
-  };
-
-  const leaveChatToHome = () => {
-    setView({ screen: "home" });
-    setChatSearch("");
-    clearComposerOnLeave();
-    setChatSearchVisible(false);
-    setChatOverflowOpen(false);
-    setMembersModalOpen(false);
-    setReplyTargetMessageId(null);
-    setEditingMessageId(null);
-    setMessageActionTargetId(null);
-    setReactionPickerOpen(false);
-    setSelectedBroadcastThreadFriendId(null);
-    setPhotoEditorOpen(false);
-    setPhotoEditorAsset(null);
-    setAddMemberModalOpen(false);
-    setAddMemberSearch("");
-    setPlayingVoiceMessageId(null);
-    setVoiceLoadingMessageId(null);
-    setVoicePlaybackProgress(null);
-    setPlayingVideoMessageId(null);
-    setVideoPrepareRequestedIds(new Set());
-    setChatListDisplayLimit(CHAT_UI_INITIAL_DISPLAY_COUNT);
-    setVideoPlayAfterPrepareId(null);
-    if (messageSoundRef.current) {
-      void messageSoundRef.current.unloadAsync();
-      messageSoundRef.current = null;
-    }
-  };
-
-  /** Remove the current user from a chat or delete it entirely (same rules as leaving from inside the chat). */
-  const removeChatForCurrentUser = (chatId: string) => {
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat) return;
-
-    const session = getBackendSession();
-    const idsToHide = new Set<string>([chatId]);
-    if (session) {
-      const canonicalId = resolveCanonicalDirectChatLocalId(
-        chat,
-        session.uid,
-        friendMap,
-        friendIdToBackendUid
-      );
-      // Tombstone canonical local row only when deleting the canonical thread — not a `__live` row.
-      if (canonicalId && isCanonicalDirectChatId(chat.id)) {
-        idsToHide.add(canonicalId);
-      }
-      if (!DEMO_OFFLINE_MODE) {
-        const conversationIdsToHide = serverConversationIdsToHide(
-          chat,
-          session.uid,
-          friendMap,
-          friendIdToBackendUid
-        );
-        rememberHiddenConversationIds(conversationIdsToHide);
-        for (const conversationId of conversationIdsToHide) {
-          void callEmulatorFunction("hideConversationForUser", {
-            uid: session.uid,
-            deviceId: session.deviceId,
-            conversationId,
-          }).catch((err) => logAppError("chat.hide.server", err, { conversationId }));
-          void callEmulatorFunction("manageConversationMembership", {
-            uid: session.uid,
-            deviceId: session.deviceId,
-            conversationId,
-            action: "leave",
-          }).catch(() => undefined);
-        }
-      }
-    }
-    hideChatIds([...idsToHide]);
-    if (chat.kind === "broadcast") {
-      removeChatsAndMessages([chatId]);
-      persistSocialMessagingNow();
-      return;
-    }
-
-    const newMemberIds = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-    if (newMemberIds.length < 2) {
-      removeChatsAndMessages(idsToHide);
-    } else {
-      const nextJoined = chat.memberJoinedAt
-        ? Object.fromEntries(Object.entries(chat.memberJoinedAt).filter(([k]) => k !== CURRENT_USER_ID))
-        : undefined;
-      patchChat(chatId, (x) => ({
-        ...x,
-        memberIds: newMemberIds,
-        memberJoinedAt: nextJoined,
-        updatedAt: Date.now(),
-      }));
-    }
-    persistSocialMessagingNow();
-  };
-
-  const leaveChat = () => {
-    if (view.screen !== "chat" || !("chatId" in view)) return;
-    const chatId = view.chatId;
-    const session = getBackendSession();
-    if (session && !DEMO_OFFLINE_MODE) {
-      const chat = chats.find((c) => c.id === chatId);
-      const conversationIds = chat
-        ? serverConversationIdsToHide(chat, session.uid, friendMap, friendIdToBackendUid)
-        : [resolveConversationId(chatId)];
-      rememberHiddenConversationIds(conversationIds);
-      for (const conversationId of conversationIds) {
-        void callEmulatorFunction("hideConversationForUser", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          conversationId,
-        }).catch(() => undefined);
-        void callEmulatorFunction("manageConversationMembership", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          conversationId,
-          action: "leave",
-        }).catch(() => undefined);
-      }
-    }
-    removeChatForCurrentUser(chatId);
-    leaveChatToHome();
-  };
+  const { leaveChatToHome, removeChatForCurrentUser, leaveChat, confirmLeaveChat } =
+    createLeaveChatActions({
+      setView,
+      setChatSearch,
+      clearComposerOnLeave,
+      setChatSearchVisible,
+      setChatOverflowOpen,
+      setMembersModalOpen,
+      setReplyTargetMessageId,
+      setEditingMessageId,
+      setMessageActionTargetId,
+      setReactionPickerOpen,
+      setSelectedBroadcastThreadFriendId,
+      setPhotoEditorOpen,
+      setPhotoEditorAsset,
+      setAddMemberModalOpen,
+      setAddMemberSearch,
+      setPlayingVoiceMessageId,
+      setVoiceLoadingMessageId,
+      setVoicePlaybackProgress,
+      setPlayingVideoMessageId,
+      setVideoPrepareRequestedIds,
+      setChatListDisplayLimit,
+      setVideoPlayAfterPrepareId,
+      messageSoundRef,
+      chats,
+      getBackendSession,
+      friendMap,
+      friendIdToBackendUid,
+      rememberHiddenConversationIds,
+      hideChatIds,
+      removeChatsAndMessages,
+      persistSocialMessagingNow,
+      patchChat,
+      view,
+      resolveConversationId,
+    });
 
   const kickMemberFromChat = (friendId: string) => {
     if (view.screen !== "chat" || !("chatId" in view)) return;
@@ -4940,13 +4789,6 @@ function MainAppInner() {
         onPress: () => confirmDeleteChatFromHome(chat.id),
       },
       { text: "Cancel", style: "cancel" },
-    ]);
-  };
-
-  const confirmLeaveChat = () => {
-    Alert.alert("Leave chat?", "You will stop receiving messages in this chat.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Leave", style: "destructive", onPress: leaveChat },
     ]);
   };
 
