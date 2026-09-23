@@ -5,7 +5,7 @@ import type { Post } from "../domain/types";
 import { writeComposerText } from "../lib/syncedComposerText";
 
 /**
- * Full-screen post viewer composer state. Comment network writes stay in the parent.
+ * Full-screen post viewer composer state. Comment network writes live in `usePostThreadActions`.
  */
 export function useFullscreenPostThread(params: { posts: Post[] }) {
   const { posts } = params;

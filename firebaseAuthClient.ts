@@ -16,6 +16,8 @@ import {
 import { connectStorageEmulator, getStorage, type FirebaseStorage } from "firebase/storage";
 import { Platform } from "react-native";
 
+import { keepSignedInAfterNullAuthEvent } from "./app/session/firebaseAuthPersistence";
+
 const DEBUG_INGEST_PATH = "/ingest/81185788-3701-4c9e-b62c-43aa972e97d1";
 const DEBUG_INGEST_ORIGINS = ["http://127.0.0.1:7751", "http://192.168.0.12:7751"];
 
@@ -140,6 +142,53 @@ function createFirebaseAuth(): Auth {
 /** True when Firebase has rehydrated the persisted session from AsyncStorage. */
 export function hasPersistedFirebaseUser(): boolean {
   return Boolean(firebaseAuth.currentUser?.email?.trim());
+}
+
+/** Refresh the ID token before the hour mark. Failures leave the persisted user in place. */
+export async function warmFirebaseIdToken(): Promise<void> {
+  const user = firebaseAuth.currentUser;
+  if (!user) return;
+  try {
+    await user.getIdToken(false);
+  } catch {
+    return;
+  }
+  try {
+    await user.getIdToken(true);
+  } catch {
+    /* offline or a slow refresh must not clear the session */
+  }
+}
+
+async function persistedFirebaseAuthBlob(): Promise<boolean> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    return keys.some((key) => key.includes("firebase:authUser"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * After a null `onAuthStateChanged` event, decide whether the signed-in UI should stay.
+ * Waits for auth rehydration, then keeps the session if the user or the on-disk blob remains.
+ */
+export async function firebaseSessionSurvivesNullEvent(): Promise<boolean> {
+  const ready = (
+    firebaseAuth as Auth & { authStateReady?: () => Promise<void> }
+  ).authStateReady;
+  if (typeof ready === "function") {
+    try {
+      await ready.call(firebaseAuth);
+    } catch {
+      /* ignore */
+    }
+  }
+  const persistedAuthBlob = await persistedFirebaseAuthBlob();
+  return keepSignedInAfterNullAuthEvent({
+    currentUserEmail: firebaseAuth.currentUser?.email,
+    persistedAuthBlob,
+  });
 }
 
 export const firebaseAuth = createFirebaseAuth();

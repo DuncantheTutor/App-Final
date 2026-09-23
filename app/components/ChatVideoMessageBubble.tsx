@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect } from "react";
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Image, StyleSheet, Text, View } from "react-native";
 
 import { useVideoPoster } from "../hooks/useVideoPosterUri";
 import { CHAT_MESSAGE_LONG_PRESS_MS } from "../theme/preludeConstants";
@@ -91,7 +91,7 @@ export function ChatVideoMessageBubble({
   }
 
   return (
-    <Pressable
+    <PressAckButton
       style={{ width, height, backgroundColor: "#000" }}
       onPress={preparing ? onCancelPrepare : onPressSurface}
       onLongPress={onLongPress}
@@ -138,7 +138,7 @@ export function ChatVideoMessageBubble({
           </View>
         </View>
       ) : null}
-    </Pressable>
+    </PressAckButton>
   );
 }
 

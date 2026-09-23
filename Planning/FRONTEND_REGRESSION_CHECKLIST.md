@@ -37,8 +37,8 @@ Use this checklist before publishing an APK intended for UI verification.
 
 - [ ] Conversation list and open-thread behavior match expected flow.
 - [ ] Send action labels/states are clear.
-- [ ] Chat/comment Send and Publish/Post keep the same button size on press (nudge/flash only) and tick unless Settings → Haptic feedback is off.
-- [ ] Cancel / Back / Close / Not now keep the same button size (in-bounds flash + haptic).
+- [ ] Chat/comment Send and Publish/Post keep the same button size on press (diagonal shimmer; Send also nudges) and tick unless Settings → Haptic feedback is off.
+- [ ] Cancel / Back / Close / Not now and other buttons keep the same size (diagonal shimmer clipped inside the control + haptic).
 - [ ] Empty-thread and no-friends guidance are non-blocking.
 - [ ] Back-to-list behavior is predictable.
 
@@ -47,9 +47,9 @@ Use this checklist before publishing an APK intended for UI verification.
 - [ ] Profile entry/exit flow matches expected nav.
 - [ ] Compose post opens, submits, and returns correctly.
 - [ ] New-post composer can take a camera photo or pick from the gallery; both go through the photo editor.
-- [ ] Publish / photo-editor Post keep the same bar size (in-bounds flash + haptic).
-- [ ] Photo-editor Cancel/Back and publish Cancel keep the same size (in-bounds flash).
-- [ ] Top nav (chats, friends, feed, …) ticks on tap. Settings → Haptic feedback can turn Erdos vibration off or on even if Android touch haptics are off.
+- [ ] Publish / photo-editor Post keep the same bar size (diagonal shimmer + haptic).
+- [ ] Photo-editor Cancel/Back and publish Cancel keep the same size (diagonal shimmer).
+- [ ] Top nav (chats, friends, feed, …) shimmers on tap. Settings → Haptic feedback can turn Erdos vibration off or on even if Android touch haptics are off.
 - [ ] Error/loading states are visible and understandable.
 
 ## F) Technical Gate

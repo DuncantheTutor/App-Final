@@ -1,9 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import type { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 import type { ThemePalette } from "../domain/types";
-import { playPressHaptic } from "../lib/haptics";
 
 
 
@@ -297,13 +297,12 @@ export function HomeTopNavBar({
 
         {navItems.map((item) => (
 
-          <Pressable
+          <PressAckButton
 
             key={item.key}
 
             onPress={item.onPress}
 
-            onPressIn={playPressHaptic}
 
             style={[
 
@@ -371,17 +370,17 @@ export function HomeTopNavBar({
 
             ) : null}
 
-          </Pressable>
+          </PressAckButton>
 
         ))}
 
       </View>
 
-      <Pressable onPress={onLogout} style={[styles.iconButton as object, navStyles.iconSlot]} accessibilityLabel="Logout">
+      <PressAckButton onPress={onLogout} style={[styles.iconButton as object, navStyles.iconSlot]} accessibilityLabel="Logout">
 
         <Ionicons name="log-out-outline" size={22} color={accent} />
 
-      </Pressable>
+      </PressAckButton>
 
     </View>
 

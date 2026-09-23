@@ -1,7 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { ResizeMode } from "expo-av";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, InteractionManager, Pressable, ScrollView, StyleSheet, Text, View, ActivityIndicator } from "react-native";
+import { Image, InteractionManager, ScrollView, StyleSheet, Text, View, ActivityIndicator } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 import { ScrollViewUntilScroll } from "../../ScrollUntilScroll";
 import type { HoldToReactTheme } from "./HoldToReactButton";
@@ -278,7 +279,7 @@ function FeedPostCardView({
     const naturalHeight = feedPostImageHeightForAspect(feedMediaWidth, aspect);
     const slideHeight = mediaUris.length > 1 ? mediaTallestHeight : naturalHeight;
     return (
-      <Pressable
+      <PressAckButton
         key={`${post.id}-slide-${slideIndex}`}
         style={[
           styles.postFeedImageSlide as object,
@@ -335,7 +336,7 @@ function FeedPostCardView({
             </Text>
           </View>
         ) : null}
-      </Pressable>
+      </PressAckButton>
     );
   };
 
@@ -395,7 +396,7 @@ function FeedPostCardView({
             <Text style={{ color: "#ccc", fontSize: 13, fontWeight: "600" }}>Preparing video…</Text>
           </View>
         ) : (
-          <Pressable
+          <PressAckButton
             style={{ flex: 1, backgroundColor: "#000" }}
             onPress={requestFeedVideoPlayback}
             onLongPress={handlePostLongPress}
@@ -431,7 +432,7 @@ function FeedPostCardView({
                 <Ionicons name="play" size={28} color="#fff" />
               </View>
             </View>
-          </Pressable>
+          </PressAckButton>
         )}
       </View>
     </View>
@@ -464,7 +465,7 @@ function FeedPostCardView({
       );
     };
     return (
-      <Pressable
+      <PressAckButton
         onLongPress={openCommentReactionPicker}
         delayLongPress={400}
         disabled={addDisabled || demoOfflineMode || !session}
@@ -490,7 +491,7 @@ function FeedPostCardView({
           </Text>
         ) : null}
         <Text style={styles.privateCommentTimeLine as object}>{formatTime(entry.createdAt)}</Text>
-      </Pressable>
+      </PressAckButton>
     );
   };
 
@@ -516,14 +517,14 @@ function FeedPostCardView({
           </View>
         ))}
         {inFullscreenModal && onOpenThreadReply && isPostOwnerView ? (
-          <Pressable
+          <PressAckButton
             style={styles.postCommentPlaceholderBar as object}
             onPress={() => onOpenThreadReply(comment.id)}
           >
             <Text style={styles.postCommentPlaceholderText as object}>
               {`Reply to ${resolveAuthorMeta(comment.authorId).name}...`}
             </Text>
-          </Pressable>
+          </PressAckButton>
         ) : null}
       </View>
     );
@@ -541,7 +542,7 @@ function FeedPostCardView({
         }
         style={styles.feedReactionHost as object}
       >
-        <Pressable
+        <PressAckButton
           onPress={() => {
             if (!inFullscreenModal) {
               onOpenViewer?.();
@@ -559,7 +560,7 @@ function FeedPostCardView({
           }
         >
           <View style={styles.postFeedHeaderRow as object}>
-            <Pressable
+            <PressAckButton
               onPress={() => {
                 if (post.authorId === currentUserId) {
                   onOpenMyProfile();
@@ -572,27 +573,27 @@ function FeedPostCardView({
               accessibilityLabel={`Open ${meta.name} profile`}
             >
               {renderAvatar(meta.avatarUri, meta.name.slice(0, 1), 34)}
-            </Pressable>
+            </PressAckButton>
             <View style={styles.postFeedHeaderTextCol as object}>
               <Text style={styles.postFeedAuthor as object} numberOfLines={1}>
                 {meta.name}
               </Text>
               <Text style={styles.postFeedTime as object}>{formatTime(post.createdAt)}</Text>
             </View>
-            <Pressable
+            <PressAckButton
               style={styles.postFeedHeaderAction as object}
               onPress={() => onOpenPostActions(post)}
               accessibilityLabel="Post actions"
             >
               <Ionicons name="ellipsis-horizontal" size={20} color={subtleTextColor} />
-            </Pressable>
+            </PressAckButton>
           </View>
           {post.text?.trim() ? (
             <View style={styles.postFeedBodyWrap as object}>
               <Text style={styles.postFeedBody as object}>{post.text}</Text>
             </View>
           ) : null}
-        </Pressable>
+        </PressAckButton>
 
         {mediaUris.length > 0 ? (
           <View
@@ -632,7 +633,7 @@ function FeedPostCardView({
             )}
             {mediaUris.length > 1 ? (
               <>
-                <Pressable
+                <PressAckButton
                   style={[
                     styles.postCarouselChevron as object,
                     styles.postCarouselChevronLeft as object,
@@ -641,8 +642,8 @@ function FeedPostCardView({
                   accessibilityLabel="Previous photo"
                 >
                   <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
-                </Pressable>
-                <Pressable
+                </PressAckButton>
+                <PressAckButton
                   style={[
                     styles.postCarouselChevron as object,
                     styles.postCarouselChevronRight as object,
@@ -651,7 +652,7 @@ function FeedPostCardView({
                   accessibilityLabel="Next photo"
                 >
                   <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-                </Pressable>
+                </PressAckButton>
                 <View style={styles.postCarouselCountBadge as object}>
                   <Text style={styles.postCarouselCountText as object}>
                     {photoIndex + 1}/{mediaUris.length}

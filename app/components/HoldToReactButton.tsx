@@ -2,6 +2,8 @@ import { Feather } from "@expo/vector-icons";
 import { useRef, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { PressAckButton } from "./PressAckButton";
+
 import { AttachedReactionBubbles } from "./ReactionBubbleHost";
 import { REACTION_EMOJIS } from "../theme/preludeConstants";
 
@@ -50,7 +52,7 @@ export function HoldToReactButton({
 
   return (
     <>
-      <Pressable
+      <PressAckButton
         onLongPress={() => {
           longPressOpenedRef.current = true;
           openPicker();
@@ -74,7 +76,7 @@ export function HoldToReactButton({
         ) : (
           <Feather name="smile" size={15} color={theme.accent} />
         )}
-      </Pressable>
+      </PressAckButton>
 
       <Modal
         visible={pickerOpen}
@@ -87,7 +89,7 @@ export function HoldToReactButton({
             <Text style={[styles.title, { color: theme.text }]}>React</Text>
             <View style={styles.emojiRow}>
               {REACTION_EMOJIS.map((emoji) => (
-                <Pressable
+                <PressAckButton
                   key={emoji}
                   onPress={() => handlePick(emoji)}
                   style={[
@@ -99,7 +101,7 @@ export function HoldToReactButton({
                   accessibilityLabel={`React with ${emoji}`}
                 >
                   <Text style={styles.emojiChipText}>{emoji}</Text>
-                </Pressable>
+                </PressAckButton>
               ))}
             </View>
             <Text style={[styles.hint, { color: theme.subtleText }]}>
@@ -155,7 +157,7 @@ export function ReactionPickerModal({
           <Text style={[styles.title, { color: theme.text }]}>React</Text>
           <View style={styles.emojiRow}>
             {REACTION_EMOJIS.map((emoji) => (
-              <Pressable
+              <PressAckButton
                 key={emoji}
                 onPress={() => {
                   onClose();
@@ -168,7 +170,7 @@ export function ReactionPickerModal({
                 ]}
               >
                 <Text style={styles.emojiChipText}>{emoji}</Text>
-              </Pressable>
+              </PressAckButton>
             ))}
           </View>
         </Pressable>

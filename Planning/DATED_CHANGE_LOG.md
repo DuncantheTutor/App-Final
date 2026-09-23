@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-23 17:55 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:55 +01:00 | Auth / Buttons | Kept the signed-in UI through transient Firebase null events and token refresh, and replaced button press flash with a clipped diagonal shimmer. |
+
+---
+
+## 2026-09-23 17:32 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:32 +01:00 | Feed / Chat | Moved post comment writes, private-thread hydrate, and reaction applies out of MainApp into `usePostThreadActions`. |
+
+---
+
 ## 2026-09-18 08:56 +01:00
 
 | Time | Area | Change |

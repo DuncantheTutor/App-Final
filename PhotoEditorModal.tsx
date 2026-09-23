@@ -14,7 +14,6 @@ import {
   Modal,
   PanResponder,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -299,7 +298,7 @@ function IconToolButton({
   divider: string;
 }) {
   return (
-    <Pressable
+    <PressAckButton
       accessibilityRole="button"
       accessibilityLabel={label}
       disabled={disabled}
@@ -312,7 +311,7 @@ function IconToolButton({
       ]}
     >
       <Feather name={icon} size={20} color={active ? accent : text} />
-    </Pressable>
+    </PressAckButton>
   );
 }
 
@@ -1167,7 +1166,7 @@ export function PhotoEditorModal({
         collapsable={false}
         style={[styles.exportBox, { width: displayWidth, height: displayImgH }]}
       >
-        <Pressable
+        <PressAckButton
           style={StyleSheet.absoluteFillObject}
           onPress={() => {
             if (!drawMode) setSelectedTextId(null);
@@ -1210,7 +1209,7 @@ export function PhotoEditorModal({
               <ActivityIndicator size="large" color={theme.accent} />
             </View>
           )}
-        </Pressable>
+        </PressAckButton>
         {!isVideo && filter !== "none" ? (
           <View
             pointerEvents="none"
@@ -1416,7 +1415,7 @@ export function PhotoEditorModal({
         {Platform.OS === "ios" ? (
           <InputAccessoryView nativeID="photoCaptionAccessory">
             <View style={styles.accessoryBar}>
-              <Pressable
+              <PressAckButton
                 style={styles.accessoryBarBtn}
                 onPress={() => {
                   Keyboard.dismiss();
@@ -1425,14 +1424,14 @@ export function PhotoEditorModal({
                 accessibilityLabel={previewSubmitLabel}
               >
                 <Text style={styles.accessoryBarBtnText}>{previewSubmitLabel}</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </InputAccessoryView>
         ) : null}
         {Platform.OS === "ios" ? (
           <InputAccessoryView nativeID="photoTextOverlayAccessory">
             <View style={styles.accessoryBar}>
-              <Pressable
+              <PressAckButton
                 style={styles.accessoryBarBtn}
                 onPress={() => {
                   Keyboard.dismiss();
@@ -1440,7 +1439,7 @@ export function PhotoEditorModal({
                 accessibilityLabel="Done"
               >
                 <Text style={styles.accessoryBarBtnText}>Done</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </InputAccessoryView>
         ) : null}
@@ -1498,7 +1497,7 @@ export function PhotoEditorModal({
                           })();
                           const selected = filter === f.id;
                           return (
-                            <Pressable
+                            <PressAckButton
                               key={f.id}
                               onPress={() => {
                                 if (filter !== f.id) pushUndo();
@@ -1531,7 +1530,7 @@ export function PhotoEditorModal({
                                   color={selected ? theme.accent : theme.subtleText}
                                 />
                               </View>
-                            </Pressable>
+                            </PressAckButton>
                           );
                         })}
                       </ScrollView>
@@ -1640,7 +1639,7 @@ export function PhotoEditorModal({
                       <>
                         <View style={styles.colorRow}>
                           {PRESET_COLORS.map((c) => (
-                            <Pressable
+                            <PressAckButton
                               key={c}
                               onPress={() => setDrawColor(c)}
                               style={[
@@ -1650,7 +1649,7 @@ export function PhotoEditorModal({
                               ]}
                             />
                           ))}
-                          <Pressable
+                          <PressAckButton
                             style={[
                               styles.paletteTrigger,
                               !isPresetColor(drawColor) && styles.colorDotActive,
@@ -1663,12 +1662,12 @@ export function PhotoEditorModal({
                             accessibilityLabel="Custom color with red, green, and blue sliders"
                           >
                             <MulticolorCircleIcon size={24} />
-                          </Pressable>
+                          </PressAckButton>
                         </View>
                         <View style={styles.strokeWidthRow}>
                           <Text style={styles.strokeLabel}>Width</Text>
                           {STROKE_WIDTHS.map((w) => (
-                            <Pressable
+                            <PressAckButton
                               key={w}
                               onPress={() => setStrokeWidth(w)}
                               style={[styles.strokeWidthBtn, strokeWidth === w && styles.strokeWidthBtnActive]}
@@ -1679,7 +1678,7 @@ export function PhotoEditorModal({
                                   { width: w + 6, height: w + 6, borderRadius: (w + 6) / 2 },
                                 ]}
                               />
-                            </Pressable>
+                            </PressAckButton>
                           ))}
                         </View>
                       </>
@@ -1837,8 +1836,8 @@ export function PhotoEditorModal({
         />
 
         <Modal visible={rgbPickerOpen} transparent animationType="fade" onRequestClose={() => setRgbPickerOpen(false)}>
-          <Pressable style={styles.paletteOverlay} onPress={() => setRgbPickerOpen(false)}>
-            <Pressable style={styles.rgbPickerCard} onPress={() => {}}>
+          <PressAckButton style={styles.paletteOverlay} onPress={() => setRgbPickerOpen(false)}>
+            <PressAckButton style={styles.rgbPickerCard} onPress={() => {}}>
               <Text style={styles.paletteTitle}>Custom color</Text>
               <Text style={styles.rgbPickerHint}>Adjust red, green, and blue</Text>
               <View
@@ -1899,12 +1898,12 @@ export function PhotoEditorModal({
                 <PressAckButton style={styles.rgbPickerSecondaryBtn} onPress={() => setRgbPickerOpen(false)}>
                   <Text style={styles.rgbPickerSecondaryBtnText}>Cancel</Text>
                 </PressAckButton>
-                <Pressable style={styles.rgbPickerPrimaryBtn} onPress={applyRgb}>
+                <PressAckButton style={styles.rgbPickerPrimaryBtn} onPress={applyRgb}>
                   <Text style={styles.rgbPickerPrimaryBtnText}>Apply</Text>
-                </Pressable>
+                </PressAckButton>
               </View>
-            </Pressable>
-          </Pressable>
+            </PressAckButton>
+          </PressAckButton>
         </Modal>
 
         <Modal visible={textModalOpen} transparent animationType="fade">
@@ -1947,7 +1946,7 @@ export function PhotoEditorModal({
                 <Text style={styles.textModalSection}>Color</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalColorRow}>
                   {PRESET_COLORS.map((c) => (
-                    <Pressable
+                    <PressAckButton
                       key={c}
                       onPress={() => setTextModalColor(c)}
                       style={[
@@ -1957,7 +1956,7 @@ export function PhotoEditorModal({
                       ]}
                     />
                   ))}
-                  <Pressable
+                  <PressAckButton
                     style={[
                       styles.paletteTrigger,
                       !isPresetColor(textModalColor) && styles.colorDotActive,
@@ -1970,12 +1969,12 @@ export function PhotoEditorModal({
                     accessibilityLabel="Custom color with red, green, and blue sliders"
                   >
                     <MulticolorCircleIcon size={24} />
-                  </Pressable>
+                  </PressAckButton>
                 </ScrollView>
                 <Text style={styles.textModalSection}>Font</Text>
                 <View style={styles.fontRow}>
                   {FONT_OPTIONS.map((f) => (
-                    <Pressable
+                    <PressAckButton
                       key={f.id}
                       style={[styles.fontChip, textModalFontId === f.id && styles.fontChipActive]}
                       onPress={() => setTextModalFontId(f.id)}
@@ -1990,26 +1989,26 @@ export function PhotoEditorModal({
                       >
                         {f.label}
                       </Text>
-                    </Pressable>
+                    </PressAckButton>
                   ))}
                 </View>
                 <Text style={styles.textModalSection}>Size ({textModalFontSize})</Text>
                 <View style={styles.fontSizeRow}>
-                  <Pressable style={styles.fontSizeBtn} onPress={() => setTextModalFontSize((s) => Math.max(10, s - 2))}>
+                  <PressAckButton style={styles.fontSizeBtn} onPress={() => setTextModalFontSize((s) => Math.max(10, s - 2))}>
                     <Text style={styles.fontSizeBtnText}>−</Text>
-                  </Pressable>
+                  </PressAckButton>
                   <Text style={styles.fontSizeValue}>{textModalFontSize}</Text>
-                  <Pressable style={styles.fontSizeBtn} onPress={() => setTextModalFontSize((s) => Math.min(44, s + 2))}>
+                  <PressAckButton style={styles.fontSizeBtn} onPress={() => setTextModalFontSize((s) => Math.min(44, s + 2))}>
                     <Text style={styles.fontSizeBtnText}>+</Text>
-                  </Pressable>
+                  </PressAckButton>
                 </View>
                 <View style={styles.textModalActions}>
                   <PressAckButton style={styles.textModalActionBtnSecondary} onPress={() => setTextModalOpen(false)}>
                     <Text style={styles.textModalActionBtnSecondaryText}>Cancel</Text>
                   </PressAckButton>
-                  <Pressable style={styles.textModalActionBtnPrimary} onPress={addTextOverlay}>
+                  <PressAckButton style={styles.textModalActionBtnPrimary} onPress={addTextOverlay}>
                     <Text style={styles.textModalActionBtnPrimaryText}>Add</Text>
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               </View>
               </ScrollView>

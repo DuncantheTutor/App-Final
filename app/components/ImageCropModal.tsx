@@ -1,7 +1,8 @@
 import { ImageEditor, type ControlBarActions, type ImageData } from "expo-dynamic-image-crop";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import { Modal, Text, View } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 type CropModalTheme = {
   background: string;
@@ -51,15 +52,15 @@ function CropDoneBar({
         backgroundColor: barBg,
       }}
     >
-      <Pressable
+      <PressAckButton
         onPress={actions.isEdit ? actions.onBack : actions.onCancel}
         accessibilityLabel={actions.isEdit ? "Back" : "Cancel"}
       >
         <Text style={{ color: controlColor, fontSize: 17, fontWeight: "600" }}>
           {actions.isEdit ? "Back" : "Cancel"}
         </Text>
-      </Pressable>
-      <Pressable
+      </PressAckButton>
+      <PressAckButton
         onPress={() => {
           if (actions.isEdit) {
             actions.onSave();
@@ -71,7 +72,7 @@ function CropDoneBar({
         accessibilityLabel="Done"
       >
         <Text style={{ color: accentColor, fontSize: 17, fontWeight: "700" }}>Done</Text>
-      </Pressable>
+      </PressAckButton>
     </View>
   );
 }

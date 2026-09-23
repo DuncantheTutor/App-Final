@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 import { logAppError } from "../../telemetry";
 
@@ -45,7 +46,7 @@ export class ChatThreadErrorBoundary extends Component<Props, State> {
           <Text style={{ color: this.props.textColor, fontSize: 16, textAlign: "center" }}>
             This chat could not be displayed. You can go back and open the chat again.
           </Text>
-          <Pressable
+          <PressAckButton
             onPress={this.handleTryAgain}
             style={{
               marginTop: 16,
@@ -56,7 +57,7 @@ export class ChatThreadErrorBoundary extends Component<Props, State> {
             }}
           >
             <Text style={{ color: "#fff", fontWeight: "600" }}>Try again</Text>
-          </Pressable>
+          </PressAckButton>
         </View>
       );
     }

@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 type ThemeColors = {
   accent: string;
@@ -52,7 +53,7 @@ export function ChatVoiceNoteBubble({
   const totalSec = Math.floor(totalMs / 1000);
 
   return (
-    <Pressable
+    <PressAckButton
       style={styles.voicePlayRow}
       onPress={onPress}
       accessibilityRole="button"
@@ -80,6 +81,6 @@ export function ChatVoiceNoteBubble({
           {formatVoiceTime(elapsedSec)} / {formatVoiceTime(totalSec)}
         </Text>
       </View>
-    </Pressable>
+    </PressAckButton>
   );
 }

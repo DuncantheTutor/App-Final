@@ -1,4 +1,4 @@
-import { useCallback, useRef, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import {
   Animated,
   Pressable,
@@ -14,15 +14,20 @@ export type PressAckVariant = "send" | "flash";
 
 type Props = Omit<PressableProps, "style" | "children"> & {
   style?: StyleProp<ViewStyle>;
-  /** `send` = paper-plane nudge inside the circle. `flash` = in-bounds highlight. Never scales. */
+  /** `send` = paper-plane nudge plus shimmer. `flash` = shimmer only. Never scales or resizes. */
   variant?: PressAckVariant;
-  children: ReactNode;
+  children?: ReactNode;
 };
+
+function clipRadius(style: StyleProp<ViewStyle> | undefined): number {
+  const flat = StyleSheet.flatten(style);
+  return typeof flat?.borderRadius === "number" ? flat.borderRadius : 0;
+}
 
 /**
  * Press acknowledgement that keeps the outer button size unchanged.
- * Haptic + inner motion run in parallel with `onPress` (press is not delayed).
- * Flash clips to the button bounds; send does not clip so the paper-plane nudge can travel 5px.
+ * A diagonal highlight travels across the control inside an absolute clip.
+ * Haptic and motion run in parallel with `onPress` (press is not delayed).
  */
 export function PressAckButton({
   style,
@@ -31,30 +36,50 @@ export function PressAckButton({
   disabled,
   onPress,
   onPressIn,
+  onLayout,
   ...rest
 }: Props) {
   const travel = useRef(new Animated.Value(0)).current;
-  const flash = useRef(new Animated.Value(0)).current;
+  const shimmer = useRef(new Animated.Value(0)).current;
+  const [metrics, setMetrics] = useState({ w: 120, h: 40 });
+  const radius = clipRadius(style);
+  const bandW = Math.max(16, metrics.w * 0.34);
 
   const playAck = useCallback(() => {
     if (disabled) return;
     playPressHaptic();
-    if (variant === "send") {
-      travel.stopAnimation();
-      travel.setValue(0);
-      Animated.sequence([
-        Animated.timing(travel, { toValue: 1, duration: 90, useNativeDriver: true }),
-        Animated.timing(travel, { toValue: 0, duration: 140, useNativeDriver: true }),
-      ]).start();
-      return;
-    }
-    flash.stopAnimation();
-    flash.setValue(0);
+    shimmer.stopAnimation();
+    shimmer.setValue(0);
+    Animated.timing(shimmer, {
+      toValue: 1,
+      duration: 520,
+      useNativeDriver: true,
+    }).start();
+    if (variant !== "send") return;
+    travel.stopAnimation();
+    travel.setValue(0);
     Animated.sequence([
-      Animated.timing(flash, { toValue: 1, duration: 70, useNativeDriver: true }),
-      Animated.timing(flash, { toValue: 0, duration: 160, useNativeDriver: true }),
+      Animated.timing(travel, { toValue: 1, duration: 90, useNativeDriver: true }),
+      Animated.timing(travel, { toValue: 0, duration: 140, useNativeDriver: true }),
     ]).start();
-  }, [disabled, flash, travel, variant]);
+  }, [disabled, shimmer, travel, variant]);
+
+  const content =
+    variant === "send" ? (
+      <Animated.View
+        style={{
+          opacity: travel.interpolate({ inputRange: [0, 1], outputRange: [1, 0.35] }),
+          transform: [
+            { translateX: travel.interpolate({ inputRange: [0, 1], outputRange: [0, 5] }) },
+            { translateY: travel.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) },
+          ],
+        }}
+      >
+        {children}
+      </Animated.View>
+    ) : (
+      children
+    );
 
   return (
     <Pressable
@@ -65,44 +90,60 @@ export function PressAckButton({
         playAck();
         onPressIn?.(event);
       }}
-      style={[style, variant === "flash" ? styles.clip : null]}
+      onLayout={(event) => {
+        const w = Math.round(event.nativeEvent.layout.width);
+        const h = Math.round(event.nativeEvent.layout.height);
+        if (w > 0 && h > 0) {
+          setMetrics((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+        }
+        onLayout?.(event);
+      }}
+      style={style}
     >
-      {variant === "send" ? (
+      {content}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.clip,
+          { borderRadius: radius },
+        ]}
+      >
         <Animated.View
-          style={{
-            opacity: travel.interpolate({ inputRange: [0, 1], outputRange: [1, 0.35] }),
-            transform: [
-              { translateX: travel.interpolate({ inputRange: [0, 1], outputRange: [0, 5] }) },
-              { translateY: travel.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) },
-            ],
-          }}
-        >
-          {children}
-        </Animated.View>
-      ) : (
-        children
-      )}
-      {variant === "flash" ? (
-        <Animated.View
-          pointerEvents="none"
           style={[
-            styles.flash,
+            styles.band,
             {
-              opacity: flash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.28] }),
+              width: bandW,
+              height: metrics.h * 3,
+              top: -metrics.h,
+              opacity: shimmer.interpolate({
+                inputRange: [0, 0.08, 0.82, 1],
+                outputRange: [0, 0.72, 0.72, 0],
+              }),
+              transform: [
+                {
+                  translateX: shimmer.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-bandW, metrics.w + bandW],
+                  }),
+                },
+                { rotate: "-24deg" },
+              ],
             },
           ]}
         />
-      ) : null}
+      </Animated.View>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   clip: {
+    ...StyleSheet.absoluteFillObject,
     overflow: "hidden",
   },
-  flash: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#FFFFFF",
+  band: {
+    position: "absolute",
+    left: 0,
+    backgroundColor: "rgba(255,255,255,0.7)",
   },
 });

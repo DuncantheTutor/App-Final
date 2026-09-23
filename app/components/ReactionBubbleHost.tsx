@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 import type { HoldToReactTheme } from "./HoldToReactButton";
 
@@ -55,9 +56,9 @@ export function AttachedReactionBubbles({
       pointerEvents="box-none"
     >
       {onPress ? (
-        <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel="View reactions">
+        <PressAckButton onPress={onPress} accessibilityRole="button" accessibilityLabel="View reactions">
           {pill}
-        </Pressable>
+        </PressAckButton>
       ) : (
         pill
       )}

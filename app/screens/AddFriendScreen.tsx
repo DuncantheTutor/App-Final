@@ -11,11 +11,9 @@ import {
   Image,
   PanResponder,
   Platform,
-  Pressable,
   StyleSheet,
   Switch,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -1584,13 +1582,13 @@ export function AddFriendScreen(props: {
               >
                 <Text style={{ color: textColor, fontSize: 16, fontWeight: "600" }}>Cancel</Text>
               </PressAckButton>
-              <Pressable
+              <PressAckButton
                 onPress={() => void confirmVerifiedFriend()}
                 disabled={confirmSubmitting}
                 style={[styles.primaryButton as object, { flex: 1, opacity: confirmSubmitting ? 0.45 : 1 }]}
               >
                 <Text style={styles.primaryButtonText as object}>Confirm</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         ) : null}
@@ -1624,7 +1622,7 @@ export function AddFriendScreen(props: {
                 </View>
               ) : null}
             </View>
-            <Pressable
+            <PressAckButton
               onPress={onPressShowQrCode}
               disabled={pairingHoldCooldown || qrPreparing}
               style={[
@@ -1639,7 +1637,7 @@ export function AddFriendScreen(props: {
               <Text style={styles.primaryButtonText as object}>
                 {qrPreparing ? "Preparing…" : "Show QR Code"}
               </Text>
-            </Pressable>
+            </PressAckButton>
           </View>
         ) : null}
         {showMainButton && inPersonPairingRole === "join" ? (
@@ -1686,12 +1684,12 @@ export function AddFriendScreen(props: {
                   Allow camera when prompted, or enable camera for Erdos in your phone settings, then tap Try
                   again.
                 </Text>
-                <Pressable
+                <PressAckButton
                   onPress={() => void retryPairingCameraPermission()}
                   style={[styles.primaryButton as object, { marginTop: 14 }]}
                 >
                   <Text style={styles.primaryButtonText as object}>Try again</Text>
-                </Pressable>
+                </PressAckButton>
               </View>
             ) : (
               <View

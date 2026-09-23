@@ -5,7 +5,6 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -175,22 +174,22 @@ export function FullscreenMediaViewer({ item, onClose, onGalleryIndexChange }: P
         )}
         {showGalleryChrome ? (
           <>
-            <Pressable
+            <PressAckButton
               style={[styles.chevron, styles.chevronLeft, !canGoPrev ? styles.chevronDisabled : null]}
               onPress={goPrev}
               disabled={!canGoPrev}
               accessibilityLabel="Previous photo"
             >
               <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
-            </Pressable>
-            <Pressable
+            </PressAckButton>
+            <PressAckButton
               style={[styles.chevron, styles.chevronRight, !canGoNext ? styles.chevronDisabled : null]}
               onPress={goNext}
               disabled={!canGoNext}
               accessibilityLabel="Next photo"
             >
               <Ionicons name="chevron-forward" size={22} color="#FFFFFF" />
-            </Pressable>
+            </PressAckButton>
             <View style={styles.countBadgeWrap}>
               <View style={styles.countBadge}>
                 <Text style={styles.countText}>

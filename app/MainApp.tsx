@@ -4,7 +4,7 @@ import {
   storageRemoveItem,
   storageSetItem,
 } from "./lib/encryptedLocalStorage";
-import { setUserHapticsEnabled, useHapticSettings, playPressHaptic } from "./lib/haptics";
+import { setUserHapticsEnabled, useHapticSettings } from "./lib/haptics";
 import { clearEncryptedMediaCaches } from "./lib/encryptedMediaCache";
 import * as ImagePicker from "expo-image-picker";
 import * as NavigationBar from "expo-navigation-bar";
@@ -30,14 +30,12 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  Pressable,
   RefreshControl,
   StatusBar as RNStatusBar,
   StyleSheet,
   Switch,
   Text,
   TextInput,
-  TouchableOpacity,
   useWindowDimensions,
   Vibration,
   View,
@@ -78,14 +76,14 @@ import { ChatReplyTargetPreview } from "./components/ChatReplyTargetPreview";
 import { ChatVoiceNoteBubble } from "./components/ChatVoiceNoteBubble";
 import { resolveTierBMediaToFileUri } from "./lib/tierBMedia/storage";
 import { requestReadSmsPermissionIfNeeded, startAndroidOtpAssist } from "../otpSmsAssist";
-import { debugSessionLog, firebaseAuth, getFirestoreDb } from "../firebaseAuthClient";
 import {
-  collection,
-  doc as firestoreDoc,
-  onSnapshot,
-  query as firestoreQuery,
-  where,
-} from "firebase/firestore";
+  debugSessionLog,
+  firebaseAuth,
+  firebaseSessionSurvivesNullEvent,
+  getFirestoreDb,
+  warmFirebaseIdToken,
+} from "../firebaseAuthClient";
+import { doc as firestoreDoc, onSnapshot } from "firebase/firestore";
 import { joinCutoffMsForViewer, normalizeMemberJoinedAtForClient } from "./lib/chatMemberJoinedAt";
 import {
   broadcastCreatorFriendId,
@@ -171,9 +169,8 @@ import { FullscreenMediaViewer } from "./components/FullscreenMediaViewer";
 import { VideoPostThumbnailModal } from "./components/VideoPostThumbnailModal";
 import { OpenSourceLicensesScreen } from "./screens/OpenSourceLicensesScreen";
 import { ReactionBubbleHost } from "./components/ReactionBubbleHost";
-import { aggregateReactionCounts, getMyReactionEmoji } from "./lib/reactionHelpers";
+import { aggregateReactionCounts } from "./lib/reactionHelpers";
 import {
-  mapServerReactionsToLocal,
   overlayMessageDocMetadata,
   type MessageDocMetadata,
 } from "./messaging/messageMetadata";
@@ -208,7 +205,11 @@ import {
   type MainNavSurface,
 } from "./shell";
 import { useBackendSession, useSignedInSession } from "./session";
-import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread, useReactionPicker } from "./feed";
+import {
+  FIREBASE_ID_TOKEN_WARM_MS,
+  NULL_AUTH_GRACE_MS,
+} from "./session/firebaseAuthPersistence";
+import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread, usePostThreadActions, useReactionPicker } from "./feed";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate } from "./notifications";
 import { usePairingParentActions } from "./addFriend";
@@ -282,7 +283,6 @@ import {
 import { mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
 import { mergeCloudChatsWithLocalReadBy, mergeReadByMaps } from "./lib/mergeChatReadBy";
 import { yieldToUi } from "./lib/yieldToUi";
-import { mergeHydratedPostComments } from "./lib/mergePostComments";
 import { makeStyles } from "./styles/makeAppStyles";
 import { AddFriendScreen } from "./screens/AddFriendScreen";
 import {
@@ -806,8 +806,6 @@ function MainAppInner() {
   const feedViewableHydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persistPostsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persistSocialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hydrateInFlightPostIdsRef = useRef<Set<string>>(new Set());
-  const hydratedCommentPostAtRef = useRef<Record<string, number>>({});
   const [presenceOnlineByBackendUid, setPresenceOnlineByBackendUid] = useState<Record<string, boolean>>({});
   /** Network reachability — drives the "Not connected to internet" profile state. */
   const [isOnline, setIsOnline] = useState(true);
@@ -1145,9 +1143,20 @@ function MainAppInner() {
       });
       // #endregion
       setAppLifecycleState(next);
+      if (next === "active" && signedInRef.current && !DEMO_OFFLINE_MODE) {
+        void warmFirebaseIdToken();
+      }
     });
     return () => sub.remove();
   }, []);
+
+  useEffect(() => {
+    if (!signedIn || DEMO_OFFLINE_MODE) return;
+    const id = setInterval(() => {
+      void warmFirebaseIdToken();
+    }, FIREBASE_ID_TOKEN_WARM_MS);
+    return () => clearInterval(id);
+  }, [signedIn]);
 
   // Track network reachability so profile screens can fall back to the cached
   // card and show "Not connected to internet" instead of an empty/stale feed.
@@ -3324,6 +3333,43 @@ function MainAppInner() {
       markAppBootAuthResolved();
       return () => {};
     }
+    let nullAuthTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelNullAuthDrop = () => {
+      if (nullAuthTimer) {
+        clearTimeout(nullAuthTimer);
+        nullAuthTimer = null;
+      }
+    };
+    const dropSignedInUi = () => {
+      if (!signedInRef.current) return;
+      const navEmail = sessionEmailRef.current;
+      if (navEmail) {
+        void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
+          /* ignore */
+        });
+        void storageRemoveItem(lastHomeTabStorageKey(navEmail)).catch(() => {
+          /* ignore */
+        });
+      }
+      sessionEmailRef.current = null;
+      sessionTokenRef.current = null;
+      resetLocalSocialStateForSignedOut();
+      signedInRef.current = false;
+      isRestoringAuthRef.current = false;
+      backendInitGenerationRef.current += 1;
+      clearSession();
+      setTelemetryContext({ uid: null, deviceId: null });
+      setSignedIn(false);
+      setView({ screen: "home" });
+      setAuthMode("login");
+      resetSyncChannelsIdle();
+      debugSessionLog(
+        "MainApp.tsx:onAuthStateChanged",
+        "cleared signed-in UI from null auth event",
+        "H1",
+        { hadSessionEmail: Boolean(navEmail) }
+      );
+    };
     const unsub = onAuthStateChanged(firebaseAuth, (user) => {
       // #region agent log
       debugSessionLog("MainApp.tsx:onAuthStateChanged", "auth state event", "H1", {
@@ -3340,6 +3386,7 @@ function MainAppInner() {
         if (signedInRef.current) {
           const stillSignedIn = firebaseAuth.currentUser?.email?.trim();
           if (stillSignedIn) {
+            cancelNullAuthDrop();
             // #region agent log
             debugSessionLog(
               "MainApp.tsx:onAuthStateChanged",
@@ -3350,39 +3397,32 @@ function MainAppInner() {
             // #endregion
             return;
           }
-          const navEmail = sessionEmailRef.current;
-          if (navEmail) {
-            void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
-              /* ignore */
-            });
-            void storageRemoveItem(lastHomeTabStorageKey(navEmail)).catch(() => {
-              /* ignore */
-            });
-          }
-          sessionEmailRef.current = null;
-          sessionTokenRef.current = null;
-          resetLocalSocialStateForSignedOut();
-          signedInRef.current = false;
-          isRestoringAuthRef.current = false;
-          backendInitGenerationRef.current += 1;
-          clearSession();
-          setTelemetryContext({ uid: null, deviceId: null });
-          setSignedIn(false);
-          setView({ screen: "home" });
-          setAuthMode("login");
-          resetSyncChannelsIdle();
-          // #region agent log
-          debugSessionLog(
-            "MainApp.tsx:onAuthStateChanged",
-            "cleared signed-in UI from null auth event",
-            "H1",
-            { hadSessionEmail: Boolean(navEmail) }
-          );
-          // #endregion
+          // Token refresh emits a transient null. Wait, then drop only if the user and the persisted blob are both gone.
+          cancelNullAuthDrop();
+          nullAuthTimer = setTimeout(() => {
+            nullAuthTimer = null;
+            void (async () => {
+              if (!signedInRef.current) return;
+              if (firebaseAuth.currentUser?.email?.trim()) return;
+              const keep = await firebaseSessionSurvivesNullEvent();
+              if (!signedInRef.current) return;
+              if (keep || firebaseAuth.currentUser?.email?.trim()) {
+                debugSessionLog(
+                  "MainApp.tsx:onAuthStateChanged",
+                  "kept signed-in UI after null auth event",
+                  "H5",
+                  { keep }
+                );
+                return;
+              }
+              dropSignedInUi();
+            })();
+          }, NULL_AUTH_GRACE_MS);
         }
         markAppBootAuthResolved();
         return;
       }
+      cancelNullAuthDrop();
       if (signedInRef.current || isRestoringAuthRef.current) {
         // #region agent log
         debugSessionLog(
@@ -3455,10 +3495,11 @@ function MainAppInner() {
     }, 1200);
 
     return () => {
+      cancelNullAuthDrop();
       clearTimeout(restoreFallbackTimer);
       unsub();
     };
-  }, [resetLocalSocialStateForSignedOut, markAppBootAuthResolved]);
+  }, [resetLocalSocialStateForSignedOut, markAppBootAuthResolved, clearSession]);
 
   const logout = () => {
     // #region agent log
@@ -3482,6 +3523,7 @@ function MainAppInner() {
     sessionEmailRef.current = null;
     resetLocalSocialStateForSignedOut();
     logAppEvent("auth.logout", { email: email ?? "" });
+    signedInRef.current = false;
     const releaseUid = backendAuthUidRef.current;
     const releaseDeviceId = backendDeviceIdRef.current;
     if (releaseUid && releaseDeviceId) {
@@ -3555,6 +3597,7 @@ function MainAppInner() {
     clearSession();
     setTelemetryContext({ uid: null, deviceId: null });
     resetSyncChannelsIdle();
+    signedInRef.current = false;
     setSignedIn(false);
     setView({ screen: "home" });
     setChatOverflowOpen(false);
@@ -6408,138 +6451,53 @@ function MainAppInner() {
     return () => sub.remove();
   }, []);
 
-  const applyReactionToMessage = useCallback(
-    (messageId: string, emoji: string) => {
-      const target = messages.find((m) => m.id === messageId);
-      const session = getBackendSession();
-      if (!session) return;
-      const chat = target ? chats.find((c) => c.id === target.chatId) : undefined;
-      const prevEmoji = target
-        ? getMyReactionEmoji(target.reactions, session.uid, backendUidToFriendId)
-        : undefined;
-      const nextEmoji = prevEmoji === emoji ? undefined : emoji;
-      patchMessage(messageId, (message) => {
-        const reactions = { ...(message.reactions ?? {}) };
-        delete reactions[session.uid];
-        delete reactions[CURRENT_USER_ID];
-        if (nextEmoji) reactions[CURRENT_USER_ID] = nextEmoji;
-        return { ...message, reactions };
-      });
-      setReactionPickerOpen(false);
-      if (!target || !chat || DEMO_OFFLINE_MODE) return;
-      void callEmulatorFunction("updateMessageMetadata", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        conversationId: resolveConversationId(chat),
-        messageId: target.id,
-        reactions: { [session.uid]: nextEmoji ?? "" },
-      }).catch((err) =>
-        logAppError("messages.reaction_metadata", err, {
-          messageId: target.id,
-          chatId: chat.id,
-        })
-      );
-    },
-    [
-      DEMO_OFFLINE_MODE,
-      backendUidToFriendId,
-      chats,
-      getBackendSession,
-      messages,
-      resolveConversationId,
-    ]
-  );
-
-  const reactionPickerActiveEmoji = useMemo(() => {
-    const session = getBackendSession();
-    if (postReactionTargetId) {
-      const post = posts.find((p) => p.id === postReactionTargetId);
-      if (!post) return undefined;
-      const rx = post.feedReactions ?? {};
-      return rx[CURRENT_USER_ID] ?? (session ? rx[session.uid] : undefined);
-    }
-    if (commentReactionTarget) {
-      const post = posts.find((p) => p.id === commentReactionTarget.postId);
-      const comment = post?.comments?.find((c) => c.id === commentReactionTarget.commentId);
-      if (!comment) return undefined;
-      const entry = commentReactionTarget.threadEntryId
-        ? (comment.thread ?? []).find((t) => t.id === commentReactionTarget.threadEntryId)
-        : comment;
-      if (!entry) return undefined;
-      return getMyReactionEmoji(entry.reactions, session?.uid, backendUidToFriendId);
-    }
-    const messageId = reactionTargetMessageId ?? messageActionTargetId;
-    if (!messageId) return undefined;
-    const target = messages.find((m) => m.id === messageId);
-    return getMyReactionEmoji(target?.reactions, session?.uid, backendUidToFriendId);
-  }, [
-    postReactionTargetId,
-    commentReactionTarget,
-    reactionTargetMessageId,
-    messageActionTargetId,
-    posts,
-    messages,
+  const {
+    togglePostReaction,
+    hydratePrivateThreadForPost,
+    submitFullscreenPostComment,
+    reactionPickerActiveEmoji,
+    applyReaction,
+    removeActiveReaction,
+    openReactionPickerForMessage,
+    openReactionPickerForPost,
+    openReactionPickerForComment,
+  } = usePostThreadActions({
+    demoOfflineMode: DEMO_OFFLINE_MODE,
+    signedIn,
+    appLifecycleState,
+    viewScreen: view.screen,
+    homeTab,
     getBackendSession,
+    posts,
+    setPosts,
+    myProfilePosts,
+    friendProfilePosts,
+    fullScreenPost,
+    postFullscreenThreadReplyKey,
+    postCommentTextRef,
+    setPostCommentInput,
+    setCommentDraftByPostId,
+    setThreadDraftByChainKey,
+    allFriends,
+    friendMap,
     backendUidToFriendId,
-  ]);
-
-  const applyReaction = (emoji: string) => {
-    if (postReactionTargetId) {
-      const post = posts.find((p) => p.id === postReactionTargetId);
-      if (post) void togglePostReaction(post, emoji);
-      setPostReactionTargetId(null);
-      setReactionPickerOpen(false);
-      setReactionTargetMessageId(null);
-      return;
-    }
-    if (commentReactionTarget) {
-      const { postId, commentId, threadEntryId } = commentReactionTarget;
-      if (threadEntryId) {
-        toggleThreadReaction(postId, commentId, threadEntryId, emoji);
-      } else {
-        toggleCommentReaction(postId, commentId, emoji);
-      }
-      setCommentReactionTarget(null);
-      setReactionPickerOpen(false);
-      setReactionTargetMessageId(null);
-      return;
-    }
-    const messageId = reactionTargetMessageId ?? messageActionTargetId;
-    if (!messageId) return;
-    applyReactionToMessage(messageId, emoji);
-    setReactionTargetMessageId(null);
-    setReactionPickerOpen(false);
-  };
-
-  const removeActiveReaction = useCallback(() => {
-    const emoji = reactionPickerActiveEmoji;
-    if (!emoji) return;
-    applyReaction(emoji);
-  }, [reactionPickerActiveEmoji]);
-
-  const openReactionPickerForMessage = useCallback(
-    (messageId: string) => {
-      setMessageActionTargetId(messageId);
-      openReactionPickerForMessageBase(messageId);
-    },
-    [openReactionPickerForMessageBase]
-  );
-
-  const openReactionPickerForPost = useCallback(
-    (postId: string) => {
-      setMessageActionTargetId(null);
-      openReactionPickerForPostBase(postId);
-    },
-    [openReactionPickerForPostBase]
-  );
-
-  const openReactionPickerForComment = useCallback(
-    (postId: string, commentId: string, threadEntryId?: string) => {
-      setMessageActionTargetId(null);
-      openReactionPickerForCommentBase(postId, commentId, threadEntryId);
-    },
-    [openReactionPickerForCommentBase]
-  );
+    messages,
+    chats,
+    patchMessage,
+    resolveConversationId,
+    messageActionTargetId,
+    setMessageActionTargetId,
+    reactionTargetMessageId,
+    setReactionTargetMessageId,
+    postReactionTargetId,
+    setPostReactionTargetId,
+    commentReactionTarget,
+    setCommentReactionTarget,
+    setReactionPickerOpen,
+    openReactionPickerForMessageBase,
+    openReactionPickerForPostBase,
+    openReactionPickerForCommentBase,
+  });
 
   const unsendTargetMessage = () => {
     if (!messageActionTarget) return;
@@ -6727,34 +6685,6 @@ function MainAppInner() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [reactionDetailPost, visibleFriendIds, friendMap]);
 
-  const togglePostReaction = useCallback(
-    (post: Post, emoji: string) => {
-      const session = getBackendSession();
-      if (!session || DEMO_OFFLINE_MODE) return;
-      const prev = post.feedReactions ?? {};
-      const mine = prev[CURRENT_USER_ID] ?? prev[session.uid];
-      const nextEmoji = mine === emoji ? "" : emoji;
-      const next = { ...prev };
-      delete next[CURRENT_USER_ID];
-      delete next[session.uid];
-      if (nextEmoji) next[CURRENT_USER_ID] = nextEmoji;
-      setPosts((current) =>
-        current.map((p) => (p.id === post.id ? { ...p, feedReactions: next } : p))
-      );
-      void callEmulatorFunction("setEncryptedPostReaction", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        postId: post.id,
-        emoji: nextEmoji,
-      }).catch(() => {
-        setPosts((current) =>
-          current.map((p) => (p.id === post.id ? { ...p, feedReactions: prev } : p))
-        );
-      });
-    },
-    [DEMO_OFFLINE_MODE, getBackendSession]
-  );
-
   const reactTheme = useMemo(
     () => ({
       accent: theme.accent,
@@ -6765,551 +6695,6 @@ function MainAppInner() {
     }),
     [theme]
   );
-
-  const resolvePostOwnerBackendUid = useCallback(
-    (post: Post, sessionDemoUid: string) => {
-      if (post.authorId === CURRENT_USER_ID) return sessionDemoUid;
-      return friendMap[post.authorId]?.backendUid ?? null;
-    },
-    [friendMap]
-  );
-
-  const hydratePrivateThreadForPost = useCallback(
-    async (post: Post) => {
-      const session = getBackendSession();
-      if (!session) return;
-      const lastHydratedAt = hydratedCommentPostAtRef.current[post.id];
-      if (lastHydratedAt && Date.now() - lastHydratedAt < 120_000) return;
-      if (hydrateInFlightPostIdsRef.current.has(post.id)) return;
-      hydrateInFlightPostIdsRef.current.add(post.id);
-      try {
-      const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
-      if (!postOwnerUid) return;
-      const pairFriendUids =
-        post.authorId === CURRENT_USER_ID
-          ? allFriends.map((f) => f.backendUid).filter((x): x is string => !!x && x !== session.uid)
-          : [session.uid];
-      const chainResults = await Promise.all(
-        pairFriendUids.map(async (friendUid) => {
-          const res = await callEmulatorFunction<{
-            items?: Array<{
-              messageId: string;
-              authorUid: string;
-              text: string;
-              reactions?: Record<string, string>;
-              createdAtMs?: number;
-            }>;
-          }>("listPrivatePostThreadMessages", {
-            uid: session.uid,
-            deviceId: session.deviceId,
-            postId: post.id,
-            postOwnerUid,
-            friendUid,
-          }).catch(() => ({ items: [] }));
-          const items = (res.items ?? []).slice().sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0));
-          if (items.length === 0) return null;
-          const toLocalId = (uid: string) =>
-            uid === session.uid ? CURRENT_USER_ID : backendUidToFriendId[uid] ?? backendUidForFriendId(uid);
-          const mapCommentReactions = (reactions?: Record<string, string>) =>
-            mapServerReactionsToLocal(reactions, session.uid, backendUidToFriendId) ?? {};
-          const first = items[0];
-          const commentAuthorLocalId = toLocalId(friendUid);
-          const firstAuthorLocal = toLocalId(first.authorUid);
-          const comment: PostComment = {
-            id: first.messageId,
-            authorId: commentAuthorLocalId,
-            text: first.text,
-            createdAt: first.createdAtMs ?? Date.now(),
-            reactions: mapCommentReactions(first.reactions),
-            thread: items.slice(1).map((entry) => ({
-              id: entry.messageId,
-              authorId: toLocalId(entry.authorUid),
-              text: entry.text,
-              createdAt: entry.createdAtMs ?? Date.now(),
-              reactions: mapCommentReactions(entry.reactions),
-            })),
-          };
-          if (firstAuthorLocal === comment.authorId) return comment;
-          // If owner authored first message, keep chronology by shifting first into thread and setting comment shell.
-          return {
-            ...comment,
-            id: `srv_${post.id}_${friendUid}`,
-            text: "",
-            thread: [
-              {
-                id: first.messageId,
-                authorId: firstAuthorLocal,
-                text: first.text,
-                createdAt: first.createdAtMs ?? Date.now(),
-                reactions: mapCommentReactions(first.reactions),
-              },
-              ...(comment.thread ?? []),
-            ],
-          } as PostComment;
-        })
-      );
-      const comments = chainResults.filter((x): x is PostComment => !!x);
-      const commentSignature = (items: PostComment[]) =>
-        items
-          .map((comment) =>
-            [
-              comment.id,
-              comment.authorId,
-              comment.text,
-              comment.createdAt,
-              JSON.stringify(comment.reactions ?? {}),
-              (comment.thread ?? [])
-                .map((entry) =>
-                  [entry.id, entry.authorId, entry.text, entry.createdAt, JSON.stringify(entry.reactions ?? {})].join("|")
-                )
-                .join("||"),
-            ].join("::")
-          )
-          .join("##");
-      setPosts((current) =>
-        current.map((candidate) => {
-          if (candidate.id !== post.id) return candidate;
-          const merged = mergeHydratedPostComments(candidate.comments, comments);
-          const prevSig = commentSignature(candidate.comments ?? []);
-          const nextSig = commentSignature(merged);
-          if (prevSig === nextSig) return candidate;
-          return { ...candidate, comments: merged };
-        })
-      );
-      hydratedCommentPostAtRef.current[post.id] = Date.now();
-      } finally {
-        hydrateInFlightPostIdsRef.current.delete(post.id);
-      }
-    },
-    [allFriends, backendUidToFriendId, getBackendSession, resolvePostOwnerBackendUid]
-  );
-
-  const addCommentToPost = useCallback((postId: string, rawText: string) => {
-    const text = rawText.trim();
-    if (!text) return;
-    const post = posts.find((p) => p.id === postId);
-    const session = getBackendSession();
-    if (!post || !session) return;
-    const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
-    if (!postOwnerUid || postOwnerUid === session.uid) return;
-    const optimisticId = `opt_comment_${Date.now()}`;
-    setPosts((current) =>
-      current.map((candidate) => {
-        if (candidate.id !== postId) return candidate;
-    const optimistic: PostComment = {
-          id: optimisticId,
-          authorId: CURRENT_USER_ID,
-          text,
-          createdAt: Date.now(),
-          reactions: {},
-          thread: [],
-          syncState: "posting",
-        };
-        return { ...candidate, comments: [...(candidate.comments ?? []), optimistic] };
-      })
-    );
-    void callEmulatorFunction("createPrivatePostThreadMessage", {
-      uid: session.uid,
-      deviceId: session.deviceId,
-      postId,
-      postOwnerUid,
-      friendUid: session.uid,
-      text,
-    })
-      .then(() => {
-        setPosts((current) =>
-          current.map((candidate) => {
-            if (candidate.id !== postId) return candidate;
-            return {
-              ...candidate,
-              comments: (candidate.comments ?? []).map((c) =>
-                c.id === optimisticId ? { ...c, syncState: "posted" as const } : c
-              ),
-            };
-          })
-        );
-        return hydratePrivateThreadForPost(post);
-      })
-      .catch(() => {
-        setPosts((current) =>
-          current.map((candidate) => {
-            if (candidate.id !== postId) return candidate;
-            return {
-              ...candidate,
-              comments: (candidate.comments ?? []).map((c) =>
-                c.id === optimisticId ? { ...c, syncState: "failed" as const } : c
-              ),
-            };
-          })
-        );
-      });
-    setCommentDraftByPostId((current) => ({ ...current, [postId]: "" }));
-  }, [getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid]);
-
-  const addThreadReplyToComment = useCallback((postId: string, commentId: string, rawText: string) => {
-    const text = rawText.trim();
-    if (!text) return;
-    const post = posts.find((p) => p.id === postId);
-    const session = getBackendSession();
-    if (!post || !session) return;
-    const comment = (post.comments ?? []).find((c) => c.id === commentId);
-    if (!comment) return;
-    const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
-    if (!postOwnerUid) return;
-    const friendUid =
-      post.authorId === CURRENT_USER_ID
-        ? friendMap[comment.authorId]?.backendUid ?? null
-        : session.uid;
-    if (!friendUid) return;
-    const optimisticId = `opt_thread_${Date.now()}`;
-    setPosts((current) =>
-      current.map((candidate) => {
-        if (candidate.id !== postId) return candidate;
-        return {
-          ...candidate,
-          comments: (candidate.comments ?? []).map((c) => {
-            if (c.id !== commentId) return c;
-            const entry = {
-              id: optimisticId,
-              authorId: CURRENT_USER_ID,
-              text,
-              createdAt: Date.now(),
-              reactions: {} as Record<string, string>,
-            };
-            return { ...c, thread: [...(c.thread ?? []), entry] };
-          }),
-        };
-      })
-    );
-    void callEmulatorFunction("createPrivatePostThreadMessage", {
-      uid: session.uid,
-      deviceId: session.deviceId,
-      postId,
-      postOwnerUid,
-      friendUid,
-      text,
-    })
-      .then(() => hydratePrivateThreadForPost(post))
-      .catch(() => {
-        setPosts((current) =>
-          current.map((candidate) => {
-            if (candidate.id !== postId) return candidate;
-            return {
-              ...candidate,
-              comments: (candidate.comments ?? []).map((c) => {
-                if (c.id !== commentId) return c;
-                return {
-                  ...c,
-                  thread: (c.thread ?? []).filter((entry) => entry.id !== optimisticId),
-                };
-              }),
-            };
-          })
-        );
-      });
-    setThreadDraftByChainKey((current) => ({ ...current, [`${postId}:${commentId}`]: "" }));
-  }, [friendMap, getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid]);
-
-  const submitFullscreenPostComment = useCallback(() => {
-    const post = fullScreenPost
-      ? posts.find((p) => p.id === fullScreenPost.id) ?? fullScreenPost
-      : null;
-    if (!post) return;
-    const draft = readComposerTextTrimmed(postCommentTextRef);
-    if (!draft) return;
-    if (postFullscreenThreadReplyKey) {
-      const prefix = `${post.id}:`;
-      if (!postFullscreenThreadReplyKey.startsWith(prefix)) return;
-      const anchorCommentId = postFullscreenThreadReplyKey.slice(prefix.length);
-      if (!anchorCommentId) return;
-      addThreadReplyToComment(post.id, anchorCommentId, draft);
-    } else {
-      addCommentToPost(post.id, draft);
-    }
-    postCommentTextRef.current = "";
-    setPostCommentInput("");
-  }, [
-    fullScreenPost,
-    posts,
-    postFullscreenThreadReplyKey,
-    addCommentToPost,
-    addThreadReplyToComment,
-  ]);
-
-  const patchPostCommentReactions = useCallback(
-    (
-      postId: string,
-      messageId: string,
-      emoji: string,
-      options?: { threadParentId?: string }
-    ): Post[] | null => {
-      const session = getBackendSession();
-      if (!session) return null;
-      const post = posts.find((p) => p.id === postId);
-      if (!post) return null;
-
-      const patchEntry = <T extends { reactions?: Record<string, string> }>(entry: T): T => {
-        const prev = entry.reactions ?? {};
-        const mine = prev[CURRENT_USER_ID] ?? prev[session.uid];
-        const nextEmoji = mine === emoji ? "" : emoji;
-        const next = { ...prev };
-        delete next[CURRENT_USER_ID];
-        delete next[session.uid];
-        if (nextEmoji) next[CURRENT_USER_ID] = nextEmoji;
-        return { ...entry, reactions: next };
-      };
-
-      return posts.map((p) => {
-        if (p.id !== postId) return p;
-        return {
-          ...p,
-          comments: (p.comments ?? []).map((comment) => {
-            if (options?.threadParentId) {
-              if (comment.id !== options.threadParentId) return comment;
-              return {
-                ...comment,
-                thread: (comment.thread ?? []).map((entry) =>
-                  entry.id === messageId ? patchEntry(entry) : entry
-                ),
-              };
-            }
-            if (comment.id !== messageId) return comment;
-            return patchEntry(comment);
-          }),
-        };
-      });
-    },
-    [getBackendSession, posts]
-  );
-
-  const toggleCommentReaction = useCallback(
-    (postId: string, commentId: string, emoji: string) => {
-      const post = posts.find((p) => p.id === postId);
-      const session = getBackendSession();
-      if (!post || !session || DEMO_OFFLINE_MODE) return;
-      const comment = (post.comments ?? []).find((c) => c.id === commentId);
-      if (!comment) return;
-      const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
-      if (!postOwnerUid) return;
-      const friendUid =
-        post.authorId === CURRENT_USER_ID
-          ? friendMap[comment.authorId]?.backendUid ?? null
-          : session.uid;
-      if (!friendUid || comment.id.startsWith("srv_")) return;
-      const prevComments = post.comments ?? [];
-      const nextPosts = patchPostCommentReactions(postId, commentId, emoji);
-      if (nextPosts) setPosts(nextPosts);
-      void callEmulatorFunction("togglePrivatePostThreadMessageReaction", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        postId,
-        postOwnerUid,
-        friendUid,
-        messageId: comment.id,
-        emoji,
-      })
-        .then(() => hydratePrivateThreadForPost(post))
-        .catch(() => {
-          setPosts((current) =>
-            current.map((p) => (p.id === postId ? { ...p, comments: prevComments } : p))
-          );
-        });
-    },
-    [
-      DEMO_OFFLINE_MODE,
-      friendMap,
-      getBackendSession,
-      hydratePrivateThreadForPost,
-      patchPostCommentReactions,
-      posts,
-      resolvePostOwnerBackendUid,
-    ]
-  );
-
-  const toggleThreadReaction = useCallback(
-    (postId: string, commentId: string, threadId: string, emoji: string) => {
-      const post = posts.find((p) => p.id === postId);
-      const session = getBackendSession();
-      if (!post || !session || DEMO_OFFLINE_MODE) return;
-      const comment = (post.comments ?? []).find((c) => c.id === commentId);
-      if (!comment) return;
-      const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
-      if (!postOwnerUid) return;
-      const friendUid =
-        post.authorId === CURRENT_USER_ID
-          ? friendMap[comment.authorId]?.backendUid ?? null
-          : session.uid;
-      if (!friendUid) return;
-      const prevComments = post.comments ?? [];
-      const nextPosts = patchPostCommentReactions(postId, threadId, emoji, {
-        threadParentId: commentId,
-      });
-      if (nextPosts) setPosts(nextPosts);
-      void callEmulatorFunction("togglePrivatePostThreadMessageReaction", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        postId,
-        postOwnerUid,
-        friendUid,
-        messageId: threadId,
-        emoji,
-      })
-        .then(() => hydratePrivateThreadForPost(post))
-        .catch(() => {
-          setPosts((current) =>
-            current.map((p) => (p.id === postId ? { ...p, comments: prevComments } : p))
-          );
-        });
-    },
-    [
-      DEMO_OFFLINE_MODE,
-      friendMap,
-      getBackendSession,
-      hydratePrivateThreadForPost,
-      patchPostCommentReactions,
-      posts,
-      resolvePostOwnerBackendUid,
-    ]
-  );
-
-  useEffect(() => {
-    if (!fullScreenPost) return;
-    void hydratePrivateThreadForPost(fullScreenPost);
-  }, [fullScreenPost, hydratePrivateThreadForPost]);
-
-  /**
-   * Push-based private-post-thread delivery while a post is open in
-   * fullscreen. Replaces the manual `.then(() => hydratePrivateThreadForPost)`
-   * dance for *remote* changes (the local-action callbacks still call it to
-   * confirm the optimistic write).
-   *
-   * Subscribes to each thread doc's `messages` subcollection (one
-   * subscription per friend pair when the viewer is the post owner; a
-   * single subscription when the viewer is the friend). On any change we
-   * re-run the existing aggregator so the rendered comment tree always
-   * reflects server truth without a callable poll.
-   */
-  useEffect(() => {
-    if (DEMO_OFFLINE_MODE) return;
-    if (!fullScreenPost) return;
-    const session = getBackendSession();
-    if (!session) return;
-    const firebaseAuthUid = firebaseAuth.currentUser?.uid;
-    if (!firebaseAuthUid) return;
-    const postOwnerUid = resolvePostOwnerBackendUid(fullScreenPost, session.uid);
-    if (!postOwnerUid) return;
-
-    const watchFriendUids = new Set<string>();
-    if (fullScreenPost.authorId === CURRENT_USER_ID) {
-      for (const comment of fullScreenPost.comments ?? []) {
-        const bu = friendMap[comment.authorId]?.backendUid?.trim();
-        if (bu?.startsWith("u_") && bu !== session.uid) watchFriendUids.add(bu);
-      }
-      if (postFullscreenThreadReplyKey?.startsWith(`${fullScreenPost.id}:`)) {
-        const anchorId = postFullscreenThreadReplyKey.slice(fullScreenPost.id.length + 1);
-        const anchor = fullScreenPost.comments?.find((c) => c.id === anchorId);
-        const bu = anchor ? friendMap[anchor.authorId]?.backendUid?.trim() : "";
-        if (bu?.startsWith("u_") && bu !== session.uid) watchFriendUids.add(bu);
-      }
-    } else {
-      watchFriendUids.add(session.uid);
-    }
-    if (watchFriendUids.size === 0) return;
-
-    const buildThreadId = (friendUid: string) => {
-      const pair =
-        postOwnerUid < friendUid ? `${postOwnerUid}_${friendUid}` : `${friendUid}_${postOwnerUid}`;
-      return `${fullScreenPost.id}__${pair}`;
-    };
-    const db = getFirestoreDb();
-    let cancelled = false;
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleRehydrate = () => {
-      if (cancelled) return;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (cancelled) return;
-        void hydratePrivateThreadForPost(fullScreenPost);
-      }, 80);
-    };
-    const unsubscribers = [...watchFriendUids].map((friendUid) => {
-      const threadId = buildThreadId(friendUid);
-      const q = firestoreQuery(
-        collection(db, "privatePostThreads", threadId, "messages"),
-        where("participantAuthUids", "array-contains", firebaseAuthUid)
-      );
-      return onSnapshot(
-        q,
-        (snap) => {
-          if (cancelled) return;
-          if (snap.docChanges().length > 0) scheduleRehydrate();
-        },
-        () => undefined
-      );
-    });
-    return () => {
-      cancelled = true;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      for (const unsub of unsubscribers) unsub();
-    };
-  }, [
-    fullScreenPost,
-    friendMap,
-    postFullscreenThreadReplyKey,
-    getBackendSession,
-    hydratePrivateThreadForPost,
-    resolvePostOwnerBackendUid,
-  ]);
-
-  const postsToHydrateComments = useMemo(() => {
-    if (view.screen === "myProfile") {
-      return myProfilePosts.slice(0, 25);
-    }
-    if (view.screen === "friendProfile") {
-      return friendProfilePosts.slice(0, 25);
-    }
-    if (view.screen === "home" && homeTab === "feed") {
-      // Feed comment threads hydrate lazily from viewability — not a bulk 25-post storm on open.
-      return [];
-    }
-    return [];
-  }, [view.screen, homeTab, feedPosts, myProfilePosts, friendProfilePosts]);
-
-  /**
-   * Post comments live in `privatePostThreads`. Hydrate once when feed/profile
-   * surfaces change (not on a 6s poll — that drove hundreds of thousands of reads).
-   */
-  const postsToHydrateCommentsKey = useMemo(
-    () => postsToHydrateComments.map((p) => p.id).join("|"),
-    [postsToHydrateComments]
-  );
-  useEffect(() => {
-    if (DEMO_OFFLINE_MODE) return;
-    const session = getBackendSession();
-    if (!session || !signedIn) return;
-    if (appLifecycleState !== "active") return;
-    if (postsToHydrateComments.length === 0) return;
-    let cancelled = false;
-    void (async () => {
-      for (let i = 0; i < postsToHydrateComments.length; i += 2) {
-        if (cancelled) return;
-        const batch = postsToHydrateComments.slice(i, i + 2);
-        await Promise.all(batch.map((post) => hydratePrivateThreadForPost(post)));
-        await yieldToUi();
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    DEMO_OFFLINE_MODE,
-    signedIn,
-    appLifecycleState,
-    postsToHydrateCommentsKey,
-    getBackendSession,
-    hydratePrivateThreadForPost,
-    postsToHydrateComments.length,
-  ]);
 
   const renderPostGridCell = (post: Post) => (
     <PostGridCell
@@ -7534,9 +6919,9 @@ function MainAppInner() {
               {DEMO_OFFLINE_MODE ? (
                 <View style={styles.authTopSideSpacer} />
               ) : (
-                <Pressable onPress={() => setAuthMode("signup")} style={styles.authTopLinkButton}>
+                <PressAckButton onPress={() => setAuthMode("signup")} style={styles.authTopLinkButton}>
                   <Text style={styles.authTopLinkText}>Sign up</Text>
-                </Pressable>
+                </PressAckButton>
               )}
             </View>
             <ScrollViewUntilScroll
@@ -7567,7 +6952,7 @@ function MainAppInner() {
                     placeholderTextColor={theme.subtleText}
                     style={[styles.searchInput, styles.passwordInputField]}
                   />
-                  <Pressable
+                  <PressAckButton
                     onPress={() => setLoginPasswordVisible((v) => !v)}
                     style={styles.passwordVisibilityButton}
                     accessibilityLabel={loginPasswordVisible ? "Hide password" : "Show password"}
@@ -7577,11 +6962,11 @@ function MainAppInner() {
                       size={20}
                       color={theme.subtleText}
                     />
-                  </Pressable>
+                  </PressAckButton>
                 </View>
-                <Pressable style={styles.primaryButton} onPress={loginDemoOrSubmit}>
+                <PressAckButton style={styles.primaryButton} onPress={loginDemoOrSubmit}>
                   <Text style={styles.primaryButtonText}>Login</Text>
-                </Pressable>
+                </PressAckButton>
               </View>
             </ScrollViewUntilScroll>
           </View>
@@ -7616,12 +7001,12 @@ function MainAppInner() {
                 />
                 <View style={{ height: 14 }} />
                 <View style={{ flexDirection: "row", gap: 10 }}>
-                  <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={() => void requestLoginOtpCode()}>
+                  <PressAckButton style={[styles.primaryButton, { flex: 1 }]} onPress={() => void requestLoginOtpCode()}>
                     <Text style={styles.primaryButtonText}>Request OTP code</Text>
-                  </Pressable>
-                  <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={completeLoginWithOtp}>
+                  </PressAckButton>
+                  <PressAckButton style={[styles.primaryButton, { flex: 1 }]} onPress={completeLoginWithOtp}>
                     <Text style={styles.primaryButtonText}>Verify OTP</Text>
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               </View>
             </ScrollViewUntilScroll>
@@ -7681,7 +7066,7 @@ function MainAppInner() {
                 placeholderTextColor={theme.subtleText}
                 style={[styles.searchInput, styles.passwordInputField]}
               />
-              <Pressable
+              <PressAckButton
                 onPress={() => setSignupPasswordVisible((v) => !v)}
                 style={styles.passwordVisibilityButton}
                 accessibilityLabel={signupPasswordVisible ? "Hide password" : "Show password"}
@@ -7691,7 +7076,7 @@ function MainAppInner() {
                   size={20}
                   color={theme.subtleText}
                 />
-              </Pressable>
+              </PressAckButton>
             </View>
             <Text style={styles.subtleText}>
               Password rules: at least 8 characters with upper/lower case letters, a number, and a special character.
@@ -7705,7 +7090,7 @@ function MainAppInner() {
                 placeholderTextColor={theme.subtleText}
                 style={[styles.searchInput, styles.passwordInputField]}
               />
-              <Pressable
+              <PressAckButton
                 onPress={() => setSignupPasswordConfirmVisible((v) => !v)}
                 style={styles.passwordVisibilityButton}
                 accessibilityLabel={signupPasswordConfirmVisible ? "Hide password" : "Show password"}
@@ -7715,11 +7100,11 @@ function MainAppInner() {
                   size={20}
                   color={theme.subtleText}
                 />
-              </Pressable>
+              </PressAckButton>
             </View>
-            <Pressable style={styles.primaryButton} onPress={startSignup}>
+            <PressAckButton style={styles.primaryButton} onPress={startSignup}>
               <Text style={styles.primaryButtonText}>Create account</Text>
-            </Pressable>
+            </PressAckButton>
           </ScrollViewUntilScroll>
         ) : (
           <View style={styles.authLoginRoot}>
@@ -7747,15 +7132,15 @@ function MainAppInner() {
                   style={styles.searchInput}
                 />
                 <View style={{ flexDirection: "row", gap: 10 }}>
-                  <Pressable
+                  <PressAckButton
                     style={[styles.primaryButton, { flex: 1 }]}
                     onPress={() => void requestSignupOtp()}
                   >
                     <Text style={styles.primaryButtonText}>Request new OTP</Text>
-                  </Pressable>
-                  <Pressable style={[styles.primaryButton, { flex: 1 }]} onPress={completeSignupWithOtp}>
+                  </PressAckButton>
+                  <PressAckButton style={[styles.primaryButton, { flex: 1 }]} onPress={completeSignupWithOtp}>
                     <Text style={styles.primaryButtonText}>Verify OTP</Text>
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               </View>
             </ScrollViewUntilScroll>
@@ -7784,14 +7169,14 @@ function MainAppInner() {
       {Platform.OS === "ios" ? (
         <InputAccessoryView nativeID="bioInputAccessory">
           <View style={styles.inputAccessoryBar}>
-            <Pressable
+            <PressAckButton
               style={styles.inputAccessoryBarButton}
               onPress={() => {
                 Keyboard.dismiss();
               }}
             >
               <Text style={styles.inputAccessoryBarButtonText}>Done</Text>
-            </Pressable>
+            </PressAckButton>
           </View>
         </InputAccessoryView>
       ) : null}
@@ -7813,23 +7198,22 @@ function MainAppInner() {
               {Platform.OS === "ios" ? (
                 <InputAccessoryView nativeID="postCommentInputAccessory">
                   <View style={styles.inputAccessoryBar}>
-                    <Pressable
+                    <PressAckButton
                       style={styles.inputAccessoryBarButton}
-                      onPressIn={playPressHaptic}
                       onPress={() => {
                         void submitFullscreenPostComment();
                       }}
                       accessibilityLabel="Send comment"
                     >
                       <Text style={styles.inputAccessoryBarButtonText}>Send</Text>
-                    </Pressable>
-                    <Pressable
+                    </PressAckButton>
+                    <PressAckButton
                       style={styles.inputAccessoryBarButton}
                       onPress={() => Keyboard.dismiss()}
                       accessibilityLabel="Dismiss keyboard"
                     >
                       <Text style={styles.inputAccessoryBarButtonText}>Done</Text>
-                    </Pressable>
+                    </PressAckButton>
                   </View>
                 </InputAccessoryView>
               ) : null}
@@ -7991,7 +7375,7 @@ function MainAppInner() {
           onRequestClose={() => setReactionDetailPost(null)}
         >
           <View style={styles.reactionDetailModalRoot}>
-            <Pressable
+            <PressAckButton
               style={styles.reactionDetailModalBackdrop}
               onPress={() => setReactionDetailPost(null)}
               accessibilityLabel="Dismiss"
@@ -8078,7 +7462,7 @@ function MainAppInner() {
                     style={styles.onlineStripList}
                     contentContainerStyle={onlineStripContentStyle}
                     renderItem={({ item: friend }) => (
-                      <TouchableOpacity
+                      <PressAckButton
                         style={[styles.onlineFriendItem, { width: onlineStripLayout.slotWidth }]}
                         onPress={() => findOrCreateChatWithFriend(friend.id)}
                         accessibilityLabel={`Open chat with ${friend.displayName}`}
@@ -8093,7 +7477,7 @@ function MainAppInner() {
                         <Text style={styles.onlineFriendName} numberOfLines={1}>
                           {friend.displayName}
                         </Text>
-                      </TouchableOpacity>
+                      </PressAckButton>
                     )}
                     ListEmptyComponent={
                       <Text style={styles.onlineStripEmpty}>No online friends</Text>
@@ -8134,7 +7518,7 @@ function MainAppInner() {
                       <View
                         style={[styles.chatRow, item.kind === "broadcast" ? styles.broadcastChatRow : null]}
                       >
-                        <Pressable
+                        <PressAckButton
                           style={styles.chatAvatarWrap}
                           onPress={() => {
                             if (primaryFriendId && counterpartPd?.canOpenProfile) {
@@ -8159,8 +7543,8 @@ function MainAppInner() {
                             renderAvatar(avatarUri, avatarLetter, 42)
                           )}
                           {showOnline ? <View style={styles.onlineDot} /> : null}
-                        </Pressable>
-                        <TouchableOpacity
+                        </PressAckButton>
+                        <PressAckButton
                           style={styles.chatTapCard}
                           onPress={() => openChatFromHome(item.id)}
                           onLongPress={() => openChatRowActions(item)}
@@ -8219,7 +7603,7 @@ function MainAppInner() {
                             )}
                           </Text>
                           {isUnread ? <View style={styles.chatUnreadDot} /> : null}
-                        </TouchableOpacity>
+                        </PressAckButton>
                       </View>
                     </View>
                   );
@@ -8242,13 +7626,13 @@ function MainAppInner() {
                 }}
               >
                 <View style={styles.homeBottomChrome}>
-                  <Pressable
+                  <PressAckButton
                     style={styles.startChatButton}
                     onPress={openStandardComposer}
                   >
                     <MaterialCommunityIcons name="email-plus-outline" size={20} color="#FFFFFF" />
                     <Text style={styles.startChatButtonText}>Start Chat</Text>
-                  </Pressable>
+                  </PressAckButton>
                   <View
                     style={[
                       styles.bottomDeadZone,
@@ -8408,7 +7792,7 @@ function MainAppInner() {
                           style={[styles.postGridRow, { marginBottom: postGridLayout.gap }]}
                         >
                           {row.map((p, ci) => (
-                            <Pressable
+                            <PressAckButton
                               key={p.id}
                               onPress={() => openPostViewerFromFeed(p)}
                               style={{
@@ -8416,7 +7800,7 @@ function MainAppInner() {
                               }}
                             >
                               {renderPostGridCell(p)}
-                            </Pressable>
+                            </PressAckButton>
                           ))}
                         </View>
                       ))}
@@ -8434,27 +7818,27 @@ function MainAppInner() {
                       />
                     ))}
                     {friendProfileFeedHasMore ? (
-                      <Pressable
+                      <PressAckButton
                         style={styles.profileFeedLoadMoreBtn}
                         onPress={loadMoreProfileFeedPosts}
                         accessibilityLabel="Load more posts"
                       >
                         <Text style={styles.profileFeedLoadMoreText}>Load more posts</Text>
-                      </Pressable>
+                      </PressAckButton>
                     ) : null}
                   </View>
                 </>
               )}
             </ScrollViewUntilScroll>
             <View style={[styles.profileBottomBar, { paddingBottom: stickyFooterPadding(insets.bottom) }]}>
-              <Pressable
+              <PressAckButton
                 style={styles.primaryButton}
                 onPress={() => {
                   findOrCreateChatWithFriend(view.friendId);
                 }}
               >
                 <Text style={styles.primaryButtonText}>Start chat</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -8501,7 +7885,7 @@ function MainAppInner() {
                 keyboardHeight > 0 ? { paddingBottom: keyboardScrollPadding(keyboardHeight) } : null,
               ]}
             >
-              <Pressable onPress={pickProfileImage}>
+              <PressAckButton onPress={pickProfileImage}>
                 {myProfilePictureUrl ? (
                   <View style={styles.friendHeroImageFrame}>
                     <Image
@@ -8516,9 +7900,9 @@ function MainAppInner() {
                     <Text style={styles.subtleText}>Tap to choose a profile picture</Text>
                   </View>
                 )}
-              </Pressable>
+              </PressAckButton>
               {myBio.trim().length > 0 && !myBioTextEntryOpen ? (
-                <Pressable
+                <PressAckButton
                   onLongPress={() => {
                     setMyBioTextEntryOpen(true);
                     setTimeout(() => {
@@ -8530,7 +7914,7 @@ function MainAppInner() {
                   accessibilityLabel="Bio. Long press to edit."
                 >
                   <Text style={styles.friendHeroBio}>{myBio}</Text>
-                </Pressable>
+                </PressAckButton>
               ) : (
                 <TextInput
                     ref={bioInputRef}
@@ -8562,7 +7946,7 @@ function MainAppInner() {
                       style={[styles.postGridRow, { marginBottom: postGridLayout.gap }]}
                     >
                       {row.map((p, ci) => (
-                        <Pressable
+                        <PressAckButton
                           key={p.id}
                           onPress={() => openPostViewerFromFeed(p)}
                           onLongPress={() => confirmDeletePost(p)}
@@ -8572,7 +7956,7 @@ function MainAppInner() {
                           }}
                         >
                           {renderPostGridCell(p)}
-                        </Pressable>
+                        </PressAckButton>
                       ))}
                     </View>
                   ))}
@@ -8590,13 +7974,13 @@ function MainAppInner() {
                   />
                 ))}
                 {myProfileFeedHasMore ? (
-                  <Pressable
+                  <PressAckButton
                     style={styles.profileFeedLoadMoreBtn}
                     onPress={loadMoreProfileFeedPosts}
                     accessibilityLabel="Load more posts"
                   >
                     <Text style={styles.profileFeedLoadMoreText}>Load more posts</Text>
-                  </Pressable>
+                  </PressAckButton>
                 ) : null}
               </View>
             </ScrollViewUntilScroll>
@@ -8682,7 +8066,7 @@ function MainAppInner() {
                   {(resolvedUri, resolving) => {
                     if (m.kind === "video" && m.mediaEncrypted && !resolvedUri) {
                       return (
-                        <Pressable
+                        <PressAckButton
                           onPress={() => {
                             setVideoPrepareRequestedIds((prev) => {
                               if (prev.has(m.id)) return prev;
@@ -8712,14 +8096,14 @@ function MainAppInner() {
                               </View>
                             )}
                           </View>
-                        </Pressable>
+                        </PressAckButton>
                       );
                     }
                     if (!resolvedUri) {
                       return <View style={{ height: 1 }} />;
                     }
                     return (
-                <Pressable
+                <PressAckButton
                   onPress={() =>
                     openFullscreenMedia(
                       resolvedUri,
@@ -8761,7 +8145,7 @@ function MainAppInner() {
                       />
                     </View>
                   )}
-                </Pressable>
+                </PressAckButton>
                     );
                   }}
                 </ChatMessageMediaResolver>
@@ -8808,7 +8192,7 @@ function MainAppInner() {
               scrollEventThrottle={16}
               nestedScrollEnabled
             >
-              <Pressable
+              <PressAckButton
                 onPress={promptPostPhotoSource}
                 style={[
                   styles.publishMediaSlot,
@@ -8852,37 +8236,37 @@ function MainAppInner() {
                     ))}
                   </ScrollViewUntilScroll>
                 )}
-              </Pressable>
+              </PressAckButton>
 
               <View style={{ flexDirection: "row", gap: 10, marginTop: 10, justifyContent: "center" }}>
-                <Pressable
+                <PressAckButton
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
                   onPress={() => void capturePostPhoto()}
                   accessibilityLabel="Take photo"
                 >
                   <Ionicons name="camera-outline" size={22} color={theme.text} />
-                </Pressable>
-                <Pressable
+                </PressAckButton>
+                <PressAckButton
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
                   onPress={pickPostPhotos}
                   accessibilityLabel="Add photos from gallery"
                 >
                   <Ionicons name="image-outline" size={22} color={theme.text} />
-                </Pressable>
-                <Pressable
+                </PressAckButton>
+                <PressAckButton
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
                   onPress={pickPostVideo}
                   accessibilityLabel="Add video"
                 >
                   <Ionicons name="videocam-outline" size={22} color={theme.text} />
-                </Pressable>
-                <Pressable
+                </PressAckButton>
+                <PressAckButton
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
                   onPress={clearPostDraftMedia}
                   accessibilityLabel="Clear media"
                 >
                   <Ionicons name="trash-outline" size={22} color={theme.text} />
-                </Pressable>
+                </PressAckButton>
               </View>
 
               <TextInput
@@ -8980,7 +8364,7 @@ function MainAppInner() {
               renderItem={({ item }) => {
                 const mutedInFeed = isFriendFeedMuted(item.id);
                 return (
-                  <Pressable
+                  <PressAckButton
                     style={styles.friendsListRow}
                     onPress={() => openFriendProfileFromFriendsList(item.id)}
                     onLongPress={() => handleFriendsListFriendLongPress(item)}
@@ -9004,7 +8388,7 @@ function MainAppInner() {
                     <Text style={styles.friendsListName} numberOfLines={1}>
                       {item.displayName}
                     </Text>
-                  </Pressable>
+                  </PressAckButton>
                 );
               }}
               ListEmptyComponent={
@@ -9040,9 +8424,8 @@ function MainAppInner() {
           {Platform.OS === "ios" ? (
             <InputAccessoryView nativeID="chatInputAccessory">
               <View style={styles.inputAccessoryBar}>
-                <Pressable
+                <PressAckButton
                   style={styles.inputAccessoryBarButton}
-                  onPressIn={playPressHaptic}
                   onPress={() => {
                     if (readComposerTextTrimmed(chatInputTextRef)) {
                       sendMessage();
@@ -9051,7 +8434,7 @@ function MainAppInner() {
                   }}
                 >
                   <Text style={styles.inputAccessoryBarButtonText}>Send</Text>
-                </Pressable>
+                </PressAckButton>
               </View>
             </InputAccessoryView>
           ) : null}
@@ -9060,7 +8443,7 @@ function MainAppInner() {
               <PressAckButton style={styles.iconButton} onPress={onBackFromChat}>
                 <Ionicons name="chevron-back" size={24} color={theme.accent} />
               </PressAckButton>
-              <Pressable
+              <PressAckButton
                 disabled={
                   !canEditActiveGroupMeta && !(activeDirectCounterpartPd?.canOpenProfile ?? false)
                 }
@@ -9097,10 +8480,10 @@ function MainAppInner() {
                     <Text style={styles.chatHeaderAvatarText}>{activeHeaderPicture || "^"}</Text>
                   </View>
                 )}
-              </Pressable>
+              </PressAckButton>
             </View>
             <View style={styles.chatHeaderTitleRail}>
-              <Pressable
+              <PressAckButton
                 style={styles.chatHeaderTitlePressable}
                 disabled={!canEditActiveGroupMeta}
                 onLongPress={() => {
@@ -9116,16 +8499,16 @@ function MainAppInner() {
                 >
                   {chatScreenTitleWithCount}
                 </Text>
-              </Pressable>
+              </PressAckButton>
             </View>
             <View style={[styles.chatHeaderSideRail, styles.chatHeaderSideRailRight]}>
-              <Pressable
+              <PressAckButton
                 style={styles.iconButton}
                 onPress={() => setChatOverflowOpen(true)}
                 accessibilityLabel="Chat options"
               >
                 <Ionicons name="ellipsis-vertical" size={20} color={theme.accent} />
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
 
@@ -9202,22 +8585,22 @@ function MainAppInner() {
                       isMine ? styles.failedMessageActionsMine : null,
                     ]}
                   >
-                    <Pressable
+                    <PressAckButton
                       style={styles.failedMessageActionBtn}
                       onPress={() => retryFailedMessage(item)}
                       accessibilityLabel="Try sending again"
                     >
                       <Ionicons name="refresh" size={14} color={theme.accent} />
                       <Text style={styles.failedMessageActionText}>Try again</Text>
-                    </Pressable>
-                    <Pressable
+                    </PressAckButton>
+                    <PressAckButton
                       style={styles.failedMessageActionBtn}
                       onPress={() => deleteFailedMessage(item.id)}
                       accessibilityLabel="Delete message"
                     >
                       <Ionicons name="trash-outline" size={14} color={theme.danger} />
                       <Text style={styles.failedMessageDeleteText}>Delete</Text>
-                    </Pressable>
+                    </PressAckButton>
                   </View>
                 ) : null;
               const isReplyTarget =
@@ -9265,7 +8648,7 @@ function MainAppInner() {
               const senderProfileTapAllowed = Boolean(peerPd?.canOpenProfile);
 
               const messageAvatar = (
-                <Pressable
+                <PressAckButton
                   style={isMine ? styles.messageAvatarMine : styles.messageAvatarOther}
                   onPress={() => {
                     if (item.senderId === CURRENT_USER_ID) {
@@ -9286,7 +8669,7 @@ function MainAppInner() {
                   disabled={item.senderId !== CURRENT_USER_ID && !senderProfileTapAllowed}
                 >
                   {renderAvatar(sender.profilePictureUrl, sender.letter, 30)}
-                </Pressable>
+                </PressAckButton>
               );
 
               const bubbleCardStyle = item.unsentAt
@@ -9369,7 +8752,7 @@ function MainAppInner() {
                         theme={reactTheme}
                         style={messageReactionHostStyle}
                       >
-                        <Pressable
+                        <PressAckButton
                           style={[
                                   ...bubbleCardStyle,
                                   styles.photoMediaBubble,
@@ -9429,7 +8812,7 @@ function MainAppInner() {
                                 <View style={styles.photoMediaBubbleCaption}>{captionBlock}</View>
                               ) : null}
                             </>
-                        </Pressable>
+                        </PressAckButton>
                       </ReactionBubbleHost>
                       <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
                         {formatDayTime(item.createdAt)}
@@ -9742,7 +9125,7 @@ function MainAppInner() {
                       theme={reactTheme}
                       style={messageReactionHostStyle}
                     >
-                    <Pressable
+                    <PressAckButton
                       style={bubbleCardStyle}
                       delayLongPress={CHAT_MESSAGE_LONG_PRESS_MS}
                       onLongPress={() => {
@@ -9789,7 +9172,7 @@ function MainAppInner() {
                           {messageDisplayText(item)}
                         </Text>
                       )}
-                    </Pressable>
+                    </PressAckButton>
                     </ReactionBubbleHost>
                     <Text style={isMine ? styles.messageMetaOutsideMine : styles.messageMetaOutside}>
                       {formatDayTime(item.createdAt)}
@@ -9911,7 +9294,7 @@ function MainAppInner() {
                     Voice note ready ({pendingVoiceNote.durationSec}s)
                   </Text>
                   <View style={styles.voicePreviewActions}>
-                    <Pressable
+                    <PressAckButton
                       style={styles.attachButton}
                       onPress={() => void togglePendingVoicePreview()}
                       accessibilityLabel={previewVoicePlaying ? "Pause preview" : "Play preview"}
@@ -9921,21 +9304,21 @@ function MainAppInner() {
                         size={18}
                         color={theme.accent}
                       />
-                    </Pressable>
-                    <Pressable
+                    </PressAckButton>
+                    <PressAckButton
                       style={styles.attachButton}
                       onPress={() => void discardPendingVoiceNote()}
                       accessibilityLabel="Discard voice note"
                     >
                       <Ionicons name="trash-outline" size={18} color={theme.danger} />
-                    </Pressable>
-                    <Pressable
+                    </PressAckButton>
+                    <PressAckButton
                       style={styles.sendButton}
                       onPress={() => void sendPendingVoiceNote()}
                       accessibilityLabel="Send voice note"
                     >
                       <Ionicons name="send" size={16} color="#FFFFFF" />
-                    </Pressable>
+                    </PressAckButton>
                   </View>
                 </View>
               ) : null}
@@ -9983,13 +9366,13 @@ function MainAppInner() {
                       ) : null}
                     </View>
                   </View>
-                  <Pressable
+                  <PressAckButton
                     style={styles.pendingChatMediaDiscard}
                     onPress={discardPendingChatMedia}
                     accessibilityLabel="Discard photo"
                   >
                     <Ionicons name="close-circle" size={26} color={theme.subtleText} />
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               ) : null}
 
@@ -10070,7 +9453,7 @@ function MainAppInner() {
                 >
                   {!showCompactComposer && !broadcastRecipientComposerLocked ? (
                     <>
-                      <Pressable
+                      <PressAckButton
                         style={[
                           styles.attachButtonSmall,
                           voiceNoteMode ? styles.attachButtonSmallActive : null,
@@ -10085,23 +9468,23 @@ function MainAppInner() {
                           size={16}
                           color={voiceNoteMode ? "#FFFFFF" : theme.accent}
                         />
-                      </Pressable>
-                      <Pressable style={styles.attachButtonSmall} onPress={() => sendCameraMedia("photo")}>
+                      </PressAckButton>
+                      <PressAckButton style={styles.attachButtonSmall} onPress={() => sendCameraMedia("photo")}>
                         <Ionicons name="camera-outline" size={16} color={theme.accent} />
-                      </Pressable>
-                      <Pressable style={styles.attachButtonSmall} onPress={sendGalleryPhoto}>
+                      </PressAckButton>
+                      <PressAckButton style={styles.attachButtonSmall} onPress={sendGalleryPhoto}>
                         <Ionicons name="images-outline" size={16} color={theme.accent} />
-                      </Pressable>
-                      <Pressable
+                      </PressAckButton>
+                      <PressAckButton
                         style={styles.attachButtonSmall}
                         onPress={sendGalleryVideo}
                         accessibilityLabel="Pick video from library"
                       >
                         <Ionicons name="film-outline" size={16} color={theme.accent} />
-                      </Pressable>
-                      <Pressable style={styles.attachButtonSmall} onPress={() => sendCameraMedia("video")}>
+                      </PressAckButton>
+                      <PressAckButton style={styles.attachButtonSmall} onPress={() => sendCameraMedia("video")}>
                         <Ionicons name="videocam-outline" size={16} color={theme.accent} />
-                      </Pressable>
+                      </PressAckButton>
                     </>
                   ) : null}
                   <TextInput
@@ -10204,10 +9587,10 @@ function MainAppInner() {
             </PressAckButton>
           </View>
 
-          <Pressable style={styles.broadcastOptionRow} onPress={openBroadcastPicker}>
+          <PressAckButton style={styles.broadcastOptionRow} onPress={openBroadcastPicker}>
             <Ionicons name="megaphone-outline" size={20} color={theme.accent} />
             <Text style={styles.broadcastOptionText}>Broadcast</Text>
-          </Pressable>
+          </PressAckButton>
 
           <TextInput
             value={composerSearch}
@@ -10224,7 +9607,7 @@ function MainAppInner() {
             renderItem={({ item }) => {
               const selected = selectedComposerIds.includes(item.id);
               return (
-                <TouchableOpacity
+                <PressAckButton
                   style={[styles.friendRow, selected ? styles.friendRowSelected : null]}
                   onPress={() => toggleFriendSelection(item.id)}
                   accessibilityState={{ selected }}
@@ -10237,16 +9620,16 @@ function MainAppInner() {
                   {selected ? (
                     <Ionicons name="checkmark-circle" size={22} color={theme.accent} />
                   ) : null}
-                </TouchableOpacity>
+                </PressAckButton>
               );
             }}
             ListEmptyComponent={<Text style={styles.subtleText}>No matching friends.</Text>}
             style={{ flex: 1, minHeight: 0 }}
           />
 
-          <Pressable style={styles.primaryButton} onPress={onPressCreateStandardChat}>
+          <PressAckButton style={styles.primaryButton} onPress={onPressCreateStandardChat}>
             <Text style={styles.primaryButtonText}>Create chat</Text>
-          </Pressable>
+          </PressAckButton>
         </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -10270,7 +9653,7 @@ function MainAppInner() {
           ]}
         >
           <View style={styles.modalHeader}>
-            <Pressable
+            <PressAckButton
               style={styles.chatHeaderTitlePressable}
               onLongPress={() => {
                 setPendingStandardGroupCreateAfterTitle(false);
@@ -10279,7 +9662,7 @@ function MainAppInner() {
               }}
             >
               <Text style={styles.chatScreenTitle}>{buildComposerHeaderTitle()}</Text>
-            </Pressable>
+            </PressAckButton>
             <PressAckButton onPress={closeBroadcastPicker} style={styles.iconButton}>
               <Ionicons name="close" size={22} color={theme.accent} />
             </PressAckButton>
@@ -10287,7 +9670,7 @@ function MainAppInner() {
           <Text style={styles.subtleText}>
             Select friends for a one-to-many broadcast. Replies stay private per friend thread.
           </Text>
-          <Pressable
+          <PressAckButton
             style={styles.dropdownTrigger}
             onPress={() => setBroadcastGroupDropdownOpen((current) => !current)}
           >
@@ -10299,30 +9682,30 @@ function MainAppInner() {
               size={18}
               color={theme.subtleText}
             />
-          </Pressable>
+          </PressAckButton>
           {broadcastGroupDropdownOpen ? (
             <View style={styles.dropdownMenu}>
               {savedBroadcastGroups.length === 0 ? (
                 <Text style={styles.subtleText}>No saved groups yet.</Text>
               ) : (
                 savedBroadcastGroups.map((group) => (
-                  <Pressable
+                  <PressAckButton
                     key={group.id}
                     style={styles.dropdownItem}
                     onPress={() => applySavedBroadcastGroup(group)}
                   >
                     <Text style={styles.chatName}>{group.name}</Text>
                     <Text style={styles.subtleText}>{group.memberIds.length} friends</Text>
-                  </Pressable>
+                  </PressAckButton>
                 ))
               )}
             </View>
           ) : null}
-          <Pressable style={styles.secondaryActionRow} onPress={toggleSelectAllBroadcastFriends}>
+          <PressAckButton style={styles.secondaryActionRow} onPress={toggleSelectAllBroadcastFriends}>
             <Text style={styles.secondaryButtonText}>
               {selectedComposerIds.length === allFriends.length ? "Clear all" : "Select all"}
             </Text>
-          </Pressable>
+          </PressAckButton>
           <TextInput
             value={composerSearch}
             onChangeText={setComposerSearch}
@@ -10344,7 +9727,7 @@ function MainAppInner() {
             renderItem={({ item }) => {
               const selected = selectedComposerIds.includes(item.id);
               return (
-                <TouchableOpacity
+                <PressAckButton
                   style={[styles.friendRow, selected ? styles.friendRowSelected : null]}
                   onPress={() => toggleFriendSelection(item.id)}
                   accessibilityState={{ selected }}
@@ -10357,15 +9740,15 @@ function MainAppInner() {
                   {selected ? (
                     <Ionicons name="checkmark-circle" size={22} color={theme.accent} />
                   ) : null}
-                </TouchableOpacity>
+                </PressAckButton>
               );
             }}
             ListEmptyComponent={<Text style={styles.subtleText}>No matching friends.</Text>}
             style={{ flex: 1, minHeight: 0 }}
           />
-          <Pressable style={styles.primaryButton} onPress={() => createOrOpenChat("broadcast")}>
+          <PressAckButton style={styles.primaryButton} onPress={() => createOrOpenChat("broadcast")}>
             <Text style={styles.primaryButtonText}>Create broadcast</Text>
-          </Pressable>
+          </PressAckButton>
         </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -10397,7 +9780,7 @@ function MainAppInner() {
               >
                 <Text style={styles.broadcastModalBtnOutlineText}>No</Text>
               </PressAckButton>
-              <Pressable
+              <PressAckButton
                 style={[styles.broadcastModalBtn, styles.broadcastModalBtnPrimary]}
                 onPress={() => {
                   setSaveBroadcastGroupPromptOpen(false);
@@ -10406,7 +9789,7 @@ function MainAppInner() {
                 }}
               >
                 <Text style={styles.broadcastModalBtnPrimaryText}>Yes</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         </View>
@@ -10447,12 +9830,12 @@ function MainAppInner() {
                 >
                   <Text style={styles.broadcastModalBtnOutlineText}>Back</Text>
                 </PressAckButton>
-                <Pressable
+                <PressAckButton
                   style={[styles.broadcastModalBtn, styles.broadcastModalBtnPrimary]}
                   onPress={handleBroadcastGroupNameConfirm}
                 >
                   <Text style={styles.broadcastModalBtnPrimaryText}>Continue</Text>
-                </Pressable>
+                </PressAckButton>
               </View>
             </View>
           </View>
@@ -10484,7 +9867,7 @@ function MainAppInner() {
                   contentContainerStyle={styles.groupCreateModalScroll}
                 >
                   <Text style={styles.groupCreateModalTitle}>New group chat</Text>
-                  <Pressable
+                  <PressAckButton
                     onPress={pickCreateGroupPicture}
                     accessibilityRole="button"
                     accessibilityLabel="Choose group picture"
@@ -10505,7 +9888,7 @@ function MainAppInner() {
                         </>
                       )}
                     </View>
-                  </Pressable>
+                  </PressAckButton>
                   <TextInput
                     value={createTitleDraft}
                     onChangeText={setCreateTitleDraft}
@@ -10524,7 +9907,7 @@ function MainAppInner() {
                     >
                       <Text style={styles.broadcastModalBtnOutlineText}>Cancel</Text>
                     </PressAckButton>
-                    <Pressable
+                    <PressAckButton
                       style={[styles.broadcastModalBtn, styles.broadcastModalBtnPrimary]}
                       onPress={() => {
                         const next = createTitleDraft.trim();
@@ -10537,7 +9920,7 @@ function MainAppInner() {
                       }}
                     >
                       <Text style={styles.broadcastModalBtnPrimaryText}>Create</Text>
-                    </Pressable>
+                    </PressAckButton>
                   </View>
                 </ScrollViewUntilScroll>
               </View>
@@ -10564,7 +9947,7 @@ function MainAppInner() {
                   >
                     <Text style={styles.secondaryButtonText}>Cancel</Text>
                   </PressAckButton>
-                  <Pressable
+                  <PressAckButton
                     style={styles.primaryButton}
                     onPress={() => {
                       const next = createTitleDraft.trim();
@@ -10573,7 +9956,7 @@ function MainAppInner() {
                     }}
                   >
                     <Text style={styles.primaryButtonText}>Save</Text>
-                  </Pressable>
+                  </PressAckButton>
                 </View>
               </View>
             )}
@@ -10602,9 +9985,9 @@ function MainAppInner() {
               <PressAckButton style={styles.secondaryButton} onPress={() => setEditChatMetaOpen(false)}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </PressAckButton>
-              <Pressable style={styles.primaryButton} onPress={saveChatTitle}>
+              <PressAckButton style={styles.primaryButton} onPress={saveChatTitle}>
                 <Text style={styles.primaryButtonText}>Save</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         </View>
@@ -10637,9 +10020,9 @@ function MainAppInner() {
               <PressAckButton style={styles.secondaryButton} onPress={() => setEditChatPictureOpen(false)}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </PressAckButton>
-              <Pressable style={styles.primaryButton} onPress={saveChatPicture}>
+              <PressAckButton style={styles.primaryButton} onPress={saveChatPicture}>
                 <Text style={styles.primaryButtonText}>Save</Text>
-              </Pressable>
+              </PressAckButton>
             </View>
           </View>
         </View>
@@ -10657,7 +10040,7 @@ function MainAppInner() {
           setReactionTargetMessageId(null);
         }}
       >
-        <Pressable
+        <PressAckButton
           style={styles.settingsOverlay}
           onPress={() => {
             setReactionPickerOpen(false);
@@ -10666,7 +10049,7 @@ function MainAppInner() {
             setReactionTargetMessageId(null);
           }}
         >
-          <Pressable style={styles.settingsCard} onPress={() => {}}>
+          <PressAckButton style={styles.settingsCard} onPress={() => {}}>
             <Text style={styles.chatScreenTitle}>
               {messageActionTarget && !postReactionTargetId && !commentReactionTarget
                 ? "Message"
@@ -10679,7 +10062,7 @@ function MainAppInner() {
                   resolvedChat &&
                   !canReplyToBroadcastMessage(messageActionTarget, resolvedChat, CURRENT_USER_ID)
                 ) ? (
-                <Pressable
+                <PressAckButton
                   style={styles.menuRow}
                   onPress={() => {
                     setReactionPickerOpen(false);
@@ -10688,11 +10071,11 @@ function MainAppInner() {
                 >
                   <Feather name="corner-up-left" size={18} color={theme.text} />
                   <Text style={styles.menuRowText}>Reply</Text>
-                </Pressable>
+                </PressAckButton>
                 ) : null}
                 {messageActionTarget.senderId === CURRENT_USER_ID && !messageActionTarget.unsentAt ? (
                   <>
-                    <Pressable
+                    <PressAckButton
                       style={styles.menuRow}
                       onPress={() => {
                         setReactionPickerOpen(false);
@@ -10701,8 +10084,8 @@ function MainAppInner() {
                     >
                       <Feather name="edit-2" size={18} color={theme.text} />
                       <Text style={styles.menuRowText}>Edit</Text>
-                    </Pressable>
-                    <Pressable
+                    </PressAckButton>
+                    <PressAckButton
                       style={styles.menuRow}
                       onPress={() => {
                         setReactionPickerOpen(false);
@@ -10711,46 +10094,46 @@ function MainAppInner() {
                     >
                       <Feather name="trash-2" size={18} color={theme.danger} />
                       <Text style={[styles.menuRowText, { color: theme.danger }]}>Unsend</Text>
-                    </Pressable>
+                    </PressAckButton>
                   </>
                 ) : null}
                 {reactionPickerActiveEmoji ? (
-                  <Pressable style={styles.menuRow} onPress={removeActiveReaction}>
+                  <PressAckButton style={styles.menuRow} onPress={removeActiveReaction}>
                     <Feather name="x-circle" size={18} color={theme.danger} />
                     <Text style={[styles.menuRowText, { color: theme.danger }]}>
                       {`Remove reaction (${reactionPickerActiveEmoji})`}
                     </Text>
-                  </Pressable>
+                  </PressAckButton>
                 ) : null}
                 <View style={[styles.reactionPickerRow, { marginTop: 12 }]}>
                   {REACTION_EMOJIS.map((emoji) => (
-                    <Pressable key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
+                    <PressAckButton key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
                       <Text style={styles.reactionChipText}>{emoji}</Text>
-                    </Pressable>
+                    </PressAckButton>
                   ))}
                 </View>
               </>
             ) : (
               <>
                 {reactionPickerActiveEmoji ? (
-                  <Pressable style={styles.menuRow} onPress={removeActiveReaction}>
+                  <PressAckButton style={styles.menuRow} onPress={removeActiveReaction}>
                     <Feather name="x-circle" size={18} color={theme.danger} />
                     <Text style={[styles.menuRowText, { color: theme.danger }]}>
                       {`Remove reaction (${reactionPickerActiveEmoji})`}
                     </Text>
-                  </Pressable>
+                  </PressAckButton>
                 ) : null}
               <View style={styles.reactionPickerRow}>
                 {REACTION_EMOJIS.map((emoji) => (
-                  <Pressable key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
+                  <PressAckButton key={emoji} style={styles.reactionChip} onPress={() => applyReaction(emoji)}>
                     <Text style={styles.reactionChipText}>{emoji}</Text>
-                  </Pressable>
+                  </PressAckButton>
                 ))}
               </View>
               </>
             )}
-          </Pressable>
-        </Pressable>
+          </PressAckButton>
+        </PressAckButton>
       </Modal>
 
       {view.screen === "openSourceLicenses" ? (
@@ -10827,7 +10210,7 @@ function MainAppInner() {
                   trackColor={{ false: "#95A1A8", true: theme.accent }}
                 />
               </View>
-              <Pressable
+              <PressAckButton
                 style={[styles.settingsRow, { paddingVertical: 12 }]}
                 onPress={goToOpenSourceLicenses}
               >
@@ -10836,8 +10219,8 @@ function MainAppInner() {
                   <Text style={styles.settingsRowHint}>MIT &amp; others</Text>
                   <Ionicons name="chevron-forward" size={18} color={theme.subtleText} />
                 </View>
-              </Pressable>
-              <Pressable
+              </PressAckButton>
+              <PressAckButton
                 style={[styles.settingsRow, { paddingVertical: 12 }]}
                 onPress={() => {
                   setThemePickerOpen(true);
@@ -10850,8 +10233,8 @@ function MainAppInner() {
                   </Text>
                   <Ionicons name="chevron-forward" size={18} color={theme.subtleText} />
                 </View>
-              </Pressable>
-              <Pressable
+              </PressAckButton>
+              <PressAckButton
                 style={[styles.settingsRow, { paddingVertical: 12 }]}
                 onPress={() => {
                   Alert.alert(
@@ -10873,14 +10256,14 @@ function MainAppInner() {
               >
                 <Text style={[styles.chatName, { color: theme.danger }]}>Reset local app state</Text>
                 <Ionicons name="trash-outline" size={18} color={theme.danger} />
-              </Pressable>
-              <Pressable
+              </PressAckButton>
+              <PressAckButton
                 style={[styles.settingsRow, { paddingVertical: 12 }]}
                 onPress={confirmDeleteAccount}
               >
                 <Text style={[styles.chatName, { color: theme.danger }]}>Delete account</Text>
                 <Ionicons name="alert-circle-outline" size={18} color={theme.danger} />
-              </Pressable>
+              </PressAckButton>
             </ScrollViewUntilScroll>
           </View>
         </Animated.View>
@@ -10892,10 +10275,10 @@ function MainAppInner() {
         animationType="fade"
         onRequestClose={() => setThemePickerOpen(false)}
       >
-        <Pressable style={styles.settingsOverlay} onPress={() => setThemePickerOpen(false)}>
-          <Pressable style={styles.settingsCard} onPress={() => {}}>
+        <PressAckButton style={styles.settingsOverlay} onPress={() => setThemePickerOpen(false)}>
+          <PressAckButton style={styles.settingsCard} onPress={() => {}}>
             <Text style={styles.chatScreenTitle}>Colour theme</Text>
-            <Pressable
+            <PressAckButton
               style={styles.themePickerOptionRow}
               onPress={() => {
                 setColorThemeId("green");
@@ -10908,8 +10291,8 @@ function MainAppInner() {
               ) : (
                 <View style={{ width: 22 }} />
               )}
-            </Pressable>
-            <Pressable
+            </PressAckButton>
+            <PressAckButton
               style={[styles.themePickerOptionRow, styles.themePickerOptionRowLast]}
               onPress={() => {
                 setColorThemeId("pink");
@@ -10922,12 +10305,12 @@ function MainAppInner() {
               ) : (
                 <View style={{ width: 22 }} />
               )}
-            </Pressable>
-            <Pressable style={styles.primaryButton} onPress={() => setThemePickerOpen(false)}>
+            </PressAckButton>
+            <PressAckButton style={styles.primaryButton} onPress={() => setThemePickerOpen(false)}>
               <Text style={styles.primaryButtonText}>Done</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
+            </PressAckButton>
+          </PressAckButton>
+        </PressAckButton>
       </Modal>
 
       <Modal
@@ -10936,9 +10319,9 @@ function MainAppInner() {
         animationType="fade"
         onRequestClose={() => setChatOverflowOpen(false)}
       >
-        <Pressable style={styles.menuOverlay} onPress={() => setChatOverflowOpen(false)}>
-          <Pressable style={styles.menuCard} onPress={() => {}}>
-            <Pressable
+        <PressAckButton style={styles.menuOverlay} onPress={() => setChatOverflowOpen(false)}>
+          <PressAckButton style={styles.menuCard} onPress={() => {}}>
+            <PressAckButton
               style={styles.menuRow}
               onPress={() => {
                 setChatOverflowOpen(false);
@@ -10947,8 +10330,8 @@ function MainAppInner() {
             >
               <Feather name="users" size={18} color={theme.text} />
               <Text style={styles.menuRowText}>View chat members</Text>
-            </Pressable>
-            <Pressable
+            </PressAckButton>
+            <PressAckButton
               style={styles.menuRow}
               onPress={() => {
                 setChatOverflowOpen(false);
@@ -10957,8 +10340,8 @@ function MainAppInner() {
             >
               <Feather name="search" size={18} color={theme.text} />
               <Text style={styles.menuRowText}>Search in chat</Text>
-            </Pressable>
-            <Pressable
+            </PressAckButton>
+            <PressAckButton
               style={styles.menuRow}
               onPress={() => {
                 setChatOverflowOpen(false);
@@ -10969,9 +10352,9 @@ function MainAppInner() {
             >
               <Feather name="image" size={18} color={theme.text} />
               <Text style={styles.menuRowText}>Shared media</Text>
-            </Pressable>
+            </PressAckButton>
             {resolvedChat && resolvedChat.kind !== "broadcast" && !resolvedChat.isDraft ? (
-              <Pressable
+              <PressAckButton
                 style={styles.menuRow}
                 onPress={() => {
                   setChatOverflowOpen(false);
@@ -10981,10 +10364,10 @@ function MainAppInner() {
               >
                 <Feather name="user-plus" size={18} color={theme.text} />
                 <Text style={styles.menuRowText}>Add people</Text>
-              </Pressable>
+              </PressAckButton>
             ) : null}
             {resolvedChat && !resolvedChat.isDraft ? (
-              <Pressable
+              <PressAckButton
                 style={styles.menuRow}
                 onPress={() => {
                   setChatOverflowOpen(false);
@@ -10993,10 +10376,10 @@ function MainAppInner() {
               >
                 <Feather name="log-out" size={18} color={theme.danger} />
                 <Text style={[styles.menuRowText, { color: theme.danger }]}>Leave chat</Text>
-              </Pressable>
+              </PressAckButton>
             ) : null}
-          </Pressable>
-        </Pressable>
+          </PressAckButton>
+        </PressAckButton>
       </Modal>
 
       <Modal
@@ -11073,13 +10456,13 @@ function MainAppInner() {
                 style={styles.addMemberList}
                 keyboardShouldPersistTaps="handled"
                 renderItem={({ item }) => (
-                  <TouchableOpacity style={styles.friendRow} onPress={() => addMemberToChat(item.id)}>
+                  <PressAckButton style={styles.friendRow} onPress={() => addMemberToChat(item.id)}>
                     <View style={styles.friendRowLeft}>
                       {renderAvatar(item.profilePictureUrl, item.displayName.slice(0, 1), 36)}
                       <Text style={styles.chatName}>{item.displayName}</Text>
                     </View>
                     <Text style={styles.selectedText}>Add</Text>
-                  </TouchableOpacity>
+                  </PressAckButton>
                 )}
                 ListEmptyComponent={
                   <Text style={styles.subtleText}>

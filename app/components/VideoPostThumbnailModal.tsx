@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Image,
   Modal,
-  Pressable,
   StyleSheet,
   Text,
   View,
@@ -73,20 +72,20 @@ export function VideoPostThumbnailModal({
           </View>
           <Text style={[styles.previewCaption, { color: theme.subtleText }]}>Default: first frame</Text>
 
-          <Pressable
+          <PressAckButton
             style={[styles.primaryBtn, { backgroundColor: theme.accent }]}
             onPress={onUseFirstFrame}
             disabled={loadingPreview}
           >
             <Text style={styles.primaryBtnText}>Use first frame</Text>
-          </Pressable>
-          <Pressable
+          </PressAckButton>
+          <PressAckButton
             style={[styles.secondaryBtn, { borderColor: theme.divider }]}
             onPress={onChooseCustom}
             disabled={loadingPreview}
           >
             <Text style={[styles.secondaryBtnText, { color: theme.text }]}>Choose custom thumbnail</Text>
-          </Pressable>
+          </PressAckButton>
           <PressAckButton style={styles.cancelBtn} onPress={onCancel}>
             <Text style={[styles.cancelBtnText, { color: theme.subtleText }]}>Cancel</Text>
           </PressAckButton>

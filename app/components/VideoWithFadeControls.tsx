@@ -2,7 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Image, StyleSheet, Text, View } from "react-native";
+import { PressAckButton } from "./PressAckButton";
 
 const CONTROLS_VISIBLE_MS = 1500;
 const CONTROLS_FADE_DURATION_MS = 350;
@@ -234,13 +235,13 @@ export function VideoWithFadeControls({
         ]}
         pointerEvents="box-none"
       >
-        <Pressable
+        <PressAckButton
           style={styles.transportBtn}
           onPress={() => void togglePlayPause()}
           accessibilityLabel={isPlaying ? "Pause" : "Play"}
         >
           <Ionicons name={isPlaying ? "pause" : "play"} size={compact ? 20 : 26} color="#fff" />
-        </Pressable>
+        </PressAckButton>
         <View style={styles.seekTrackWrap} pointerEvents="box-none">
           <Slider
             style={styles.seekSlider}
@@ -273,20 +274,20 @@ export function VideoWithFadeControls({
           {durationMs > 0 ? ` / ${formatVideoTime(durationMs)}` : ""}
         </Text>
         {onOpenFullscreen ? (
-          <Pressable
+          <PressAckButton
             style={styles.transportBtn}
             onPress={() => onOpenFullscreen()}
             accessibilityLabel="Full screen"
           >
             <Ionicons name="expand" size={compact ? 18 : 22} color="#fff" />
-          </Pressable>
+          </PressAckButton>
         ) : null}
       </Animated.View>
     ) : null;
 
   if (showPlayOverlay) {
     return (
-      <Pressable
+      <PressAckButton
         style={{ width, height, backgroundColor: "#000" }}
         onLongPress={onLongPress}
         delayLongPress={400}
@@ -300,13 +301,13 @@ export function VideoWithFadeControls({
             <Ionicons name="play" size={compact ? 22 : 32} color="#fff" />
           </View>
         </View>
-      </Pressable>
+      </PressAckButton>
     );
   }
 
   return (
     <View style={{ width, height, backgroundColor: "#000" }}>
-      <Pressable
+      <PressAckButton
         style={{ width, height }}
         onLongPress={onLongPress}
         delayLongPress={400}
@@ -314,7 +315,7 @@ export function VideoWithFadeControls({
         accessibilityRole="button"
       >
         {videoNode}
-      </Pressable>
+      </PressAckButton>
       {controlsNode}
     </View>
   );

@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 
 import { PressAckButton } from "./PressAckButton";
 import type { ThemePalette } from "../domain/types";
@@ -75,7 +75,7 @@ export function NotificationPrePromptScreen({
         Get notified when friends message you or react to your posts. {productName} loads your chats and
         feed in the background while you decide.
       </Text>
-      <Pressable
+      <PressAckButton
         style={[styles.primaryButton, { alignSelf: "stretch", marginBottom: 12, opacity: busy ? 0.7 : 1 }]}
         onPress={onAllow}
         disabled={busy}
@@ -87,7 +87,7 @@ export function NotificationPrePromptScreen({
         ) : (
           <Text style={styles.primaryButtonText}>Allow notifications</Text>
         )}
-      </Pressable>
+      </PressAckButton>
       <PressAckButton
         style={{ alignSelf: "center", paddingVertical: 12, paddingHorizontal: 16 }}
         onPress={onDecline}
