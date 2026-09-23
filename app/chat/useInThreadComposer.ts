@@ -21,7 +21,7 @@ export type PendingVoiceNote = {
 
 /**
  * In-thread composer draft: text, voice-note recording, and a pending photo.
- * Sending the payload still lives in MainApp (`sendMessage` / `sendPayload`).
+ * Sending the payload lives in `app/messaging/sendChatPayload`.
  */
 export function useInThreadComposer(params: { chatScreenOpen: boolean }) {
   const { chatScreenOpen } = params;

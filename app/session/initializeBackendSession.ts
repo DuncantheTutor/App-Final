@@ -1,0 +1,287 @@
+import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { Alert } from "react-native";
+
+import { callEmulatorFunction, backendUidForEmail, getOrCreateBackendDeviceId } from "../../backendBridge";
+import { firebaseAuth } from "../../firebaseAuthClient";
+import { logAppError, logAppEvent, setTelemetryContext } from "../../telemetry";
+import { ensureLocalKeyBundle } from "../../e2eeCrypto";
+import { storageGetItem, storageSetItem } from "../lib/encryptedLocalStorage";
+import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "../lib/e2eeKeyBackup";
+import { restoreSocialSnapshotFromCloud } from "../lib/socialSnapshotBackup";
+import { mergeCloudChatsWithLocalReadBy } from "../lib/mergeChatReadBy";
+import { mergeSyncedMessages, mergeSyncedPosts } from "../lib/mergeEncryptedSync";
+import { yieldToUi } from "../lib/yieldToUi";
+import { mergeProfilePictureUrl, normalizeHttpsProfilePictureUrl } from "../lib/profilePictureUrl";
+import { publishActivePresence } from "../presence/heartbeat";
+import type { Chat, Message, MockAuthAccount, Post } from "../domain/types";
+import type { BackendSession } from "../messaging/types";
+import type { EncryptedSyncState } from "./useSignedInSession";
+import {
+  isEmailDerivedUsername,
+  isPlaceholderProfileUsername,
+  isPostAlive,
+  profileBioStorageKey,
+  profilePictureStorageKey,
+  profileUsernameStorageKey,
+  resolveProfileUsername,
+  usernameForProfileUpsert,
+} from "../theme/preludeConstants";
+
+export type InitializeBackendSessionDeps = {
+  markSessionReady: (session: BackendSession) => void;
+  recipientKeyCacheRef: MutableRefObject<Record<string, string>>;
+  setEncryptedSyncState: Dispatch<SetStateAction<EncryptedSyncState>>;
+  localSocialCacheSavedAtMsRef: MutableRefObject<number>;
+  deletedPostIdsRef: MutableRefObject<Set<string>>;
+  applyChats: Dispatch<SetStateAction<Chat[]>>;
+  applyMessages: Dispatch<SetStateAction<Message[]>>;
+  setPosts: Dispatch<SetStateAction<Post[]>>;
+  messagesWatermarkMsRef: MutableRefObject<number>;
+  postsWatermarkMsRef: MutableRefObject<number>;
+  messagesLastFullSyncAtRef: MutableRefObject<number>;
+  postsLastFullSyncAtRef: MutableRefObject<number>;
+  myDisplayNameRef: MutableRefObject<string>;
+  hydrateMyProfile: (next: { bio?: string; profilePictureUrl?: string | null }) => void;
+  refreshHiddenConversationIdsFromServer: () => Promise<void>;
+};
+
+export async function initializeBackendSessionForAccount(
+  account: MockAuthAccount,
+  deps: InitializeBackendSessionDeps
+): Promise<void> {
+  const {
+    markSessionReady,
+    recipientKeyCacheRef,
+    setEncryptedSyncState,
+    localSocialCacheSavedAtMsRef,
+    deletedPostIdsRef,
+    applyChats,
+    applyMessages,
+    setPosts,
+    messagesWatermarkMsRef,
+    postsWatermarkMsRef,
+    messagesLastFullSyncAtRef,
+    postsLastFullSyncAtRef,
+    myDisplayNameRef,
+    hydrateMyProfile,
+    refreshHiddenConversationIdsFromServer,
+  } = deps;
+  const uid = backendUidForEmail(account.email);
+  const deviceId = await getOrCreateBackendDeviceId();
+  const persistedUsername =
+    (await storageGetItem(profileUsernameStorageKey(account.email)))?.trim() ?? "";
+  const persistedBio =
+    (await storageGetItem(profileBioStorageKey(account.email)))?.trim() ?? "";
+  const persistedProfilePic =
+    (await storageGetItem(profilePictureStorageKey(account.email)))?.trim() ?? "";
+  const claimUsername = resolveProfileUsername({
+    email: account.email,
+    persistedUsername,
+    accountUsername: account.username,
+  });
+  const usernameForClaim =
+    persistedUsername ||
+    (claimUsername !== "User" && !isEmailDerivedUsername(claimUsername, account.email)
+      ? claimUsername
+      : "");
+  await callEmulatorFunction("claimDeviceSession", {
+    uid,
+    deviceId,
+    ...(usernameForClaim ? { username: usernameForClaim } : {}),
+  });
+
+  const keyRestore = await restoreKeyBundleFromCloudIfMissing(uid, deviceId);
+  if (keyRestore.status === "restored") {
+    logAppEvent("e2ee.key_backup.restored", { uid });
+  }
+  if (keyRestore.status === "backup_decrypt_failed") {
+    throw new Error(
+      "Could not restore your encryption keys from backup. Sign in with the same account you used before, then contact support if this continues."
+    );
+  }
+  const ownBundle = await ensureLocalKeyBundle(uid);
+
+  markSessionReady({ uid, deviceId });
+  setTelemetryContext({ uid, deviceId });
+  recipientKeyCacheRef.current = {
+    ...recipientKeyCacheRef.current,
+    [uid]: ownBundle.encryptionPublicKey,
+  };
+  setEncryptedSyncState({ profile: "syncing", posts: "syncing", messages: "syncing", lastSuccessAt: null });
+
+  void (async () => {
+    try {
+      const cloudSnapshot = await restoreSocialSnapshotFromCloud(uid, deviceId);
+      const localSavedAtMs = localSocialCacheSavedAtMsRef.current;
+      if (
+        cloudSnapshot &&
+        (localSavedAtMs <= 0 || cloudSnapshot.savedAtMs >= localSavedAtMs)
+      ) {
+        const cloudPostsVisible = cloudSnapshot.posts.filter(
+          (p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)
+        );
+        applyChats((current) => mergeCloudChatsWithLocalReadBy(current, cloudSnapshot.chats));
+        await yieldToUi();
+        applyMessages((current) =>
+          mergeSyncedMessages(current, cloudSnapshot.messages, {
+            incremental: true,
+            optimisticWindowMs: 120_000,
+          })
+        );
+        await yieldToUi();
+        setPosts((current) =>
+          mergeSyncedPosts(current, cloudPostsVisible, {
+            incremental: true,
+            optimisticWindowMs: 120_000,
+            suppressedPostIds: deletedPostIdsRef.current,
+          })
+        );
+        // Snapshot watermarks are hints only — boot sync re-pulls from server.
+        messagesWatermarkMsRef.current = 0;
+        postsWatermarkMsRef.current = 0;
+        messagesLastFullSyncAtRef.current = 0;
+        postsLastFullSyncAtRef.current = 0;
+      } else if (cloudSnapshot && localSavedAtMs > 0) {
+        logAppEvent("cache.cloud_snapshot.skipped_stale", {
+          cloudSavedAtMs: cloudSnapshot.savedAtMs,
+          localSavedAtMs,
+        });
+      }
+
+      const firebaseAuthUid = firebaseAuth.currentUser?.uid;
+      if (firebaseAuthUid) {
+        let authRegistryOk = false;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await callEmulatorFunction("registerFirebaseAuthUid", {
+              uid,
+              deviceId,
+              firebaseAuthUid,
+            });
+            await publishActivePresence({ uid, deviceId }, Date.now());
+            authRegistryOk = true;
+            break;
+          } catch (err) {
+            if (attempt >= 2) {
+              logAppError("auth.register_firebase_uid", err, { uid, attempt });
+            } else {
+              await new Promise<void>((r) => setTimeout(r, 400 * (attempt + 1)));
+            }
+          }
+        }
+        if (!authRegistryOk) {
+          void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
+        }
+      }
+
+      let resolvedBio = (account.bio || "").trim() || persistedBio;
+      let resolvedPicture = mergeProfilePictureUrl(
+        persistedProfilePic,
+        account.profilePictureUrl
+      );
+      let self:
+        | { username?: string; bio?: string; profilePictureUrl?: string | null }
+        | null
+        | undefined = null;
+      try {
+        try {
+          const profilesRes = await callEmulatorFunction<{
+            profiles?: Record<
+              string,
+              { username?: string; bio?: string; profilePictureUrl?: string | null } | null
+            >;
+          }>("getUserProfiles", {
+            uid,
+            deviceId,
+            targetUids: [uid],
+          });
+          self = profilesRes.profiles?.[uid] ?? null;
+        } catch {
+          /* no server profile yet — first device claim */
+        }
+        if (self) {
+          const sb = (self.bio ?? "").trim();
+          if (sb) resolvedBio = sb;
+          if (typeof self.profilePictureUrl === "string" && self.profilePictureUrl.trim()) {
+            resolvedPicture = mergeProfilePictureUrl(self.profilePictureUrl, resolvedPicture);
+          }
+        }
+      } catch {
+        /* keep account defaults */
+      }
+      const resolvedUsername = resolveProfileUsername({
+        email: account.email,
+        persistedUsername,
+        accountUsername: account.username,
+        serverUsername: self?.username,
+      });
+      if (!isPlaceholderProfileUsername(resolvedUsername, account.email)) {
+        void storageSetItem(profileUsernameStorageKey(account.email), resolvedUsername).catch(
+          () => {}
+        );
+        myDisplayNameRef.current = resolvedUsername;
+      }
+
+      await callEmulatorFunction("publishUserKeyBundle", {
+        uid,
+        deviceId,
+        keyVersion: ownBundle.keyVersion,
+        encryptionPublicKey: ownBundle.encryptionPublicKey,
+        identitySigningPublicKey: ownBundle.identitySigningPublicKey,
+      });
+      void uploadKeyBundleToCloudBackup(uid, deviceId).catch(() => undefined);
+      const usernameForUpsert = usernameForProfileUpsert({
+        email: account.email,
+        persistedUsername,
+        accountUsername: account.username,
+        serverUsername: self?.username,
+      });
+      await callEmulatorFunction("upsertUserProfile", {
+        uid,
+        deviceId,
+        ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
+        bio: resolvedBio,
+        ...(resolvedPicture ? { profilePictureUrl: resolvedPicture } : {}),
+        phoneNumber: account.phoneNumber,
+      });
+      const safeProfilePic = normalizeHttpsProfilePictureUrl(resolvedPicture);
+      hydrateMyProfile({ bio: resolvedBio, profilePictureUrl: safeProfilePic });
+      if (safeProfilePic) {
+        void storageSetItem(profilePictureStorageKey(account.email), safeProfilePic).catch(
+          () => {}
+        );
+      }
+      void storageSetItem(profileBioStorageKey(account.email), resolvedBio).catch(() => {});
+
+      await refreshHiddenConversationIdsFromServer();
+      setEncryptedSyncState((current) => ({
+        ...current,
+        profile: "ok",
+        lastSuccessAt: Date.now(),
+      }));
+    } catch (err) {
+      logAppError("session.background_init", err, { uid });
+      setEncryptedSyncState((current) => ({ ...current, profile: "error" }));
+    }
+  })();
+}
+
+export async function retryInitializeBackendSession(
+  account: MockAuthAccount,
+  deps: {
+    initializeBackendSessionForAccount: (account: MockAuthAccount) => Promise<void>;
+    setEncryptedSyncState: Dispatch<SetStateAction<EncryptedSyncState>>;
+  }
+): Promise<void> {
+  const { initializeBackendSessionForAccount, setEncryptedSyncState } = deps;
+  try {
+    await initializeBackendSessionForAccount(account);
+    setEncryptedSyncState({ profile: "syncing", posts: "syncing", messages: "syncing", lastSuccessAt: null });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e ?? "");
+    Alert.alert(
+      "Still offline",
+      msg.length > 0 && msg.length < 160 ? msg : "Could not reach the server yet. Try again when you have a connection."
+    );
+  }
+}

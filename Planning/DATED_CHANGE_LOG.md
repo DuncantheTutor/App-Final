@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 19:58 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:58 +01:00 | Session / Chat | Moved backend session claim, logout and signed-out reset, and chat send out of MainApp. Publish still stays in MainApp. |
+
+---
+
 ## 2026-09-23 18:15 +01:00
 
 | Time | Area | Change |

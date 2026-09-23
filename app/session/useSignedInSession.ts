@@ -46,7 +46,7 @@ export type SignedInSessionController = {
 
 /**
  * Sole owner of signed-in / splash / encrypted-sync channel flags.
- * Logout and cache hydrate still live in MainApp. Sign-in restore is restoreSignedInAccount.
+ * Sign-in restore, backend session claim, and logout live in this folder. Cache hydrate still lives in MainApp.
  */
 export function useSignedInSession(): SignedInSessionController {
   const [signedIn, setSignedIn] = useState(false);

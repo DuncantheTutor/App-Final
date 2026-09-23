@@ -209,6 +209,16 @@ import { AuthScreens } from "./shell/AuthScreens";
 import { SignedInTree } from "./shell/SignedInTree";
 import { restoreSignedInAccount, useBackendSession, useSignedInSession } from "./session";
 import {
+  initializeBackendSessionForAccount as initializeBackendSessionForAccountImpl,
+  retryInitializeBackendSession,
+} from "./session/initializeBackendSession";
+import {
+  clearSignedOutSocialState,
+  logoutSignedInAccount,
+  resetCurrentUserLocalState,
+} from "./session/signedOutReset";
+import { sendChatPayload, sendComposerDraft, sendComposerVoiceNote } from "./messaging/sendChatPayload";
+import {
   FIREBASE_ID_TOKEN_WARM_MS,
   NULL_AUTH_GRACE_MS,
 } from "./session/firebaseAuthPersistence";
@@ -2819,249 +2829,62 @@ function MainAppInner() {
   }, [prioritizedOnlineFriends.length, onlineStripLayout]);
 
   const resetLocalSocialStateForSignedOut = useCallback(() => {
-    resetMessagingState();
-    resetPosts();
-    resetFriendsState();
-    resetMyProfile();
-    resetFeedPrefs();
-    deletedPostIdsRef.current = new Set();
-    recipientKeyCacheRef.current = {};
-    messagesWatermarkMsRef.current = 0;
-    messagesLastFullSyncAtRef.current = 0;
-    postsWatermarkMsRef.current = 0;
-    postsLastFullSyncAtRef.current = 0;
-    sharePostsBackfillStartedRef.current = new Set();
-    pendingPostsShareFriendUidsRef.current = new Set();
-    postsSharedWithFriendsRef.current = new Set();
-    void storageRemoveItem(POSTS_STORAGE_KEY);
-    void clearEncryptedMediaCaches();
+    clearSignedOutSocialState({
+      resetMessagingState,
+      resetPosts,
+      resetFriendsState,
+      resetMyProfile,
+      resetFeedPrefs,
+      deletedPostIdsRef,
+      recipientKeyCacheRef,
+      messagesWatermarkMsRef,
+      messagesLastFullSyncAtRef,
+      postsWatermarkMsRef,
+      postsLastFullSyncAtRef,
+      sharePostsBackfillStartedRef,
+      pendingPostsShareFriendUidsRef,
+      postsSharedWithFriendsRef,
+    });
   }, [resetMessagingState, resetPosts, resetFriendsState, resetMyProfile, resetFeedPrefs]);
 
   const resetLocalStateForCurrentUser = useCallback(() => {
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    resetLocalSocialStateForSignedOut();
-    setView({ screen: "home" });
-    setHomeTab("feed");
-    if (email) {
-      void clearLocalSocialCacheForEmail(email);
-    }
-    logAppEvent("local_state.reset_current_user", { email: email ?? "" });
+    resetCurrentUserLocalState({
+      sessionEmailRef,
+      resetLocalSocialStateForSignedOut,
+      setView,
+      setHomeTab,
+    });
   }, [resetLocalSocialStateForSignedOut]);
 
-  const initializeBackendSessionForAccount = useCallback(async (account: MockAuthAccount) => {
-    const uid = backendUidForEmail(account.email);
-    const deviceId = await getOrCreateBackendDeviceId();
-    const persistedUsername =
-      (await storageGetItem(profileUsernameStorageKey(account.email)))?.trim() ?? "";
-    const persistedBio =
-      (await storageGetItem(profileBioStorageKey(account.email)))?.trim() ?? "";
-    const persistedProfilePic =
-      (await storageGetItem(profilePictureStorageKey(account.email)))?.trim() ?? "";
-    const claimUsername = resolveProfileUsername({
-      email: account.email,
-      persistedUsername,
-      accountUsername: account.username,
-    });
-    const usernameForClaim =
-      persistedUsername ||
-      (claimUsername !== "User" && !isEmailDerivedUsername(claimUsername, account.email)
-        ? claimUsername
-        : "");
-    await callEmulatorFunction("claimDeviceSession", {
-      uid,
-      deviceId,
-      ...(usernameForClaim ? { username: usernameForClaim } : {}),
-    });
-
-    const keyRestore = await restoreKeyBundleFromCloudIfMissing(uid, deviceId);
-    if (keyRestore.status === "restored") {
-      logAppEvent("e2ee.key_backup.restored", { uid });
-    }
-    if (keyRestore.status === "backup_decrypt_failed") {
-      throw new Error(
-        "Could not restore your encryption keys from backup. Sign in with the same account you used before, then contact support if this continues."
-      );
-    }
-    const ownBundle = await ensureLocalKeyBundle(uid);
-
-    markSessionReady({ uid, deviceId });
-    setTelemetryContext({ uid, deviceId });
-    recipientKeyCacheRef.current = {
-      ...recipientKeyCacheRef.current,
-      [uid]: ownBundle.encryptionPublicKey,
-    };
-    setEncryptedSyncState({ profile: "syncing", posts: "syncing", messages: "syncing", lastSuccessAt: null });
-
-    void (async () => {
-      try {
-        const cloudSnapshot = await restoreSocialSnapshotFromCloud(uid, deviceId);
-        const localSavedAtMs = localSocialCacheSavedAtMsRef.current;
-        if (
-          cloudSnapshot &&
-          (localSavedAtMs <= 0 || cloudSnapshot.savedAtMs >= localSavedAtMs)
-        ) {
-          const cloudPostsVisible = cloudSnapshot.posts.filter(
-            (p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)
-          );
-          applyChats((current) => mergeCloudChatsWithLocalReadBy(current, cloudSnapshot.chats));
-          await yieldToUi();
-          applyMessages((current) =>
-            mergeSyncedMessages(current, cloudSnapshot.messages, {
-              incremental: true,
-              optimisticWindowMs: 120_000,
-            })
-          );
-          await yieldToUi();
-          setPosts((current) =>
-            mergeSyncedPosts(current, cloudPostsVisible, {
-              incremental: true,
-              optimisticWindowMs: 120_000,
-              suppressedPostIds: deletedPostIdsRef.current,
-            })
-          );
-          // Snapshot watermarks are hints only — boot sync re-pulls from server.
-          messagesWatermarkMsRef.current = 0;
-          postsWatermarkMsRef.current = 0;
-          messagesLastFullSyncAtRef.current = 0;
-          postsLastFullSyncAtRef.current = 0;
-        } else if (cloudSnapshot && localSavedAtMs > 0) {
-          logAppEvent("cache.cloud_snapshot.skipped_stale", {
-            cloudSavedAtMs: cloudSnapshot.savedAtMs,
-            localSavedAtMs,
-          });
-        }
-
-        const firebaseAuthUid = firebaseAuth.currentUser?.uid;
-        if (firebaseAuthUid) {
-          let authRegistryOk = false;
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-              await callEmulatorFunction("registerFirebaseAuthUid", {
-                uid,
-                deviceId,
-                firebaseAuthUid,
-              });
-              await publishActivePresence({ uid, deviceId }, Date.now());
-              authRegistryOk = true;
-              break;
-            } catch (err) {
-              if (attempt >= 2) {
-                logAppError("auth.register_firebase_uid", err, { uid, attempt });
-              } else {
-                await new Promise<void>((r) => setTimeout(r, 400 * (attempt + 1)));
-              }
-            }
-          }
-          if (!authRegistryOk) {
-            void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
-          }
-        }
-
-        let resolvedBio = (account.bio || "").trim() || persistedBio;
-        let resolvedPicture = mergeProfilePictureUrl(
-          persistedProfilePic,
-          account.profilePictureUrl
-        );
-        let self:
-          | { username?: string; bio?: string; profilePictureUrl?: string | null }
-          | null
-          | undefined = null;
-        try {
-          try {
-            const profilesRes = await callEmulatorFunction<{
-              profiles?: Record<
-                string,
-                { username?: string; bio?: string; profilePictureUrl?: string | null } | null
-              >;
-            }>("getUserProfiles", {
-              uid,
-              deviceId,
-              targetUids: [uid],
-            });
-            self = profilesRes.profiles?.[uid] ?? null;
-          } catch {
-            /* no server profile yet — first device claim */
-          }
-          if (self) {
-            const sb = (self.bio ?? "").trim();
-            if (sb) resolvedBio = sb;
-            if (typeof self.profilePictureUrl === "string" && self.profilePictureUrl.trim()) {
-              resolvedPicture = mergeProfilePictureUrl(self.profilePictureUrl, resolvedPicture);
-            }
-          }
-        } catch {
-          /* keep account defaults */
-        }
-        const resolvedUsername = resolveProfileUsername({
-          email: account.email,
-          persistedUsername,
-          accountUsername: account.username,
-          serverUsername: self?.username,
-        });
-        if (!isPlaceholderProfileUsername(resolvedUsername, account.email)) {
-          void storageSetItem(profileUsernameStorageKey(account.email), resolvedUsername).catch(
-            () => {}
-          );
-          myDisplayNameRef.current = resolvedUsername;
-        }
-
-        await callEmulatorFunction("publishUserKeyBundle", {
-          uid,
-          deviceId,
-          keyVersion: ownBundle.keyVersion,
-          encryptionPublicKey: ownBundle.encryptionPublicKey,
-          identitySigningPublicKey: ownBundle.identitySigningPublicKey,
-        });
-        void uploadKeyBundleToCloudBackup(uid, deviceId).catch(() => undefined);
-        const usernameForUpsert = usernameForProfileUpsert({
-          email: account.email,
-          persistedUsername,
-          accountUsername: account.username,
-          serverUsername: self?.username,
-        });
-        await callEmulatorFunction("upsertUserProfile", {
-          uid,
-          deviceId,
-          ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
-          bio: resolvedBio,
-          ...(resolvedPicture ? { profilePictureUrl: resolvedPicture } : {}),
-          phoneNumber: account.phoneNumber,
-        });
-        const safeProfilePic = normalizeHttpsProfilePictureUrl(resolvedPicture);
-        hydrateMyProfile({ bio: resolvedBio, profilePictureUrl: safeProfilePic });
-        if (safeProfilePic) {
-          void storageSetItem(profilePictureStorageKey(account.email), safeProfilePic).catch(
-            () => {}
-          );
-        }
-        void storageSetItem(profileBioStorageKey(account.email), resolvedBio).catch(() => {});
-
-        await refreshHiddenConversationIdsFromServer();
-        setEncryptedSyncState((current) => ({
-          ...current,
-          profile: "ok",
-          lastSuccessAt: Date.now(),
-        }));
-      } catch (err) {
-        logAppError("session.background_init", err, { uid });
-        setEncryptedSyncState((current) => ({ ...current, profile: "error" }));
-      }
-    })();
-  }, [refreshHiddenConversationIdsFromServer, markSessionReady, hydrateMyProfile]);
+  const initializeBackendSessionForAccount = useCallback(
+    async (account: MockAuthAccount) => {
+      await initializeBackendSessionForAccountImpl(account, {
+        markSessionReady,
+        recipientKeyCacheRef,
+        setEncryptedSyncState,
+        localSocialCacheSavedAtMsRef,
+        deletedPostIdsRef,
+        applyChats,
+        applyMessages,
+        setPosts,
+        messagesWatermarkMsRef,
+        postsWatermarkMsRef,
+        messagesLastFullSyncAtRef,
+        postsLastFullSyncAtRef,
+        myDisplayNameRef,
+        hydrateMyProfile,
+        refreshHiddenConversationIdsFromServer,
+      });
+    },
+    [refreshHiddenConversationIdsFromServer, markSessionReady, hydrateMyProfile]
+  );
 
   const retryInitializeBackendForAccount = useCallback(
-    async (account: MockAuthAccount) => {
-      try {
-        await initializeBackendSessionForAccount(account);
-        setEncryptedSyncState({ profile: "syncing", posts: "syncing", messages: "syncing", lastSuccessAt: null });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e ?? "");
-        Alert.alert(
-          "Still offline",
-          msg.length > 0 && msg.length < 160 ? msg : "Could not reach the server yet. Try again when you have a connection."
-        );
-      }
-    },
+    (account: MockAuthAccount) =>
+      retryInitializeBackendSession(account, {
+        initializeBackendSessionForAccount,
+        setEncryptedSyncState,
+      }),
     [initializeBackendSessionForAccount]
   );
 
@@ -3282,55 +3105,26 @@ function MainAppInner() {
   }, [resetLocalSocialStateForSignedOut, markAppBootAuthResolved, clearSession]);
 
   const logout = () => {
-    // #region agent log
-    debugSessionLog("MainApp.tsx:logout", "logout invoked", "H3", {
-      hasEmail: Boolean(sessionEmailRef.current),
-      hasFirebaseUser: Boolean(firebaseAuth.currentUser),
+    logoutSignedInAccount({
+      sessionEmailRef,
+      backendInitGenerationRef,
+      sessionTokenRef,
+      resetLocalSocialStateForSignedOut,
+      signedInRef,
+      backendAuthUidRef,
+      backendDeviceIdRef,
+      clearSession,
+      resetSyncChannelsIdle,
+      setSignedIn,
+      setView,
+      setChatOverflowOpen,
+      setMembersModalOpen,
+      setAuthMode,
+      setIssuedOtpCode,
+      setIssuedOtpForEmail,
+      setSignupOtp,
+      setLoginOtp,
     });
-    // #endregion
-    const email = sessionEmailRef.current;
-    if (email) {
-      void storageRemoveItem(lastViewStorageKey(email)).catch(() => {
-        /* ignore */
-      });
-      void storageRemoveItem(lastHomeTabStorageKey(email)).catch(() => {
-        /* ignore */
-      });
-      void clearLocalSocialCacheForEmail(email);
-    }
-    backendInitGenerationRef.current += 1;
-    sessionTokenRef.current = null;
-    sessionEmailRef.current = null;
-    resetLocalSocialStateForSignedOut();
-    logAppEvent("auth.logout", { email: email ?? "" });
-    signedInRef.current = false;
-    const releaseUid = backendAuthUidRef.current;
-    const releaseDeviceId = backendDeviceIdRef.current;
-    if (releaseUid && releaseDeviceId) {
-      void callEmulatorFunction("releaseDeviceSession", {
-        uid: releaseUid,
-        deviceId: releaseDeviceId,
-      }).catch(() => {
-        /* ignore */
-      });
-    }
-    clearSession();
-    setTelemetryContext({ uid: null, deviceId: null });
-    resetSyncChannelsIdle();
-    setSignedIn(false);
-    setView({ screen: "home" });
-    setChatOverflowOpen(false);
-    setMembersModalOpen(false);
-    setAuthMode("login");
-    setIssuedOtpCode(null);
-    setIssuedOtpForEmail(null);
-    setSignupOtp("");
-    setLoginOtp("");
-    if (!DEMO_OFFLINE_MODE) {
-      void signOut(firebaseAuth).catch(() => {
-        // Ignore sign-out errors in prototype mode.
-      });
-    }
   };
   const confirmLogout = useCallback(() => {
     Alert.alert("Logout?", "Are you sure you want to logout?", [
@@ -4947,276 +4741,41 @@ function MainAppInner() {
     mediaHeight?: number;
     durationSec?: number;
     videoTextOverlays?: VideoTextOverlayData[];
-  }) => {
-    try {
-    const chat = ensureChatForSend();
-    if (!chat) return;
-    if (isDirectTombstoneChat) return;
-    if (!DEMO_OFFLINE_MODE && !getBackendSession()) {
-      Alert.alert(
-        isOnline ? "Not connected" : "You're offline",
-        isOnline
-          ? "Your account session is still starting. Wait a few seconds and try again."
-          : "Connect to the internet to send messages. You can still browse cached chats and posts."
-      );
-      return;
-    }
-
-    if (editingMessageId) {
-      const trimmed = payload.text.trim();
-      if (!trimmed) return;
-      const editedAt = Date.now();
-      const targetId = editingMessageId;
-      patchMessage(targetId, (message) => ({
-        ...message,
-        text: trimmed,
-        editedAt,
-        kind: payload.kind ?? "text",
-        mediaUri: payload.mediaUri,
-        durationSec: payload.durationSec,
-        videoTextOverlays: payload.videoTextOverlays,
-        unsentAt: undefined,
-      }));
-      setEditingMessageId(null);
-      setChatInputSynced("");
-      if (!DEMO_OFFLINE_MODE) {
-        const session = getBackendSession();
-        const target = messages.find((m) => m.id === targetId);
-        const editedMessage = {
-          ...(target ?? { id: targetId, chatId: chat.id, senderId: CURRENT_USER_ID, createdAt: editedAt }),
-          text: trimmed,
-          editedAt,
-          kind: payload.kind ?? "text",
-          mediaUri: payload.mediaUri,
-          durationSec: payload.durationSec,
-          videoTextOverlays: payload.videoTextOverlays,
-          unsentAt: undefined,
-        } as Message;
-        if (session && target) {
-          void updateOutgoingMessageContent({
-            session,
-            chat,
-            message: editedMessage,
-            friendIdToBackendUid,
-            friendMapRef,
-            friendIdToBackendUidRef,
-            recipientKeyCacheRef,
-            persistFriendKeyCacheNow,
-            resolveConversationId,
-          }).catch((err) => logAppError("messages.edit_body", err, { messageId: targetId }));
-        }
-      }
-      return;
-    }
-
-    const now = Date.now();
-    const trimmedText = payload.text.trim();
-    if (!trimmedText && !payload.mediaUri) return;
-    const chatKind = chat.kind ?? "standard";
-    if (chatKind === "broadcast") {
-      const isCreator = isBroadcastCreator(chat, CURRENT_USER_ID);
-      const creatorId = broadcastCreatorFriendId(chat, CURRENT_USER_ID);
-
-      if (!isCreator) {
-        const rt = replyTargetMessage;
-        if (!rt || !canReplyToBroadcastMessage(rt, chat, CURRENT_USER_ID)) {
-          Alert.alert(
-            "Private reply only",
-            "Long-press a message from the broadcaster and choose Reply to respond privately. You cannot message the whole group."
-          );
-          return;
-        }
-        const followUp: Message = {
-          id: `m-${now}`,
-          chatId: chat.id,
-          senderId: CURRENT_USER_ID,
-          text: trimmedText,
-          createdAt: now,
-          kind: payload.kind ?? "text",
-          mediaUri: payload.mediaUri,
-          mediaWidth: payload.mediaWidth,
-          mediaHeight: payload.mediaHeight,
-          durationSec: payload.durationSec,
-          videoTextOverlays: payload.videoTextOverlays,
-          replyToMessageId: rt.id,
-          broadcastThreadFriendId: CURRENT_USER_ID,
-        };
-        commitOutgoingMessages(chat, [followUp]);
-        setChatInputSynced("");
-        setReplyTargetMessageId(null);
-        return;
-      }
-
-      const existingInChat = messages.filter((m) => m.chatId === chat.id);
-      const recipients =
-        chat.broadcastRecipientIds ?? chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-
-      const scheduleDemoThreadRepliesToRoot = (rootId: string, t0: number) => {
-        if (!DEMO_OFFLINE_MODE) return;
-        recipients.slice(0, Math.max(1, Math.min(2, recipients.length))).forEach((friendId, idx) => {
-          const delayMs =
-            AUTO_REPLY_MIN_DELAY_MS +
-            Math.floor(Math.random() * (AUTO_REPLY_MAX_DELAY_MS - AUTO_REPLY_MIN_DELAY_MS + 1));
-          const guaranteedReply: Message = {
-            id: `br-${t0}-${friendId}-${idx}`,
-            chatId: chat.id,
-            senderId: friendId,
-            text: AUTO_REPLY_LINES[(idx + 1) % AUTO_REPLY_LINES.length] ?? "Got it.",
-            createdAt: Date.now() + delayMs,
-            kind: "text",
-            replyToMessageId: rootId,
-            broadcastThreadFriendId: friendId,
-          };
-          const timer = setTimeout(() => {
-            appendMessages([guaranteedReply]);
-            patchChat(chat.id, (c) => ({ ...c, updatedAt: Date.now() }));
-          }, delayMs);
-          autoReplyTimersRef.current.push(timer);
-        });
-      };
-
-      if (existingInChat.length === 0) {
-        Alert.alert(BROADCAST_EVERYONE_SEND_TITLE, BROADCAST_EVERYONE_SEND_MESSAGE, [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Send",
-            onPress: () => {
-              const t = Date.now();
-              const rootMessage: Message = {
-                id: `m-${t}-broadcast-root`,
-                chatId: chat.id,
-                senderId: CURRENT_USER_ID,
-                text: trimmedText,
-                createdAt: t,
-                kind: payload.kind ?? "text",
-                mediaUri: payload.mediaUri,
-                mediaWidth: payload.mediaWidth,
-                mediaHeight: payload.mediaHeight,
-                durationSec: payload.durationSec,
-                videoTextOverlays: payload.videoTextOverlays,
-              };
-              commitOutgoingMessages(chat, [rootMessage]);
-              scheduleDemoThreadRepliesToRoot(rootMessage.id, t);
-              setSelectedBroadcastThreadFriendId(recipients[0] ?? null);
-              setChatInputSynced("");
-              setReplyTargetMessageId(null);
-            },
-          },
-        ]);
-        return;
-      }
-
-      const rt = replyTargetMessage;
-      const replyingToOwnGlobalBroadcast =
-        !!rt && rt.senderId === creatorId && !rt.broadcastThreadFriendId;
-      const threadFriendId =
-        selectedBroadcastThreadFriendId ?? rt?.broadcastThreadFriendId ?? undefined;
-
-      const isPrivateThreadSend = !replyingToOwnGlobalBroadcast && !!threadFriendId;
-
-      if (isPrivateThreadSend) {
-        const followUp: Message = {
-          id: `m-${now}`,
-          chatId: chat.id,
-          senderId: CURRENT_USER_ID,
-          text: trimmedText,
-          createdAt: now,
-          kind: payload.kind ?? "text",
-          mediaUri: payload.mediaUri,
-          mediaWidth: payload.mediaWidth,
-          mediaHeight: payload.mediaHeight,
-          durationSec: payload.durationSec,
-          videoTextOverlays: payload.videoTextOverlays,
-          replyToMessageId: rt?.id,
-          broadcastThreadFriendId: threadFriendId as string,
-        };
-        commitOutgoingMessages(chat, [followUp]);
-        setChatInputSynced("");
-        setReplyTargetMessageId(null);
-        return;
-      }
-
-      const globalReplyToId = rt && !rt.broadcastThreadFriendId ? rt.id : undefined;
-      Alert.alert(BROADCAST_EVERYONE_SEND_TITLE, BROADCAST_EVERYONE_SEND_MESSAGE, [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Send",
-          onPress: () => {
-            const t = Date.now();
-            const everyoneMessage: Message = {
-              id: `m-${t}`,
-              chatId: chat.id,
-              senderId: CURRENT_USER_ID,
-              text: trimmedText,
-              createdAt: t,
-              kind: payload.kind ?? "text",
-              mediaUri: payload.mediaUri,
-              mediaWidth: payload.mediaWidth,
-              mediaHeight: payload.mediaHeight,
-              durationSec: payload.durationSec,
-              videoTextOverlays: payload.videoTextOverlays,
-              ...(globalReplyToId ? { replyToMessageId: globalReplyToId } : {}),
-            };
-            commitOutgoingMessages(chat, [everyoneMessage]);
-            setSelectedBroadcastThreadFriendId(null);
-            setChatInputSynced("");
-            setReplyTargetMessageId(null);
-          },
-        },
-      ]);
-      return;
-    } else {
-      const out: Message = {
-        id: `m-${now}`,
-        chatId: chat.id,
-        senderId: CURRENT_USER_ID,
-        text: trimmedText,
-        createdAt: now,
-        kind: payload.kind ?? "text",
-        mediaUri: payload.mediaUri,
-        mediaWidth: payload.mediaWidth,
-        mediaHeight: payload.mediaHeight,
-        durationSec: payload.durationSec,
-        videoTextOverlays: payload.videoTextOverlays,
-        replyToMessageId: replyTargetMessage?.id,
-      };
-      commitOutgoingMessages(chat, [out]);
-    }
-
-    setChatInputSynced("");
-    setReplyTargetMessageId(null);
-    } catch (err) {
-      logAppError("send.payload", err, {});
-      Alert.alert(
-        "Could not send",
-        err instanceof Error ? err.message : "Something went wrong. Try again."
-      );
-    }
-  };
+  }) =>
+    sendChatPayload(payload, {
+      ensureChatForSend,
+      isDirectTombstoneChat,
+      getBackendSession,
+      isOnline,
+      editingMessageId,
+      patchMessage,
+      setEditingMessageId,
+      setChatInputSynced,
+      messages,
+      friendIdToBackendUid,
+      friendMapRef,
+      friendIdToBackendUidRef,
+      recipientKeyCacheRef,
+      persistFriendKeyCacheNow,
+      resolveConversationId,
+      replyTargetMessage,
+      commitOutgoingMessages,
+      setReplyTargetMessageId,
+      appendMessages,
+      patchChat,
+      autoReplyTimersRef,
+      setSelectedBroadcastThreadFriendId,
+      selectedBroadcastThreadFriendId,
+    });
 
   const sendMessage = () => {
-    const text = readComposerTextTrimmed(chatInputTextRef);
-    const pendingMedia = pendingChatMediaAttachment;
-    if (!text && !pendingMedia) return;
-    Keyboard.dismiss();
-    chatInputRef.current?.blur();
-    try {
-      if (pendingMedia) {
-        sendPayload({
-          text,
-          kind: pendingMedia.kind,
-          mediaUri: pendingMedia.uri,
-          mediaWidth: pendingMedia.width,
-          mediaHeight: pendingMedia.height,
-        });
-        setPendingChatMediaAttachment(null);
-        return;
-      }
-      sendPayload({ text, kind: "text" });
-    } catch (err) {
-      logAppError("send.compose", err, {});
-      Alert.alert("Could not send", "Something went wrong. Try again.");
-    }
+    sendComposerDraft({
+      chatInputTextRef,
+      pendingChatMediaAttachment,
+      chatInputRef,
+      setPendingChatMediaAttachment,
+      sendPayload,
+    });
   };
 
   const sendCameraMedia = async (mode: "photo" | "video") => {
@@ -5421,16 +4980,12 @@ function MainAppInner() {
   };
 
   const sendPendingVoiceNote = useCallback(async () => {
-    const note = await preparePendingVoiceNoteForSend();
-    if (!note) return;
-    sendPayload({
-      text: `Voice note (${note.durationSec}s)`,
-      kind: "voice",
-      durationSec: note.durationSec,
-      mediaUri: note.uri,
+    await sendComposerVoiceNote({
+      preparePendingVoiceNoteForSend,
+      sendPayload,
+      setPendingVoiceNote,
+      setVoiceNoteMode,
     });
-    setPendingVoiceNote(null);
-    setVoiceNoteMode(false);
   }, [preparePendingVoiceNoteForSend, sendPayload]);
 
   const onComposerPrimaryPress = useCallback(() => {

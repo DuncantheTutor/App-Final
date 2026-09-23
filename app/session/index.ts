@@ -1,4 +1,17 @@
 export { restoreSignedInAccount, type RestoreSignedInAccountDeps } from "./restoreSignedInAccount";
+export {
+  initializeBackendSessionForAccount,
+  retryInitializeBackendSession,
+  type InitializeBackendSessionDeps,
+} from "./initializeBackendSession";
+export {
+  clearSignedOutSocialState,
+  logoutSignedInAccount,
+  resetCurrentUserLocalState,
+  type ClearSignedOutSocialStateDeps,
+  type LogoutSignedInAccountDeps,
+  type ResetCurrentUserLocalStateDeps,
+} from "./signedOutReset";
 export { useBackendSession, type BackendSessionController } from "./useBackendSession";
 export {
   useSignedInSession,
