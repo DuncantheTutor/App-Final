@@ -27,7 +27,7 @@ export type PublishComposer = {
 
 /**
  * Sole owner of new-post draft fields and the video-thumbnail pre-prompt.
- * Photo-editor UI and encrypt/upload still compose through MainApp.
+ * Photo-editor UI still composes through MainApp. Encrypt and upload run in createPostPublishActions.
  */
 export function usePublishComposer(params: { goToPublishPost: () => void }): PublishComposer {
   const { goToPublishPost } = params;

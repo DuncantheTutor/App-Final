@@ -4,3 +4,4 @@ export { uploadEncryptedPost } from "./uploadEncryptedPost";
 export { postPublishRecipientUids } from "./postPublishRecipientUids";
 export { shareOwnedPostsWithNewFriend } from "./shareOwnedPostsWithNewFriend";
 export { usePublishComposer, type PublishComposer } from "./usePublishComposer";
+export { createPostPublishActions, type PostPublishActionsDeps } from "./publishPost";

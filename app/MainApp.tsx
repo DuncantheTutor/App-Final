@@ -11,7 +11,6 @@ import * as NavigationBar from "expo-navigation-bar";
 import { Audio, ResizeMode, Video } from "expo-av";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as ExpoNetwork from "expo-network";
-import * as VideoThumbnails from "expo-video-thumbnails";
 import Constants from "expo-constants";
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { StatusBar } from "expo-status-bar";
@@ -154,10 +153,7 @@ import {
   stickyFooterPadding,
 } from "./lib/safeAreaInsets";
 import { keyboardScrollPadding } from "./lib/keyboardInputScroll";
-import {
-  postCarouselImageCount,
-  remapPostMediaGalleryIndex,
-} from "./lib/feedPostLayout";
+import { postCarouselImageCount } from "./lib/feedPostLayout";
 import { useScrollPinnedInput } from "./lib/useScrollPinnedInput";
 import { FeedPostCard } from "./components/FeedPostCard";
 import { NotificationPrePromptScreen } from "./components/NotificationPrePromptScreen";
@@ -234,8 +230,8 @@ import {
   pickPostPhotos as pickPostPhotosFromLibrary,
   pickPostVideo as pickPostVideoFromLibrary,
   promptPostPhotoSource as promptPostPhotoSourceAlert,
+  createPostPublishActions,
   shareOwnedPostsWithNewFriend,
-  uploadEncryptedPost,
   usePublishComposer,
 } from "./posts";
 import {
@@ -4360,118 +4356,6 @@ function MainAppInner() {
     setPostDraftVideoUri(uri);
   };
 
-  const commitEncryptedPost = async (newPost: Post) => {
-    const session = getBackendSession();
-    if (!session) throw new Error("Account session is not ready. Please wait a moment and try again.");
-    const serverPostId = await uploadEncryptedPost({
-      session,
-      post: newPost,
-      visibleFriendIds,
-      allFriends,
-      acceptedFriendBackendUids: serverAcceptedFriendBackendUids,
-      resolveRecipientEncryptionKeys,
-      notificationAuthorName: getSenderDisplayName(),
-    });
-    if (!serverPostId) return;
-    setPostMediaGalleryIndexByPostId((current) =>
-      remapPostMediaGalleryIndex(current, newPost.id, serverPostId)
-    );
-    setPosts((current) =>
-      current.map((post) => (post.id === newPost.id ? { ...post, id: serverPostId } : post))
-    );
-  };
-
-  const finalizeVideoPosterAndPublish = async (mode: "skip" | "pick") => {
-    const videoUri = postDraftVideoUri;
-    const text = postDraftText.trim();
-    if (!videoUri) return;
-    let posterUri: string | undefined;
-    try {
-      if (mode === "skip") {
-        const thumb = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 0, quality: 0.85 });
-        posterUri = thumb.uri;
-      } else {
-        const r = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.9,
-        });
-        if (!r.canceled && r.assets[0]) {
-          posterUri = r.assets[0].uri;
-        } else {
-          const thumb = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 0, quality: 0.85 });
-          posterUri = thumb.uri;
-        }
-      }
-    } catch {
-      try {
-        const thumb = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 0 });
-        posterUri = thumb.uri;
-      } catch {
-        posterUri = undefined;
-      }
-    }
-    const newPost: Post = {
-      id: `p-${Date.now()}`,
-      authorId: CURRENT_USER_ID,
-      createdAt: Date.now(),
-      text: text || undefined,
-      videoUri: videoUri,
-      videoPosterUri: posterUri,
-    };
-    setPosts((p) => [newPost, ...p]);
-    closePublishPostScreen();
-    resetPublishDraft();
-    if (!DEMO_OFFLINE_MODE) {
-      try {
-        await commitEncryptedPost(newPost);
-      } catch (err) {
-        setPosts((current) => current.filter((post) => post.id !== newPost.id));
-        const message = err instanceof Error ? err.message : "Could not publish post.";
-        Alert.alert("Post not published", message);
-      }
-    }
-  };
-
-  const publishPost = () => {
-    const text = postDraftText.trim();
-    const hasVideo = !!postDraftVideoUri;
-    const hasImages = postDraftImageUris.length > 0;
-    if (!text && !hasVideo && !hasImages) {
-      Alert.alert("Empty post", "Add text, a photo, or a video.");
-      return;
-    }
-    if (hasVideo) {
-      void openVideoThumbnailModal();
-      return;
-    }
-    const newPost: Post = {
-      id: `p-${Date.now()}`,
-      authorId: CURRENT_USER_ID,
-      createdAt: Date.now(),
-      text: text || undefined,
-      imageUris: hasImages ? [...postDraftImageUris] : undefined,
-      imageCaptions: hasImages
-        ? postDraftImageCaptions
-            .slice(0, postDraftImageUris.length)
-            .concat(Array(Math.max(0, postDraftImageUris.length - postDraftImageCaptions.length)).fill(""))
-        : undefined,
-    };
-    setPosts((p) => [newPost, ...p]);
-    closePublishPostScreen();
-    resetPublishDraft();
-    if (!DEMO_OFFLINE_MODE) {
-      void (async () => {
-        try {
-          await commitEncryptedPost(newPost);
-        } catch (err) {
-          setPosts((current) => current.filter((post) => post.id !== newPost.id));
-          const message = err instanceof Error ? err.message : "Could not publish post.";
-          Alert.alert("Post not published", message);
-        }
-      })();
-    }
-  };
-
   const confirmDeletePost = (post: Post) => {
     if (post.authorId !== CURRENT_USER_ID) return;
     if (!DEMO_OFFLINE_MODE && /^p-\d+$/.test(post.id)) {
@@ -4680,6 +4564,24 @@ function MainAppInner() {
   };
 
   const getSenderDisplayName = useCallback(() => myDisplayNameRef.current.trim(), []);
+
+  const { finalizeVideoPosterAndPublish, publishPost } = createPostPublishActions({
+    getBackendSession,
+    visibleFriendIds,
+    allFriends,
+    serverAcceptedFriendBackendUids,
+    resolveRecipientEncryptionKeys,
+    getSenderDisplayName,
+    setPostMediaGalleryIndexByPostId,
+    setPosts,
+    postDraftVideoUri,
+    postDraftText,
+    postDraftImageUris,
+    postDraftImageCaptions,
+    closePublishPostScreen,
+    resetPublishDraft,
+    openVideoThumbnailModal,
+  });
 
   const { commitOutgoingMessages } = useOutgoingMessages({
     demoOfflineMode: DEMO_OFFLINE_MODE,

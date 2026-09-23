@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 20:12 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:12 +01:00 | Posts | Moved post publish, including the encrypted upload and video poster step, out of MainApp. Post delete and the photo editor still stay in MainApp. |
+
+---
+
 ## 2026-09-23 19:58 +01:00
 
 | Time | Area | Change |
