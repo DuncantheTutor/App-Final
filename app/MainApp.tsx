@@ -172,6 +172,7 @@ import {
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
+import { createChatMembershipActions } from "./chat/chatMembership";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
@@ -4696,64 +4697,20 @@ function MainAppInner() {
       resolveConversationId,
     });
 
-  const kickMemberFromChat = (friendId: string) => {
-    if (view.screen !== "chat" || !("chatId" in view)) return;
-    const chatId = view.chatId;
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat) return;
-    const session = getBackendSession();
-    if (!session || DEMO_OFFLINE_MODE) return;
-    const targetBackendUid = resolveChatMemberToBackendUid(
-      friendId,
-      session.uid,
-      friendMap,
-      friendIdToBackendUid
-    );
-    if (!targetBackendUid?.startsWith("u_")) {
-      Alert.alert("Could not remove member", "This member is not linked to a server account.");
-      return;
-    }
-    void (async () => {
-      try {
-        await callEmulatorFunction("manageConversationMembership", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          conversationId: resolveConversationId(chatId),
-          action: "kick",
-          targetUid: targetBackendUid,
-        });
-        const nextMemberIds = chat.memberIds.filter((id) => id !== friendId);
-        patchChat(chatId, (x) => ({
-          ...x,
-          memberIds: nextMemberIds,
-          memberJoinedAt: x.memberJoinedAt
-            ? Object.fromEntries(Object.entries(x.memberJoinedAt).filter(([k]) => k !== friendId))
-            : undefined,
-          updatedAt: Date.now(),
-        }));
-      } catch (err) {
-        Alert.alert("Could not remove member", err instanceof Error ? err.message : "Try again.");
-      }
-    })();
-  };
-
-  const toggleChatMute = (chatId: string) => {
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat) return;
-    const nextMuted = !chat.mutedForNotifications;
-    patchChat(chatId, (c) => ({ ...c, mutedForNotifications: nextMuted }));
-    const session = getBackendSession();
-    if (!session || DEMO_OFFLINE_MODE) return;
-    void callEmulatorFunction("setConversationNotificationMute", {
-      uid: session.uid,
-      deviceId: session.deviceId,
-      conversationId: resolveConversationId(chatId),
-      muted: nextMuted,
-    }).catch((err) => {
-      logAppError("chat.mute.sync", err, { chatId, muted: nextMuted });
-      patchChat(chatId, (c) => ({ ...c, mutedForNotifications: !nextMuted }));
-    });
-  };
+  const { kickMemberFromChat, toggleChatMute, addMemberToChat } = createChatMembershipActions({
+    view,
+    chats,
+    getBackendSession,
+    friendMap,
+    friendIdToBackendUid,
+    resolveConversationId,
+    patchChat,
+    allFriends,
+    friendLinksState,
+    buildDefaultChatName,
+    setAddMemberModalOpen,
+    setAddMemberSearch,
+  });
 
   const confirmDeleteChatFromHome = (chatId: string) => {
     Alert.alert(
@@ -4790,61 +4747,6 @@ function MainAppInner() {
       },
       { text: "Cancel", style: "cancel" },
     ]);
-  };
-
-  const addMemberToChat = (friendId: string) => {
-    if (view.screen !== "chat" || !("chatId" in view)) return;
-    const chatId = view.chatId;
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat || chat.kind === "broadcast" || chat.isDraft) return;
-    const peers = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-    const candidate = allFriends.find((f) => f.id === friendId);
-    if (!candidate || chat.memberIds.includes(friendId)) return;
-    if (!peers.every((pid) => (friendLinksState[pid] ?? []).includes(friendId))) return;
-
-    const session = getBackendSession();
-    if (!session || DEMO_OFFLINE_MODE) return;
-    const targetBackendUid = resolveChatMemberToBackendUid(
-      friendId,
-      session.uid,
-      friendMap,
-      friendIdToBackendUid
-    );
-    if (!targetBackendUid?.startsWith("u_")) {
-      Alert.alert("Could not add member", "This friend is not linked to a server account yet.");
-      return;
-    }
-
-    void (async () => {
-      try {
-        const res = await callEmulatorFunction<{
-          participantUids?: string[];
-          memberJoinedAt?: Record<string, number>;
-        }>("manageConversationMembership", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          conversationId: resolveConversationId(chatId),
-          action: "addMember",
-          targetUid: targetBackendUid,
-        });
-        const now = Date.now();
-        const joinedAt = res.memberJoinedAt?.[targetBackendUid] ?? now;
-        const nextMemberIds = [...chat.memberIds, friendId];
-        const counterpartIds = nextMemberIds.filter((id) => id !== CURRENT_USER_ID);
-        const newName = chat.isCustomName ? chat.name : buildDefaultChatName(counterpartIds);
-        patchChat(chatId, (x) => ({
-          ...x,
-          memberIds: nextMemberIds,
-          memberJoinedAt: { ...x.memberJoinedAt, [friendId]: joinedAt },
-          name: newName,
-          updatedAt: now,
-        }));
-        setAddMemberModalOpen(false);
-        setAddMemberSearch("");
-      } catch (err) {
-        Alert.alert("Could not add member", err instanceof Error ? err.message : "Try again.");
-      }
-    })();
   };
 
   const onBackFromChat = () => {

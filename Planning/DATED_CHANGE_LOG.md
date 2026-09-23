@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 20:36 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:36 +01:00 | Chat | Moved mute, kick, and add-member out of MainApp. Home-row chat actions and backing out of a chat still stay in MainApp. |
+
+---
+
 ## 2026-09-23 20:32 +01:00
 
 | Time | Area | Change |
