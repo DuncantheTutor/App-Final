@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 20:38 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:38 +01:00 | Chat | Moved home-row delete and mute, and backing out of a chat, out of MainApp. Android back, chat title and picture saves, and demo auto-replies still stay in MainApp. |
+
+---
+
 ## 2026-09-23 20:36 +01:00
 
 | Time | Area | Change |

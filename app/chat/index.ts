@@ -1,3 +1,4 @@
+export { createChatExitActions } from "./chatExit";
 export { createChatMembershipActions } from "./chatMembership";
 export { availableStartChatFriends } from "./availableStartChatFriends";
 export type { StartChatComposerMode } from "./availableStartChatFriends";

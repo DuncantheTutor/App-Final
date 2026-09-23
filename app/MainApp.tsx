@@ -133,7 +133,6 @@ import {
 } from "./lib/pushNotifications";
 import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
-import { readComposerTextTrimmed } from "./lib/syncedComposerText";
 import {
   composerKeyboardAvoidanceEnabled,
   keyboardComposerBottomPadding,
@@ -172,6 +171,7 @@ import {
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
+import { createChatExitActions } from "./chat/chatExit";
 import { createChatMembershipActions } from "./chat/chatMembership";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
@@ -4712,95 +4712,22 @@ function MainAppInner() {
     setAddMemberSearch,
   });
 
-  const confirmDeleteChatFromHome = (chatId: string) => {
-    Alert.alert(
-      "Delete chat?",
-      "This removes the chat from your list. In group chats, the conversation can continue for others.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            removeChatForCurrentUser(chatId);
-            if (view.screen === "chat" && "chatId" in view && view.chatId === chatId) {
-              leaveChatToHome();
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const openChatRowActions = (chat: Chat) => {
-    const muted = !!chat.mutedForNotifications;
-    const listTitle = resolvedStoredChatListTitle(chat);
-    Alert.alert(listTitle, undefined, [
-      {
-        text: muted ? "Unmute notifications" : "Mute notifications",
-        onPress: () => toggleChatMute(chat.id),
-      },
-      {
-        text: "Delete chat",
-        style: "destructive",
-        onPress: () => confirmDeleteChatFromHome(chat.id),
-      },
-      { text: "Cancel", style: "cancel" },
-    ]);
-  };
-
-  const onBackFromChat = () => {
-    if (view.screen !== "chat") return;
-
-    if ("pendingDraft" in view) {
-      setChatInputSynced("");
-      leaveChatToHome();
-      return;
-    }
-
-    const chatId = view.chatId;
-    const chat = chats.find((c) => c.id === chatId);
-    const hasUnsent =
-      readComposerTextTrimmed(chatInputTextRef).length > 0 ||
-      !!voiceRecordStartedAt ||
-      !!pendingVoiceNote ||
-      !!pendingChatMediaAttachment;
-
-    if (chat?.isDraft && hasUnsent) {
-      Alert.alert("Save draft?", "You have unsent text in this draft.", [
-        {
-          text: "Discard",
-          style: "destructive",
-          onPress: () => {
-            removeChatsAndMessages([chatId]);
-            leaveChatToHome();
-          },
-        },
-        {
-          text: "Save draft",
-          onPress: () => {
-            patchChat(chatId, (c) => ({
-              ...c,
-              draftComposerText: readComposerTextTrimmed(chatInputTextRef),
-              updatedAt: Date.now(),
-            }));
-            leaveChatToHome();
-          },
-        },
-        { text: "Cancel", style: "cancel" },
-      ]);
-      return;
-    }
-
-    if (chat?.isDraft && !hasUnsent) {
-      const noMessages = messages.every((m) => m.chatId !== chatId);
-      if (noMessages) {
-        removeChatsAndMessages([chatId]);
-      }
-    }
-
-    leaveChatToHome();
-  };
+  const { confirmDeleteChatFromHome, openChatRowActions, onBackFromChat } = createChatExitActions({
+    view,
+    chats,
+    messages,
+    removeChatForCurrentUser,
+    leaveChatToHome,
+    toggleChatMute,
+    resolvedStoredChatListTitle,
+    setChatInputSynced,
+    chatInputTextRef,
+    voiceRecordStartedAt,
+    pendingVoiceNote,
+    pendingChatMediaAttachment,
+    removeChatsAndMessages,
+    patchChat,
+  });
 
   const handleAndroidHardwareBackRef = useRef<() => boolean>(() => false);
 
