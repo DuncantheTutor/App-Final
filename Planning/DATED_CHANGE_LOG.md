@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 18:02 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:02 +01:00 | Chat | Moved in-thread text, voice-note recording, and pending photo state out of MainApp into `useInThreadComposer`. Sending still stays in MainApp. |
+
+---
+
 ## 2026-09-23 17:55 +01:00
 
 | Time | Area | Change |

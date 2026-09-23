@@ -140,10 +140,10 @@ import {
 import { inferOutgoingMediaKind } from "./lib/mediaKind";
 import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
 import { probeVideoDisplayDimensions } from "./lib/videoDisplayDimensions";
-import { prepareVoicePlaybackAudioMode, VOICE_RECORDING_OPTIONS } from "./lib/voicePlaybackAudio";
+import { prepareVoicePlaybackAudioMode } from "./lib/voicePlaybackAudio";
 import { resolveVoicePlayUri, voiceSoundSource } from "./lib/resolveVoicePlayUri";
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
-import { readComposerTextTrimmed, writeComposerText } from "./lib/syncedComposerText";
+import { readComposerTextTrimmed } from "./lib/syncedComposerText";
 import {
   composerKeyboardAvoidanceEnabled,
   keyboardComposerBottomPadding,
@@ -185,6 +185,7 @@ import {
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
+import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
 import { useEncryptedProfileSync, useProfileController } from "./profile";
@@ -691,19 +692,32 @@ function MainAppInner() {
   const [selectedBroadcastThreadFriendId, setSelectedBroadcastThreadFriendId] = useState<
     string | null
   >(null);
-  const [voiceNoteMode, setVoiceNoteMode] = useState(false);
-  const [voiceRecordStartedAt, setVoiceRecordStartedAt] = useState<number | null>(null);
-  const [voiceRecordElapsedSec, setVoiceRecordElapsedSec] = useState(0);
-  const [pendingVoiceNote, setPendingVoiceNote] = useState<{ uri: string; durationSec: number } | null>(
-    null
-  );
-  const [pendingChatMediaAttachment, setPendingChatMediaAttachment] = useState<{
-    kind: "photo";
-    uri: string;
-    width: number;
-    height: number;
-  } | null>(null);
-  const [previewVoicePlaying, setPreviewVoicePlaying] = useState(false);
+  const {
+    chatInput,
+    chatInputTextRef,
+    chatInputRef,
+    setChatInputSynced,
+    setShouldFocusChatInput,
+    voiceNoteMode,
+    setVoiceNoteMode,
+    voiceRecordStartedAt,
+    voiceRecordElapsedSec,
+    pendingVoiceNote,
+    setPendingVoiceNote,
+    pendingChatMediaAttachment,
+    setPendingChatMediaAttachment,
+    previewVoicePlaying,
+    cancelVoiceRecording,
+    exitVoiceNoteMode,
+    toggleVoiceNoteMode,
+    startVoiceRecording,
+    stopVoiceRecordingForPreview,
+    togglePendingVoicePreview,
+    discardPendingVoiceNote,
+    discardPendingChatMedia,
+    preparePendingVoiceNoteForSend,
+    clearComposerOnLeave,
+  } = useInThreadComposer({ chatScreenOpen: view.screen === "chat" });
   const abortAddFriendPairingRef = useRef<(() => void) | null>(null);
   const registerAddFriendPairingAbort = useCallback((abort: () => void) => {
     abortAddFriendPairingRef.current = abort;
@@ -733,11 +747,6 @@ function MainAppInner() {
   const [editChatPictureOpen, setEditChatPictureOpen] = useState(false);
   const [chatTitleDraft, setChatTitleDraft] = useState("");
   const [chatPictureDraft, setChatPictureDraft] = useState("");
-  const [chatInput, setChatInput] = useState("");
-  const [shouldFocusChatInput, setShouldFocusChatInput] = useState(false);
-  /** Synchronous mirror — Send must read this, not stale React state. */
-  const chatInputTextRef = useRef("");
-  const chatInputRef = useRef<TextInput | null>(null);
   const photoEditor = usePhotoEditorSession({
     extraBlur: () => chatInputRef.current?.blur(),
     isPublishPost: () => viewRef.current.screen === "publishPost",
@@ -785,9 +794,6 @@ function MainAppInner() {
     handlePostCommentInputChange,
   } = useFullscreenPostThread({ posts });
 
-  const setChatInputSynced = useCallback((text: string) => {
-    writeComposerText(chatInputTextRef, setChatInput, text);
-  }, []);
   const publishPostScrollRef = useRef<ScrollView | null>(null);
   const publishCaptionInputRef = useRef<TextInput | null>(null);
   const bioInputRef = useRef<TextInput | null>(null);
@@ -866,9 +872,6 @@ function MainAppInner() {
     if (!email) return;
     void writeFriendKeyBundleCache(email, { ...recipientKeyCacheRef.current });
   }, []);
-  const recordingRef = useRef<Audio.Recording | null>(null);
-  const voiceRecordStartedAtRef = useRef<number | null>(null);
-  const previewSoundRef = useRef<Audio.Sound | null>(null);
   const messageSoundRef = useRef<Audio.Sound | null>(null);
 
   const theme = useMemo(() => {
@@ -906,14 +909,6 @@ function MainAppInner() {
     return () => {
       autoReplyTimersRef.current.forEach((timer) => clearTimeout(timer));
       autoReplyTimersRef.current = [];
-      if (recordingRef.current) {
-        void recordingRef.current.stopAndUnloadAsync();
-        recordingRef.current = null;
-      }
-      if (previewSoundRef.current) {
-        void previewSoundRef.current.unloadAsync();
-        previewSoundRef.current = null;
-      }
       if (messageSoundRef.current) {
         void messageSoundRef.current.unloadAsync();
         messageSoundRef.current = null;
@@ -5640,180 +5635,18 @@ function MainAppInner() {
     setShouldFocusChatInput(true);
   };
 
-  const cancelVoiceRecording = useCallback(async () => {
-    const recording = recordingRef.current;
-    if (recording) {
-      try {
-        await recording.stopAndUnloadAsync();
-      } catch {
-        /* ignore */
-      }
-      recordingRef.current = null;
-    }
-    voiceRecordStartedAtRef.current = null;
-    setVoiceRecordStartedAt(null);
-    setVoiceRecordElapsedSec(0);
-    try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const exitVoiceNoteMode = useCallback(async () => {
-    await cancelVoiceRecording();
-    if (previewSoundRef.current) {
-      await previewSoundRef.current.unloadAsync();
-      previewSoundRef.current = null;
-    }
-    setPreviewVoicePlaying(false);
-    setPendingVoiceNote(null);
-    setVoiceNoteMode(false);
-  }, [cancelVoiceRecording]);
-
-  const toggleVoiceNoteMode = useCallback(() => {
-    if (voiceNoteMode) {
-      void exitVoiceNoteMode();
-      return;
-    }
-    setVoiceNoteMode(true);
-  }, [exitVoiceNoteMode, voiceNoteMode]);
-
-  const startVoiceRecording = useCallback(async () => {
-    if (recordingRef.current) return;
-    const permission = await Audio.requestPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert("Microphone", "Allow microphone access to record voice notes.");
-      return;
-    }
-    try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      if (previewSoundRef.current) {
-        await previewSoundRef.current.unloadAsync();
-        previewSoundRef.current = null;
-      }
-      const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
-      await recording.startAsync();
-      recordingRef.current = recording;
-      const startedAt = Date.now();
-      voiceRecordStartedAtRef.current = startedAt;
-      setVoiceRecordStartedAt(startedAt);
-      setVoiceRecordElapsedSec(0);
-    } catch (err) {
-      logAppError("voice.record_start", err, {});
-      Alert.alert("Recording failed", "Could not start the voice note. Try again.");
-      recordingRef.current = null;
-      voiceRecordStartedAtRef.current = null;
-      setVoiceRecordStartedAt(null);
-    }
-  }, []);
-
-  const stopVoiceRecordingForPreview = useCallback(async () => {
-    const recording = recordingRef.current;
-    const startedAt = voiceRecordStartedAtRef.current;
-    if (!recording || startedAt == null) return;
-
-    let durationSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-    let uri: string | null = null;
-    try {
-      const status = await recording.getStatusAsync();
-      if (status.isRecording && typeof status.durationMillis === "number") {
-        durationSec = Math.max(1, Math.round(status.durationMillis / 1000));
-      }
-      uri = recording.getURI();
-      await recording.stopAndUnloadAsync();
-    } catch (err) {
-      logAppError("voice.record_stop", err, {});
-      Alert.alert("Recording failed", "Could not finish the voice note. Try again.");
-    } finally {
-      recordingRef.current = null;
-      voiceRecordStartedAtRef.current = null;
-      setVoiceRecordStartedAt(null);
-      setVoiceRecordElapsedSec(0);
-      try {
-        await prepareVoicePlaybackAudioMode();
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (!uri) return;
-    setPendingVoiceNote({ uri, durationSec });
-  }, []);
-
-  const togglePendingVoicePreview = useCallback(async () => {
-    if (!pendingVoiceNote) return;
-    if (previewVoicePlaying && previewSoundRef.current) {
-      await previewSoundRef.current.stopAsync();
-      await previewSoundRef.current.unloadAsync();
-      previewSoundRef.current = null;
-      setPreviewVoicePlaying(false);
-      return;
-    }
-    if (previewSoundRef.current) {
-      await previewSoundRef.current.unloadAsync();
-      previewSoundRef.current = null;
-    }
-    try {
-      await prepareVoicePlaybackAudioMode();
-      const source = voiceSoundSource(pendingVoiceNote.uri, "audio/mp4");
-      const { sound } = await Audio.Sound.createAsync(source, { shouldPlay: false, volume: 1 });
-      await sound.playAsync();
-      previewSoundRef.current = sound;
-      setPreviewVoicePlaying(true);
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isLoaded) return;
-        if (status.didJustFinish) {
-          void sound.unloadAsync();
-          if (previewSoundRef.current === sound) {
-            previewSoundRef.current = null;
-          }
-          setPreviewVoicePlaying(false);
-        }
-      });
-    } catch (err) {
-      logAppError("voice.preview_playback", err, {});
-      Alert.alert("Voice note", "Could not play this recording. Try recording again.");
-      setPreviewVoicePlaying(false);
-    }
-  }, [pendingVoiceNote, previewVoicePlaying]);
-
-  const discardPendingVoiceNote = useCallback(async () => {
-    if (previewSoundRef.current) {
-      await previewSoundRef.current.unloadAsync();
-      previewSoundRef.current = null;
-    }
-    setPreviewVoicePlaying(false);
-    setPendingVoiceNote(null);
-  }, []);
-
-  const discardPendingChatMedia = useCallback(() => {
-    setPendingChatMediaAttachment(null);
-  }, []);
-
   const sendPendingVoiceNote = useCallback(async () => {
-    if (!pendingVoiceNote) return;
-    if (previewSoundRef.current) {
-      await previewSoundRef.current.unloadAsync();
-      previewSoundRef.current = null;
-    }
-    setPreviewVoicePlaying(false);
+    const note = await preparePendingVoiceNoteForSend();
+    if (!note) return;
     sendPayload({
-      text: `Voice note (${pendingVoiceNote.durationSec}s)`,
+      text: `Voice note (${note.durationSec}s)`,
       kind: "voice",
-      durationSec: pendingVoiceNote.durationSec,
-      mediaUri: pendingVoiceNote.uri,
+      durationSec: note.durationSec,
+      mediaUri: note.uri,
     });
     setPendingVoiceNote(null);
     setVoiceNoteMode(false);
-  }, [pendingVoiceNote, sendPayload]);
+  }, [preparePendingVoiceNoteForSend, sendPayload]);
 
   const onComposerPrimaryPress = useCallback(() => {
     if (voiceNoteMode) {
@@ -5838,18 +5671,6 @@ function MainAppInner() {
     startVoiceRecording,
     sendMessage,
   ]);
-
-  useEffect(() => {
-    if (!voiceRecordStartedAt) return;
-    const tick = () => {
-      setVoiceRecordElapsedSec(
-        Math.max(0, Math.round((Date.now() - voiceRecordStartedAt) / 1000))
-      );
-    };
-    tick();
-    const id = setInterval(tick, 500);
-    return () => clearInterval(id);
-  }, [voiceRecordStartedAt]);
 
   const toggleVoiceMessagePlayback = async (message: Message) => {
     if (playingVoiceMessageId === message.id && messageSoundRef.current) {
@@ -5930,8 +5751,7 @@ function MainAppInner() {
   const leaveChatToHome = () => {
     setView({ screen: "home" });
     setChatSearch("");
-    setChatInputSynced("");
-    setShouldFocusChatInput(false);
+    clearComposerOnLeave();
     setChatSearchVisible(false);
     setChatOverflowOpen(false);
     setMembersModalOpen(false);
@@ -5944,13 +5764,6 @@ function MainAppInner() {
     setPhotoEditorAsset(null);
     setAddMemberModalOpen(false);
     setAddMemberSearch("");
-    setVoiceNoteMode(false);
-    setVoiceRecordStartedAt(null);
-    setVoiceRecordElapsedSec(0);
-    voiceRecordStartedAtRef.current = null;
-    setPendingVoiceNote(null);
-    setPendingChatMediaAttachment(null);
-    setPreviewVoicePlaying(false);
     setPlayingVoiceMessageId(null);
     setVoiceLoadingMessageId(null);
     setVoicePlaybackProgress(null);
@@ -5958,10 +5771,6 @@ function MainAppInner() {
     setVideoPrepareRequestedIds(new Set());
     setChatListDisplayLimit(CHAT_UI_INITIAL_DISPLAY_COUNT);
     setVideoPlayAfterPrepareId(null);
-    if (previewSoundRef.current) {
-      void previewSoundRef.current.unloadAsync();
-      previewSoundRef.current = null;
-    }
     if (messageSoundRef.current) {
       void messageSoundRef.current.unloadAsync();
       messageSoundRef.current = null;
@@ -6800,15 +6609,6 @@ function MainAppInner() {
       pendingChatMediaAttachment.height
     );
   }, [pendingChatMediaAttachment, windowWidth]);
-
-  useEffect(() => {
-    if (!showChatScreen || !shouldFocusChatInput) return;
-    const timer = setTimeout(() => {
-      chatInputRef.current?.focus();
-      setShouldFocusChatInput(false);
-    }, 60);
-    return () => clearTimeout(timer);
-  }, [showChatScreen, shouldFocusChatInput]);
 
   // Splash stays up while: Firebase auth resolves, the minimum splash duration elapses,
   // and (when signed in) the boot server pull completes — so the home never paints
