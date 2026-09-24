@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-24 18:33 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:33 +01:00 | Chat | Moved unsend, edit, reply, and failed-send retry and delete out of MainApp. Opening and creating a chat still stay in MainApp. |
+
+---
+
 ## 2026-09-23 22:09 +01:00
 
 | Time | Area | Change |

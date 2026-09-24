@@ -81,7 +81,6 @@ import { doc as firestoreDoc, onSnapshot } from "firebase/firestore";
 import { joinCutoffMsForViewer, normalizeMemberJoinedAtForClient } from "./lib/chatMemberJoinedAt";
 import {
   broadcastCreatorFriendId,
-  canReplyToBroadcastMessage,
   isBroadcastCreator,
 } from "./lib/broadcastMessaging";
 import {
@@ -174,6 +173,8 @@ import { useStartChatComposer } from "./chat/useStartChatComposer";
 import { createChatExitActions } from "./chat/chatExit";
 import { createChatMembershipActions } from "./chat/chatMembership";
 import { createChatMetaActions } from "./chat/chatMeta";
+import { createFailedMessageActions } from "./chat/failedMessageActions";
+import { createMessageActions } from "./chat/messageActions";
 import { scheduleDemoAutoReplies } from "./chat/demoAutoReplies";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
@@ -4428,37 +4429,14 @@ function MainAppInner() {
     addAutoReplies,
   });
 
-  const retryFailedMessage = useCallback(
-    (message: Message) => {
-      const chat = chats.find((c) => c.id === message.chatId);
-      if (!chat || message.unsentAt || message.deliveryStatus !== "failed") return;
-      const retryMessage: Message = {
-        ...message,
-        deliveryStatus: undefined,
-        unsentAt: undefined,
-      };
-      removeMessageById(message.id);
-      commitOutgoingMessages(chat, [retryMessage]);
-    },
-    [chats, commitOutgoingMessages, removeMessageById]
-  );
-
-  const deleteFailedMessage = useCallback(
-    (messageId: string) => {
-      removeMessageById(messageId);
-    },
-    [removeMessageById]
-  );
-
-  const handleChatMessagePress = useCallback(
-    (message: Message, isMine: boolean, defaultAction: () => void) => {
-      if (isMine && message.deliveryStatus === "failed" && !message.unsentAt) {
-        retryFailedMessage(message);
-        return;
-      }
-      defaultAction();
-    },
-    [retryFailedMessage]
+  const { retryFailedMessage, deleteFailedMessage, handleChatMessagePress } = useMemo(
+    () =>
+      createFailedMessageActions({
+        chats,
+        removeMessageById,
+        commitOutgoingMessages,
+      }),
+    [chats, removeMessageById, commitOutgoingMessages]
   );
 
   const sendPayload = (payload: {
@@ -4832,64 +4810,19 @@ function MainAppInner() {
     openReactionPickerForCommentBase,
   });
 
-  const unsendTargetMessage = () => {
-    if (!messageActionTarget) return;
-    const unsentAt = Date.now();
-    const target = messageActionTarget;
-    patchMessage(target.id, (message) => ({
-      ...message,
-      text: "",
-      kind: "text",
-      mediaUri: undefined,
-      durationSec: undefined,
-      videoTextOverlays: undefined,
-      unsentAt,
-      editedAt: undefined,
-    }));
-    if (!DEMO_OFFLINE_MODE) {
-      const session = getBackendSession();
-      const chat = chats.find((c) => c.id === target.chatId);
-      if (session && chat) {
-        void callEmulatorFunction("updateMessageMetadata", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          conversationId: resolveConversationId(chat),
-          messageId: target.id,
-          unsentAt,
-        }).catch((err) => logAppError("messages.unsend_metadata", err, { messageId: target.id }));
-      }
-    }
-  };
-
-  const startEditMessage = () => {
-    if (!messageActionTarget || messageActionTarget.senderId !== CURRENT_USER_ID) return;
-    setEditingMessageId(messageActionTarget.id);
-    setChatInputSynced(messageActionTarget.text);
-  };
-
-  const startReplyToMessage = () => {
-    if (!messageActionTarget || !resolvedChat) return;
-    if (
-      (resolvedChat.kind ?? "standard") === "broadcast" &&
-      !canReplyToBroadcastMessage(messageActionTarget, resolvedChat, CURRENT_USER_ID)
-    ) {
-      Alert.alert(
-        "Private reply only",
-        isActiveBroadcastRecipient
-          ? "Long-press a message from the broadcaster and choose Reply to respond privately."
-          : "Choose a friend's message to reply in that private thread."
-      );
-      return;
-    }
-    setReplyTargetMessageId(messageActionTarget.id);
-    if (messageActionTarget.broadcastThreadFriendId) {
-      setSelectedBroadcastThreadFriendId(messageActionTarget.broadcastThreadFriendId);
-    } else if (isActiveBroadcastRecipient) {
-      setSelectedBroadcastThreadFriendId(CURRENT_USER_ID);
-    } else {
-      setSelectedBroadcastThreadFriendId(null);
-    }
-  };
+  const { unsendTargetMessage, startEditMessage, startReplyToMessage } = createMessageActions({
+    messageActionTarget,
+    resolvedChat,
+    isActiveBroadcastRecipient,
+    chats,
+    patchMessage,
+    getBackendSession,
+    resolveConversationId,
+    setEditingMessageId,
+    setChatInputSynced,
+    setReplyTargetMessageId,
+    setSelectedBroadcastThreadFriendId,
+  });
 
   const { saveChatTitle, saveChatPicture } = createChatMetaActions({
     resolvedChat,

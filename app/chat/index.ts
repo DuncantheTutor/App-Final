@@ -1,6 +1,8 @@
 export { createChatExitActions } from "./chatExit";
 export { createChatMembershipActions } from "./chatMembership";
 export { createChatMetaActions } from "./chatMeta";
+export { createFailedMessageActions } from "./failedMessageActions";
+export { createMessageActions } from "./messageActions";
 export { scheduleDemoAutoReplies } from "./demoAutoReplies";
 export { availableStartChatFriends } from "./availableStartChatFriends";
 export type { StartChatComposerMode } from "./availableStartChatFriends";
