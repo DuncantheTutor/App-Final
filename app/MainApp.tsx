@@ -97,7 +97,6 @@ import {
   isCanonicalDirectChatId,
   localChatIdsForDirectThread,
   resolveCanonicalDirectChatLocalId,
-  resolveDirectChatOpenTarget,
   resolveInboundDirectMessageTarget,
   resolveIncomingDirectChatId,
   serverConversationIdForChat,
@@ -175,6 +174,10 @@ import { createChatMembershipActions } from "./chat/chatMembership";
 import { createChatMetaActions } from "./chat/chatMeta";
 import { createFailedMessageActions } from "./chat/failedMessageActions";
 import { createMessageActions } from "./chat/messageActions";
+import {
+  buildDefaultChatName as chatNameFromFriendIds,
+  createOpenOrCreateChatActions,
+} from "./chat/openOrCreateChat";
 import { scheduleDemoAutoReplies } from "./chat/demoAutoReplies";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
@@ -2254,9 +2257,12 @@ function MainAppInner() {
     if (activeCounterpartIds.length > 1) {
       if (resolvedChat?.isCustomName) return resolvedChat.name;
       if (pendingDraft?.standardGroupTitle === "custom") {
-        return pendingDraft.name?.trim() || buildDefaultChatName(activeCounterpartIds);
+        return (
+          pendingDraft.name?.trim() ||
+          chatNameFromFriendIds(activeCounterpartIds, (id) => resolvePd(id).displayName)
+        );
       }
-      return buildDefaultChatName(activeCounterpartIds);
+      return chatNameFromFriendIds(activeCounterpartIds, (id) => resolvePd(id).displayName);
     }
     return pendingDraft?.name ?? resolvedChat?.name ?? "Chat";
   }, [
@@ -2325,7 +2331,7 @@ function MainAppInner() {
       return composerCustomTitle.trim();
     }
     if (selectedComposerIds.length === 0) return "Start Chat";
-    return buildDefaultChatName(selectedComposerIds);
+    return chatNameFromFriendIds(selectedComposerIds, (id) => resolvePd(id).displayName);
   };
 
   const eligibleFriendsToAdd = useMemo(() => {
@@ -3508,50 +3514,6 @@ function MainAppInner() {
     toggleSelectAllBroadcast(allFriends.map((friend) => friend.id));
   };
 
-  const continueToBroadcastDraft = (ids: string[], fallbackName?: string) => {
-    const memberIds = [CURRENT_USER_ID, ...ids];
-    goToPendingDraftChat({
-      memberIds,
-      name: composerCustomTitle.trim() || fallbackName || "Broadcast",
-      profilePicture: "📣",
-      kind: "broadcast",
-      createdBy: CURRENT_USER_ID,
-      broadcastRecipientIds: ids,
-    });
-    closeBroadcastPicker();
-  };
-
-  const handleBroadcastGroupNameConfirm = () => {
-    const ids = pendingBroadcastCreateIds;
-    if (!ids) return;
-    const name = broadcastGroupNameDraft.trim() || "Saved Group";
-    const existing = savedBroadcastGroups.find(
-      (g) => g.name.trim().toLowerCase() === name.toLowerCase()
-    );
-    if (existing) {
-      Alert.alert("That group name already exists", "Do you want to overwrite?", [
-        { text: "No", style: "cancel" },
-        {
-          text: "Yes",
-          onPress: () => {
-            commitSavedBroadcastGroup(ids, name, existing.id);
-            continueToBroadcastDraft(ids, name);
-          },
-        },
-      ]);
-      return;
-    }
-    commitSavedBroadcastGroup(ids, name, null);
-    continueToBroadcastDraft(ids, name);
-  };
-
-  const buildDefaultChatName = (friendIds: string[]) => {
-    if (friendIds.length === 1) {
-      return resolvePd(friendIds[0]).displayName;
-    }
-    return friendIds.map((id) => resolvePd(id).displayName).join(", ");
-  };
-
   const resolvedStoredChatListTitle = useCallback(
     (chat: Chat) => {
       if (chat.kind === "broadcast") return chat.name;
@@ -3574,56 +3536,57 @@ function MainAppInner() {
     [resolvePd, identityLockedChatIdsSet]
   );
 
-  const goToChat = (chatId: string) => {
-    setChatOverflowOpen(false);
-    setMembersModalOpen(false);
-    setChatSearchVisible(false);
-    setChatSearch("");
-    setSelectedBroadcastThreadFriendId(null);
-    setReplyTargetMessageId(null);
-    setEditingMessageId(null);
-    let targetChatId = chatId;
-    const session = getBackendSession();
-    if (session) {
-      const resolved = resolveDirectChatOpenTarget({
-        requestedChatId: chatId,
-        chats,
-        sessionAppUid: session.uid,
-        friendMap,
-        friendIdToBackendUid,
-        identityLockedChatIds: identityLockedChatIdsSet,
-        unfriendedIds,
-        serverAcceptedFriendBackendUids,
-        hiddenLocalChatIds: new Set(hiddenChatIdsRef.current),
-        hiddenServerConversationIds: hiddenServerConversationIdsRef.current,
-        resolveMemberFriendId: resolveChatMemberFriendId,
-      });
-      targetChatId = resolved.targetChatId;
-      if (resolved.allocateLive && !chats.some((c) => c.id === resolved.allocateLive!.localId)) {
-        const friendId = resolved.allocateLive.friendId;
-        const profile = friendMap[friendId];
-        const liveRow: Chat = {
-          id: resolved.allocateLive.localId,
-          memberIds: [CURRENT_USER_LOCAL_ID, friendId],
-          name: profile?.displayName?.trim() || resolvePd(friendId).displayName,
-          profilePicture: profile?.profilePictureUrl || undefined,
-          kind: "standard",
-          createdBy: CURRENT_USER_LOCAL_ID,
-          isCustomName: false,
-          isDraft: true,
-          visibleToRecipients: false,
-          updatedAt: Date.now(),
-        };
-        upsertChat(liveRow);
-      }
-    }
-    const chat = chats.find((c) => c.id === targetChatId);
-    const draftText = chat?.draftComposerText ?? "";
-    unhideChatId(targetChatId);
-    setChatInputSynced(draftText);
-    setShouldFocusChatInput(draftText.trim().length > 0);
-    setView({ screen: "chat", chatId: targetChatId });
-  };
+  const {
+    buildDefaultChatName,
+    continueToBroadcastDraft,
+    handleBroadcastGroupNameConfirm,
+    goToChat,
+    goToPendingDraftChat,
+    createOrOpenChat,
+    onPressCreateStandardChat,
+    findOrCreateChatWithFriend,
+    openChatFromHome,
+  } = createOpenOrCreateChatActions({
+    composerCustomTitle,
+    composerMode,
+    selectedComposerIds,
+    allFriends,
+    chats,
+    savedBroadcastGroups,
+    pendingBroadcastCreateIds,
+    broadcastGroupNameDraft,
+    broadcastPickerOpen,
+    friendMap,
+    friendIdToBackendUid,
+    identityLockedChatIdsSet,
+    unfriendedIds,
+    serverAcceptedFriendBackendUids,
+    hiddenChatIdsRef,
+    hiddenServerConversationIdsRef,
+    resolvePd,
+    resolveChatMemberFriendId,
+    getBackendSession,
+    normalizeSet,
+    upsertChat,
+    unhideChatId,
+    openDirectChat,
+    commitSavedBroadcastGroup,
+    beginGroupTitleStep,
+    closeComposer,
+    closeBroadcastPicker,
+    setView,
+    setChatInputSynced,
+    setShouldFocusChatInput,
+    setChatOverflowOpen,
+    setMembersModalOpen,
+    setChatSearchVisible,
+    setChatSearch,
+    setSelectedBroadcastThreadFriendId,
+    setReplyTargetMessageId,
+    setEditingMessageId,
+    setPendingBroadcastCreateIds,
+    setSaveBroadcastGroupPromptOpen,
+  });
 
 
   useEffect(() => {
@@ -3683,169 +3646,6 @@ function MainAppInner() {
     pullEncryptedPostsIncremental,
   ]);
 
-  const goToPendingDraftChat = (pending: PendingDraft) => {
-    setChatOverflowOpen(false);
-    setMembersModalOpen(false);
-    setChatSearchVisible(false);
-    setChatSearch("");
-    setSelectedBroadcastThreadFriendId(null);
-    setReplyTargetMessageId(null);
-    setEditingMessageId(null);
-    setChatInputSynced("");
-    setShouldFocusChatInput(false);
-    setView({ screen: "chat", pendingDraft: pending });
-  };
-
-  const createOrOpenChat = (
-    modeOverride?: "standard" | "broadcast",
-    composerTitleOverride?: string,
-    createOptions?: { groupProfilePictureUri?: string | null }
-  ) => {
-    const mode = modeOverride ?? composerMode;
-    const titleFromComposer =
-      composerTitleOverride !== undefined ? composerTitleOverride.trim() : composerCustomTitle.trim();
-    const groupPicUri = createOptions?.groupProfilePictureUri?.trim() ?? "";
-    if (selectedComposerIds.length === 0) return;
-    if (mode === "broadcast") {
-      const createBroadcastFromSelection = (ids: string[]) => {
-        const broadcastTitle = titleFromComposer || "Broadcast";
-        const memberIds = [CURRENT_USER_ID, ...ids];
-        goToPendingDraftChat({
-          memberIds,
-          name: broadcastTitle,
-          profilePicture: "📣",
-          kind: "broadcast",
-          createdBy: CURRENT_USER_ID,
-          broadcastRecipientIds: ids,
-        });
-        if (broadcastPickerOpen) {
-          closeBroadcastPicker();
-        } else {
-          closeComposer();
-        }
-      };
-
-      const selectionHash = normalizeSet(selectedComposerIds);
-      const alreadySaved = savedBroadcastGroups.some(
-        (group) => normalizeSet(group.memberIds) === selectionHash
-      );
-      if (selectedComposerIds.length === allFriends.length) {
-        createBroadcastFromSelection(selectedComposerIds);
-        return;
-      }
-      if (!alreadySaved && selectedComposerIds.length > 1) {
-        setPendingBroadcastCreateIds([...selectedComposerIds]);
-        setSaveBroadcastGroupPromptOpen(true);
-        return;
-      }
-
-      createBroadcastFromSelection(selectedComposerIds);
-      return;
-    }
-
-    if (mode === "standard" && selectedComposerIds.length > 1) {
-      const memberIds = [CURRENT_USER_ID, ...selectedComposerIds];
-      const target = normalizeSet(memberIds);
-      const existing = chats.find((chat) => normalizeSet(chat.memberIds) === target);
-
-      if (existing) {
-        goToChat(existing.id);
-        closeComposer();
-        return;
-      }
-
-      goToPendingDraftChat({
-        memberIds,
-        name: titleFromComposer || buildDefaultChatName(selectedComposerIds),
-        standardGroupTitle: titleFromComposer ? "custom" : "members",
-        profilePicture:
-          selectedComposerIds.length > 1
-            ? groupPicUri.length > 0
-              ? groupPicUri
-              : "^"
-            : undefined,
-        kind: "standard",
-        createdBy: CURRENT_USER_ID,
-      });
-      closeComposer();
-      return;
-    }
-
-    if (mode === "standard" && selectedComposerIds.length === 1 && titleFromComposer) {
-      const memberIds = [CURRENT_USER_ID, ...selectedComposerIds];
-      const target = normalizeSet(memberIds);
-      const existing = chats.find((chat) => normalizeSet(chat.memberIds) === target);
-      if (existing) {
-        goToChat(existing.id);
-        closeComposer();
-        return;
-      }
-      goToPendingDraftChat({
-        memberIds,
-        name: titleFromComposer,
-        profilePicture: undefined,
-        kind: "standard",
-        createdBy: CURRENT_USER_ID,
-      });
-      closeComposer();
-      return;
-    }
-
-    if (mode === "standard" && selectedComposerIds.length === 1) {
-      findOrCreateChatWithFriend(selectedComposerIds[0]);
-      closeComposer();
-      return;
-    }
-
-    const memberIds = [CURRENT_USER_ID, ...selectedComposerIds];
-    const target = normalizeSet(memberIds);
-    const existing = chats.find((chat) => normalizeSet(chat.memberIds) === target);
-
-    if (existing) {
-      goToChat(existing.id);
-      closeComposer();
-      return;
-    }
-
-    goToPendingDraftChat({
-      memberIds,
-      name: buildDefaultChatName(selectedComposerIds),
-      ...(selectedComposerIds.length > 1 ? { standardGroupTitle: "members" as const } : {}),
-      profilePicture:
-        selectedComposerIds.length > 1 ? (groupPicUri.length > 0 ? groupPicUri : "^") : undefined,
-      kind: "standard",
-      createdBy: CURRENT_USER_ID,
-    });
-    closeComposer();
-  };
-
-  const onPressCreateStandardChat = () => {
-    if (selectedComposerIds.length === 0) return;
-    if (composerMode === "standard" && selectedComposerIds.length > 1) {
-      beginGroupTitleStep();
-      return;
-    }
-    createOrOpenChat();
-  };
-
-  const findOrCreateChatWithFriend = (friendId: string) => {
-    openDirectChat({
-      friendId,
-      session: getBackendSession(),
-      friendMap,
-      friendIdToBackendUid,
-      unfriendedIds,
-      identityLockedChatIds: identityLockedChatIdsSet,
-      resolveDisplayName: (id) =>
-        friendMap[id]?.displayName?.trim() || resolvePd(id).displayName,
-      normalizeMemberSet: normalizeSet,
-      goToChat,
-    });
-  };
-
-  const openChatFromHome = (chatId: string) => {
-    goToChat(chatId);
-  };
 
   const friendHasCachedProfile = useCallback(
     (friendId: string) => friendHasCachedProfileFromMaps(friendId, friendMap),

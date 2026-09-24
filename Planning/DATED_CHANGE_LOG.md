@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-24 19:44 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:44 +01:00 | Chat | Moved opening and creating a chat out of MainApp. Opening a friend profile still stays in MainApp. |
+
+---
+
 ## 2026-09-24 18:33 +01:00
 
 | Time | Area | Change |

@@ -3,6 +3,7 @@ export { createChatMembershipActions } from "./chatMembership";
 export { createChatMetaActions } from "./chatMeta";
 export { createFailedMessageActions } from "./failedMessageActions";
 export { createMessageActions } from "./messageActions";
+export { buildDefaultChatName, createOpenOrCreateChatActions } from "./openOrCreateChat";
 export { scheduleDemoAutoReplies } from "./demoAutoReplies";
 export { availableStartChatFriends } from "./availableStartChatFriends";
 export type { StartChatComposerMode } from "./availableStartChatFriends";
