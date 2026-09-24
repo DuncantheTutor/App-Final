@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-23 22:09 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 22:09 +01:00 | Chat | Moved Android back, chat title and picture saves, and demo auto-replies out of MainApp. Unsend, edit, and reply still stay in MainApp. |
+
+---
+
 ## 2026-09-23 20:38 +01:00
 
 | Time | Area | Change |

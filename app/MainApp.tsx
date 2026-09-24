@@ -173,6 +173,8 @@ import { useActiveChatMessages } from "./chat/useActiveChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
 import { createChatExitActions } from "./chat/chatExit";
 import { createChatMembershipActions } from "./chat/chatMembership";
+import { createChatMetaActions } from "./chat/chatMeta";
+import { scheduleDemoAutoReplies } from "./chat/demoAutoReplies";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
@@ -191,12 +193,12 @@ import {
   pendingDraftFromView,
   useAppNavigation,
   useMainNavSlide,
-  viewAfterHardwareBack,
   viewAfterLeavingFriendProfile,
   type MainNavSurface,
 } from "./shell";
 import { AuthScreens } from "./shell/AuthScreens";
 import { SignedInTree } from "./shell/SignedInTree";
+import { handleAndroidHardwareBack as handleAndroidHardwareBackImpl } from "./shell/androidHardwareBack";
 import { restoreSignedInAccount, useBackendSession, useSignedInSession } from "./session";
 import {
   initializeBackendSessionForAccount as initializeBackendSessionForAccountImpl,
@@ -4379,75 +4381,13 @@ function MainAppInner() {
     });
   };
 
-  const addAutoReplies = (chat: Chat, latestMessages: Message[]) => {
-    if (!DEMO_OFFLINE_MODE) return;
-    const now = Date.now();
-    const outgoing = latestMessages.filter((m) => m.senderId === CURRENT_USER_ID);
-    if (outgoing.length === 0) return;
-
-    const scheduleReply = (message: Message, delayMs: number) => {
-      const timer = setTimeout(() => {
-        appendMessages([message]);
-        patchChat(chat.id, (c) => ({ ...c, updatedAt: Date.now() }));
-      }, delayMs);
-      autoReplyTimersRef.current.push(timer);
-    };
-
-    if ((chat.kind ?? "standard") === "broadcast") {
-      const recipients =
-        chat.broadcastRecipientIds ?? chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-      for (const outgoingMessage of outgoing) {
-        const threadFriendId = outgoingMessage.broadcastThreadFriendId;
-        const targets = threadFriendId
-          ? [threadFriendId]
-          : recipients;
-        for (const targetId of targets) {
-          if (DEMO_OFFLINE_MODE && !demoActiveInboundFriendIds.includes(targetId)) continue;
-          if (Math.random() > (DEMO_OFFLINE_MODE ? 0.5 : 0.68)) continue;
-          const delayMs =
-            AUTO_REPLY_MIN_DELAY_MS +
-            Math.floor(Math.random() * (AUTO_REPLY_MAX_DELAY_MS - AUTO_REPLY_MIN_DELAY_MS + 1));
-          scheduleReply(
-            {
-              id: `auto-${now}-${targetId}-${Math.random().toString(36).slice(2, 6)}`,
-              chatId: chat.id,
-              senderId: targetId,
-              text: AUTO_REPLY_LINES[Math.floor(Math.random() * AUTO_REPLY_LINES.length)] ?? "Got it.",
-              createdAt: Date.now() + delayMs,
-              kind: "text",
-              replyToMessageId: outgoingMessage.id,
-              broadcastThreadFriendId: targetId,
-            },
-            delayMs
-          );
-        }
-      }
-      return;
-    }
-    const recipients = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-    const candidateRecipients = DEMO_OFFLINE_MODE
-      ? recipients.filter((id) => demoActiveInboundFriendIds.includes(id))
-      : recipients;
-    if (candidateRecipients.length === 0 || Math.random() > (DEMO_OFFLINE_MODE ? 0.5 : 0.7)) return;
-    const sender =
-      candidateRecipients[Math.floor(Math.random() * candidateRecipients.length)] ?? candidateRecipients[0];
-    if (!sender) return;
-    const anchor = outgoing[outgoing.length - 1];
-    if (!anchor) return;
-    const delayMs =
-      AUTO_REPLY_MIN_DELAY_MS +
-      Math.floor(Math.random() * (AUTO_REPLY_MAX_DELAY_MS - AUTO_REPLY_MIN_DELAY_MS + 1));
-    const reply: Message = {
-      id: `auto-${now}-${sender}-${Math.random().toString(36).slice(2, 6)}`,
-      chatId: chat.id,
-      senderId: sender,
-      text: AUTO_REPLY_LINES[Math.floor(Math.random() * AUTO_REPLY_LINES.length)] ?? "Nice.",
-      createdAt: Date.now() + delayMs,
-      kind: "text",
-      replyToMessageId: anchor.id,
-    };
-    scheduleReply(reply, delayMs);
-  };
+  const addAutoReplies = (chat: Chat, latestMessages: Message[]) =>
+    scheduleDemoAutoReplies(chat, latestMessages, {
+      demoActiveInboundFriendIds,
+      appendMessages,
+      patchChat,
+      autoReplyTimersRef,
+    });
 
   const getSenderDisplayName = useCallback(() => myDisplayNameRef.current.trim(), []);
 
@@ -4731,172 +4671,108 @@ function MainAppInner() {
 
   const handleAndroidHardwareBackRef = useRef<() => boolean>(() => false);
 
-  const handleAndroidHardwareBack = useCallback(() => {
-    if (imageCropVisible) {
-      cancelImageCropFlow();
-      return true;
-    }
-    if (photoEditorOpen) {
-      if (photoEditorInCrop) {
-        setPhotoEditorCropExitTick((t) => t + 1);
-        return true;
-      }
-      cancelPhotoEditor();
-      return true;
-    }
-    if (keyboardVisible) {
-      Keyboard.dismiss();
-      return true;
-    }
-    if (fullscreenMedia) {
-      setFullscreenMedia(null);
-      return true;
-    }
-    if (fullScreenPost) {
-      closeFullscreenPost();
-      return true;
-    }
-    if (reactionDetailPost) {
-      setReactionDetailPost(null);
-      return true;
-    }
-    if (themePickerOpen) {
-      setThemePickerOpen(false);
-      return true;
-    }
-    if (reactionPickerOpen) {
-      closeReactionPicker();
-      return true;
-    }
-    if (postFullscreenThreadReplyKey) {
-      setPostFullscreenThreadReplyKey(null);
-      Keyboard.dismiss();
-      return true;
-    }
-    if (chatOverflowOpen) {
-      setChatOverflowOpen(false);
-      return true;
-    }
-    if (membersModalOpen) {
-      setMembersModalOpen(false);
-      return true;
-    }
-    if (addMemberModalOpen) {
-      setAddMemberModalOpen(false);
-      setAddMemberSearch("");
-      return true;
-    }
-    if (editChatMetaOpen) {
-      setEditChatMetaOpen(false);
-      return true;
-    }
-    if (editChatPictureOpen) {
-      setEditChatPictureOpen(false);
-      return true;
-    }
-    if (saveBroadcastGroupNameModalOpen) {
-      setSaveBroadcastGroupNameModalOpen(false);
-      setSaveBroadcastGroupPromptOpen(true);
-      return true;
-    }
-    if (saveBroadcastGroupPromptOpen) {
-      setSaveBroadcastGroupPromptOpen(false);
-      return true;
-    }
-    if (createTitleEditOpen) {
-      setPendingStandardGroupCreateAfterTitle(false);
-      setCreateTitleEditOpen(false);
-      setCreateGroupPictureUri(null);
-      return true;
-    }
-    if (broadcastPickerOpen) {
-      setBroadcastPickerOpen(false);
-      return true;
-    }
-    if (chatComposerOpen) {
-      setChatComposerOpen(false);
-      return true;
-    }
-    if (chatSearchVisible) {
-      setChatSearchVisible(false);
-      setChatSearch("");
-      return true;
-    }
-    if (voiceRecordStartedAt) {
-      void cancelVoiceRecording();
-      return true;
-    }
-    if (pendingVoiceNote) {
-      void discardPendingVoiceNote();
-      return true;
-    }
-    if (pendingChatMediaAttachment) {
-      discardPendingChatMedia();
-      return true;
-    }
-    if (voiceNoteMode) {
-      void exitVoiceNoteMode();
-      return true;
-    }
-
-    const v = viewRef.current;
-    if (v.screen === "chat") {
-      onBackFromChat();
-      return true;
-    }
-    if (v.screen === "publishPost") {
-      closePublishPostScreen();
-      return true;
-    }
-    if (v.screen === "addFriend") {
-      abortAddFriendPairingRef.current?.();
-      goHome();
-      return true;
-    }
-    const nextView = viewAfterHardwareBack(v);
-    if (nextView) {
-      setView(nextView);
-      return true;
-    }
-    return false;
-  }, [
-    imageCropVisible,
-    cancelImageCropFlow,
-    photoEditorOpen,
-    photoEditorInCrop,
-    keyboardVisible,
-    fullscreenMedia,
-    fullScreenPost,
-    reactionDetailPost,
-    themePickerOpen,
-    reactionPickerOpen,
-    closeReactionPicker,
-    postFullscreenThreadReplyKey,
-    chatOverflowOpen,
-    membersModalOpen,
-    addMemberModalOpen,
-    editChatMetaOpen,
-    editChatPictureOpen,
-    saveBroadcastGroupNameModalOpen,
-    saveBroadcastGroupPromptOpen,
-    createTitleEditOpen,
-    broadcastPickerOpen,
-    chatComposerOpen,
-    chatSearchVisible,
-    voiceRecordStartedAt,
-    pendingVoiceNote,
-    pendingChatMediaAttachment,
-    voiceNoteMode,
-    closeFullscreenPost,
-    closePublishPostScreen,
-    cancelPhotoEditor,
-    cancelVoiceRecording,
-    discardPendingVoiceNote,
-    discardPendingChatMedia,
-    exitVoiceNoteMode,
-    onBackFromChat,
-    goHome,
-  ]);
+  const handleAndroidHardwareBack = useCallback(
+    () =>
+      handleAndroidHardwareBackImpl({
+        imageCropVisible,
+        cancelImageCropFlow,
+        photoEditorOpen,
+        photoEditorInCrop,
+        setPhotoEditorCropExitTick,
+        cancelPhotoEditor,
+        keyboardVisible,
+        fullscreenMedia,
+        setFullscreenMedia,
+        fullScreenPost,
+        closeFullscreenPost,
+        reactionDetailPost,
+        setReactionDetailPost,
+        themePickerOpen,
+        setThemePickerOpen,
+        reactionPickerOpen,
+        closeReactionPicker,
+        postFullscreenThreadReplyKey,
+        setPostFullscreenThreadReplyKey,
+        chatOverflowOpen,
+        setChatOverflowOpen,
+        membersModalOpen,
+        setMembersModalOpen,
+        addMemberModalOpen,
+        setAddMemberModalOpen,
+        setAddMemberSearch,
+        editChatMetaOpen,
+        setEditChatMetaOpen,
+        editChatPictureOpen,
+        setEditChatPictureOpen,
+        saveBroadcastGroupNameModalOpen,
+        setSaveBroadcastGroupNameModalOpen,
+        saveBroadcastGroupPromptOpen,
+        setSaveBroadcastGroupPromptOpen,
+        createTitleEditOpen,
+        setPendingStandardGroupCreateAfterTitle,
+        setCreateTitleEditOpen,
+        setCreateGroupPictureUri,
+        broadcastPickerOpen,
+        setBroadcastPickerOpen,
+        chatComposerOpen,
+        setChatComposerOpen,
+        chatSearchVisible,
+        setChatSearchVisible,
+        setChatSearch,
+        voiceRecordStartedAt,
+        cancelVoiceRecording,
+        pendingVoiceNote,
+        discardPendingVoiceNote,
+        pendingChatMediaAttachment,
+        discardPendingChatMedia,
+        voiceNoteMode,
+        exitVoiceNoteMode,
+        viewRef,
+        onBackFromChat,
+        closePublishPostScreen,
+        abortAddFriendPairingRef,
+        goHome,
+        setView,
+      }),
+    [
+      imageCropVisible,
+      cancelImageCropFlow,
+      photoEditorOpen,
+      photoEditorInCrop,
+      keyboardVisible,
+      fullscreenMedia,
+      fullScreenPost,
+      reactionDetailPost,
+      themePickerOpen,
+      reactionPickerOpen,
+      closeReactionPicker,
+      postFullscreenThreadReplyKey,
+      chatOverflowOpen,
+      membersModalOpen,
+      addMemberModalOpen,
+      editChatMetaOpen,
+      editChatPictureOpen,
+      saveBroadcastGroupNameModalOpen,
+      saveBroadcastGroupPromptOpen,
+      createTitleEditOpen,
+      broadcastPickerOpen,
+      chatComposerOpen,
+      chatSearchVisible,
+      voiceRecordStartedAt,
+      pendingVoiceNote,
+      pendingChatMediaAttachment,
+      voiceNoteMode,
+      closeFullscreenPost,
+      closePublishPostScreen,
+      cancelPhotoEditor,
+      cancelVoiceRecording,
+      discardPendingVoiceNote,
+      discardPendingChatMedia,
+      exitVoiceNoteMode,
+      onBackFromChat,
+      goHome,
+    ]
+  );
 
   handleAndroidHardwareBackRef.current = handleAndroidHardwareBack;
 
@@ -5015,26 +4891,14 @@ function MainAppInner() {
     }
   };
 
-  const saveChatTitle = () => {
-    if (!resolvedChat || !chatTitleDraft.trim()) return;
-    patchChat(resolvedChat.id, (chat) => ({
-      ...chat,
-      name: chatTitleDraft.trim(),
-      isCustomName: true,
-      updatedAt: Date.now(),
-    }));
-    setEditChatMetaOpen(false);
-  };
-
-  const saveChatPicture = () => {
-    if (!resolvedChat || !chatPictureDraft.trim()) return;
-    patchChat(resolvedChat.id, (chat) => ({
-      ...chat,
-      profilePicture: chatPictureDraft.trim().slice(0, 2),
-      updatedAt: Date.now(),
-    }));
-    setEditChatPictureOpen(false);
-  };
+  const { saveChatTitle, saveChatPicture } = createChatMetaActions({
+    resolvedChat,
+    chatTitleDraft,
+    chatPictureDraft,
+    patchChat,
+    setEditChatMetaOpen,
+    setEditChatPictureOpen,
+  });
 
   const getCaptionedMediaLayout = useCallback(
     (message: Message) => {
