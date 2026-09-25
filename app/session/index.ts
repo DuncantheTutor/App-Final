@@ -1,3 +1,4 @@
+export { createAccountAuthActions } from "./accountAuthActions";
 export { restoreSignedInAccount, type RestoreSignedInAccountDeps } from "./restoreSignedInAccount";
 export {
   initializeBackendSessionForAccount,

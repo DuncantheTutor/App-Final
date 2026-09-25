@@ -1,3 +1,4 @@
+export { useAddFriendPairing } from "./useAddFriendPairing";
 export { registerPairOfferToken } from "./registerPairOffer";
 export { resolvePairingSession } from "./resolvePairingSession";
 export {

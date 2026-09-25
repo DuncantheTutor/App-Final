@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-25 17:08 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:08 +01:00 | Friends / Auth | Moved unfriend and feed mute, login and signup, and pairing composition out of MainApp. Loading older chat messages still stays in MainApp. |
+
+---
+
 ## 2026-09-25 17:03 +01:00
 
 | Time | Area | Change |

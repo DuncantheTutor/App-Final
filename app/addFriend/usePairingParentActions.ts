@@ -48,7 +48,7 @@ export type PairingParentActions = {
 
 /**
  * Dual-confirm QR/NFC pairing callables used by AddFriendScreen.
- * Friend hydration lives in `app/friends/hydrateFriendByUid`. Roster writes stay composed through MainApp.
+ * Friend hydration and pairing composition live in `useAddFriendPairing`.
  */
 export function usePairingParentActions(params: {
   demoOfflineMode: boolean;

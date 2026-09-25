@@ -11,7 +11,7 @@ import { Audio, ResizeMode, Video } from "expo-av";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as ExpoNetwork from "expo-network";
 import Constants from "expo-constants";
-import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -69,7 +69,7 @@ import { ChatVideoMessageBubble } from "./components/ChatVideoMessageBubble";
 import { ChatReplyTargetPreview } from "./components/ChatReplyTargetPreview";
 import { ChatVoiceNoteBubble } from "./components/ChatVoiceNoteBubble";
 import { resolveTierBMediaToFileUri } from "./lib/tierBMedia/storage";
-import { requestReadSmsPermissionIfNeeded, startAndroidOtpAssist } from "../otpSmsAssist";
+import { startAndroidOtpAssist } from "../otpSmsAssist";
 import {
   debugSessionLog,
   firebaseAuth,
@@ -156,7 +156,6 @@ import {
 } from "./messaging/messageMetadata";
 import { readAvatarsByMessageId, type ReadByMap } from "./lib/readReceipts";
 import { useInitialServerSync } from "./boot/useInitialServerSync";
-import { clearLocalSocialCacheForEmail } from "./lib/localSocialCache";
 import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "./lib/e2eeKeyBackup";
 import {
   restoreSocialSnapshotFromCloud,
@@ -179,7 +178,7 @@ import { scheduleDemoAutoReplies } from "./chat/demoAutoReplies";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
-import { useHydrateFriendByUid } from "./friends/hydrateFriendByUid";
+import { createFriendListActions } from "./friends/friendListActions";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
 import { createOpenFriendProfileActions, useEncryptedProfileSync, useProfileController } from "./profile";
@@ -201,7 +200,7 @@ import {
 import { AuthScreens } from "./shell/AuthScreens";
 import { SignedInTree } from "./shell/SignedInTree";
 import { handleAndroidHardwareBack as handleAndroidHardwareBackImpl } from "./shell/androidHardwareBack";
-import { restoreSignedInAccount, useBackendSession, useSignedInSession } from "./session";
+import { createAccountAuthActions, restoreSignedInAccount, useBackendSession, useSignedInSession } from "./session";
 import {
   initializeBackendSessionForAccount as initializeBackendSessionForAccountImpl,
   retryInitializeBackendSession,
@@ -231,7 +230,7 @@ import {
 } from "./media/pickMedia";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate, usePushNotificationRouting } from "./notifications";
-import { usePairingParentActions } from "./addFriend";
+import { useAddFriendPairing } from "./addFriend/useAddFriendPairing";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
@@ -281,9 +280,7 @@ import {
 } from "./lib/viewPersistence";
 import { warmPostGridMediaCache } from "./lib/warmPostMediaCache";
 import {
-  collectDirectChatIdsToLockForFriend,
   isChatIdentityLocked,
-  mergeIdentityLockedChatIds,
 } from "./lib/identityLockedChats";
 import { friendDisplayNameFromProfile } from "./lib/friendDisplayName";
 import {
@@ -327,7 +324,6 @@ import {
   CURRENT_USER_ID,
   DARK_THEME_GREEN,
   DARK_THEME_PINK,
-  DEMO_OFFLINE_ACCOUNTS,
   DEMO_OFFLINE_MODE,
   EMAIL_OTP_ENABLED,
   DEMO_SHARED_FRIEND_IDS,
@@ -336,7 +332,6 @@ import {
   DEMO_USER_B_FRIEND_IDS,
   DEMO_USER_B_ONLY_FRIEND_IDS,
   FAKE_BIOS,
-  FEED_MUTE_CHOICES,
   FRIENDS,
   FRIEND_NAMES,
   INITIAL_CHATS,
@@ -3214,300 +3209,34 @@ function MainAppInner() {
     return () => clearInterval(id);
   }, [signedIn]);
 
-  const completeLoginAfterPassword = async (email: string, password: string) => {
-    try {
-      await signInWithEmailAndPassword(firebaseAuth, email, password);
-      logAppEvent("auth.login_ok", { email });
-    } catch (e) {
-      logAppError("auth.login", e, { email });
-      const message = e instanceof Error ? e.message : "Could not sign in.";
-      Alert.alert("Login failed", message);
-      return;
-    }
-    const persistedUsername =
-      (await storageGetItem(profileUsernameStorageKey(email)))?.trim() ?? "";
-    const account: MockAuthAccount = {
-      email,
-      password,
-      username: persistedUsername,
-      phoneNumber: "",
-      bio: "",
-      profilePictureUrl: null,
-    };
-    sessionEmailRef.current = account.email;
-    await applySignedInAccount(account);
-  };
-
-  const goToLoginOtpStep = () => {
-    if (DEMO_OFFLINE_MODE) return;
-    const email = loginEmail.trim().toLowerCase();
-    const password = loginPassword;
-    if (!email || !password) {
-      Alert.alert("Login", "Enter email and password.");
-      return;
-    }
-    if (!email.includes("@") || !email.includes(".")) {
-      Alert.alert("Login", "Use a valid email address.");
-      return;
-    }
-    if (!EMAIL_OTP_ENABLED) {
-      void completeLoginAfterPassword(email, password);
-      return;
-    }
-    setLoginOtp("");
-    setIssuedOtpCode(null);
-    setIssuedOtpForEmail(null);
-    setAuthMode("loginOtp");
-  };
-
-  const loginDemoOrSubmit = async () => {
-    if (DEMO_OFFLINE_MODE) {
-      const username = loginEmail.trim();
-      const password = loginPassword;
-      const account = DEMO_OFFLINE_ACCOUNTS.find(
-        (a) => a.username.toLowerCase() === username.toLowerCase() && a.password === password
-      );
-      if (!account) {
-        Alert.alert("Login failed", "Use User A / 1234 or User B / 5678 in demo mode.");
-        return;
-      }
-      sessionEmailRef.current = account.email;
-      await applySignedInAccount(account);
-      return;
-    }
-    goToLoginOtpStep();
-  };
-
-  const requestLoginOtpCode = async () => {
-    if (DEMO_OFFLINE_MODE || !EMAIL_OTP_ENABLED) return;
-    const email = loginEmail.trim().toLowerCase();
-    const password = loginPassword;
-    if (!email || !password) {
-      Alert.alert("Missing details", "Enter email and password (use Back to edit).");
-      return;
-    }
-    if (Platform.OS === "android") {
-      await requestReadSmsPermissionIfNeeded();
-    }
-    try {
-      const res = await callEmulatorFunction<{ debugCode?: string }>("requestEmailOtp", {
-        email,
-        purpose: "login",
-      });
-      setIssuedOtpCode(String(res.debugCode ?? ""));
-      setIssuedOtpForEmail(email);
-      setLoginOtp("");
-      Alert.alert("OTP sent", res.debugCode ? `Test OTP for ${email}: ${res.debugCode}` : `OTP sent to ${email}.`);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not request OTP.";
-      logAppError("auth.request_login_otp", e, { email });
-      if (/wait before requesting another otp|resource-exhausted/i.test(message)) {
-        Alert.alert("Please wait", "You can request a new OTP in a few seconds.");
-        return;
-      }
-      Alert.alert("OTP error", message);
-    }
-  };
-
-  const completeLoginWithOtp = async () => {
-    if (DEMO_OFFLINE_MODE || !EMAIL_OTP_ENABLED) return;
-    const email = loginEmail.trim().toLowerCase();
-    const password = loginPassword;
-    const otp = loginOtp.replace(/\D/g, "").slice(0, 6);
-    if (!email || !password || !otp || otp.length !== 6) {
-      Alert.alert("Missing fields", "Enter email, password, and a full 6-digit OTP.");
-      return;
-    }
-    if (issuedOtpForEmail && issuedOtpForEmail !== email) {
-      Alert.alert("OTP mismatch", "Request a new OTP for this email.");
-      return;
-    }
-    try {
-      await callEmulatorFunction("verifyEmailOtp", {
-        email,
-        purpose: "login",
-        code: otp,
-      });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not verify OTP.";
-      if (/OTP already used|OTP expired|Incorrect OTP/i.test(message)) {
-        setLoginOtp("");
-        setAuthMode("login");
-        Alert.alert("OTP invalid", "Request a new OTP and try again.");
-        return;
-      }
-      if (/too many otp attempts|resource-exhausted/i.test(message)) {
-        setLoginOtp("");
-        setAuthMode("login");
-        Alert.alert("Too many attempts", "Request a new OTP and try again.");
-        return;
-      }
-      Alert.alert("OTP error", message);
-      return;
-    }
-    await completeLoginAfterPassword(email, password);
-  };
-
-  const requestSignupOtp = async () => {
-    if (!EMAIL_OTP_ENABLED) return;
-    const email = signupEmail.trim().toLowerCase();
-    const phone = signupPhoneNumber.trim();
-    if (!email || !phone) {
-      Alert.alert("Missing details", "Enter your email and phone number before requesting OTP.");
-      return;
-    }
-    let generated = "";
-    try {
-      const res = await callEmulatorFunction<{ debugCode?: string }>("requestEmailOtp", {
-        email,
-        purpose: "signup",
-      });
-      generated = String(res.debugCode ?? "");
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not request OTP.";
-      logAppError("auth.request_otp", e, { email });
-      if (/wait before requesting another otp|resource-exhausted/i.test(message)) {
-        Alert.alert("Please wait", "You can request a new OTP in a few seconds.");
-        return;
-      }
-      Alert.alert("OTP error", message);
-      return;
-    }
-    setIssuedOtpCode(generated);
-    setIssuedOtpForEmail(email);
-    setSignupOtp("");
-    setAuthMode("signupOtp");
-    Alert.alert("OTP sent", generated ? `Test OTP for ${email}: ${generated}` : `OTP sent to ${email}.`);
-  };
-
-  const startSignup = () => {
-    if (DEMO_OFFLINE_MODE) {
-      Alert.alert("Demo mode", "Signup is disabled in demo mode. Use User A / 1234 or User B / 5678.");
-      return;
-    }
-    const email = signupEmail.trim().toLowerCase();
-    const password = signupPassword;
-    const passwordConfirm = signupPasswordConfirm;
-    const username = signupUsername.trim();
-    const phone = signupPhoneNumber.trim();
-    if (!email || !password || !passwordConfirm || !username || !phone) {
-      Alert.alert(
-        "Missing fields",
-        "Complete email, username, phone number, password, and confirm password."
-      );
-      return;
-    }
-    if (!email.includes("@") || !email.includes(".")) {
-      Alert.alert("Invalid email", "Use a valid email format, for example name@example.com.");
-      return;
-    }
-    if (password !== passwordConfirm) {
-      Alert.alert("Passwords do not match", "Re-enter password must match your desired password.");
-      return;
-    }
-    const hasMinLength = password.length >= 8;
-    const hasUpper = /[A-Z]/.test(password);
-    const hasLower = /[a-z]/.test(password);
-    const hasNumber = /\d/.test(password);
-    const hasSpecial = /[^A-Za-z0-9]/.test(password);
-    if (!hasMinLength || !hasUpper || !hasLower || !hasNumber || !hasSpecial) {
-      Alert.alert(
-        "Weak password",
-        "Use at least 8 characters, including upper and lower case letters, at least one number, and at least one special character."
-      );
-      return;
-    }
-    if (EMAIL_OTP_ENABLED) {
-      void requestSignupOtp();
-      return;
-    }
-    void finishSignupAccount(email, password, username, phone);
-  };
-
-  const finishSignupAccount = async (
-    email: string,
-    password: string,
-    username: string,
-    phone: string
-  ) => {
-    try {
-      await createUserWithEmailAndPassword(firebaseAuth, email, password);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not complete signup.";
-      logAppError("auth.signup_create", e, { email });
-      Alert.alert("Signup failed", message);
-      return;
-    }
-    const account: MockAuthAccount = {
-      email,
-      password,
-      username,
-      phoneNumber: phone,
-      bio: "",
-      profilePictureUrl: null,
-    };
-    sessionEmailRef.current = account.email;
-    try {
-      await storageSetItem(profileUsernameStorageKey(email), username.trim());
-      myDisplayNameRef.current = username.trim();
-    } catch {
-      /* ignore */
-    }
-    await clearLocalSocialCacheForEmail(email);
-    await applySignedInAccount(account);
-  };
-
-  const completeSignupWithOtp = async () => {
-    if (DEMO_OFFLINE_MODE || !EMAIL_OTP_ENABLED) return;
-    const email = signupEmail.trim().toLowerCase();
-    const password = signupPassword;
-    const username = signupUsername.trim();
-    const phone = signupPhoneNumber.trim();
-    const otp = signupOtp.replace(/\D/g, "").slice(0, 6);
-    if (!email || !password || !username || !phone || !otp || otp.length !== 6) {
-      Alert.alert("Missing fields", "Complete email, password, username, phone, and a full 6-digit OTP.");
-      return;
-    }
-    if (!issuedOtpCode || issuedOtpForEmail !== email) {
-      Alert.alert("OTP required", "Request an OTP for this email before signing up.");
-      return;
-    }
-    if (otp !== issuedOtpCode) {
-      Alert.alert("Incorrect OTP", "The OTP code does not match.");
-      return;
-    }
-    try {
-      await callEmulatorFunction("verifyEmailOtp", {
-        email,
-        purpose: "signup",
-        code: otp,
-      });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not complete signup.";
-      logAppError("auth.signup_verify", e, { email });
-      if (
-        /OTP already used/i.test(message) ||
-        /OTP expired/i.test(message) ||
-        /Incorrect OTP/i.test(message)
-      ) {
-        setSignupOtp("");
-        setIssuedOtpCode("");
-        setIssuedOtpForEmail("");
-        setAuthMode("signup");
-        Alert.alert("OTP expired", "Your OTP can only be used once. Request a new OTP and try again.");
-        return;
-      }
-      if (/too many otp attempts|resource-exhausted/i.test(message)) {
-        setSignupOtp("");
-        Alert.alert("Too many attempts", "Request a new OTP and try again.");
-        return;
-      }
-      Alert.alert("Signup failed", message);
-      return;
-    }
-    await finishSignupAccount(email, password, username, phone);
-  };
-
+  const {
+    loginDemoOrSubmit,
+    requestLoginOtpCode,
+    completeLoginWithOtp,
+    requestSignupOtp,
+    startSignup,
+    completeSignupWithOtp,
+  } = createAccountAuthActions({
+    loginEmail,
+    loginPassword,
+    signupEmail,
+    signupPassword,
+    signupPasswordConfirm,
+    signupUsername,
+    signupPhoneNumber,
+    loginOtp,
+    signupOtp,
+    issuedOtpCode,
+    issuedOtpForEmail,
+    setLoginOtp,
+    setSignupOtp,
+    setIssuedOtpCode,
+    setIssuedOtpForEmail,
+    setAuthMode,
+    sessionEmailRef,
+    myDisplayNameRef,
+    applySignedInAccount,
+  });
   const toggleSelectAllBroadcastFriends = () => {
     toggleSelectAllBroadcast(allFriends.map((friend) => friend.id));
   };
@@ -3602,13 +3331,6 @@ function MainAppInner() {
 
   const openSettingsScreen = goToSettings;
 
-  const hydrateFriendByUid = useHydrateFriendByUid({
-    acceptFriend,
-    syncServerAcceptedFriendBackendUids,
-    acceptedFriendBackendUidsRef,
-    persistSocialMessagingNow,
-  });
-
   const {
     ensurePairingLocationPermission,
     ensurePairingCameraPermission,
@@ -3621,154 +3343,17 @@ function MainAppInner() {
     pairingCancelPinOfferParent,
     pairingPollOfferStillPresentParent,
     pairingGetOfferStatusParent,
-  } = usePairingParentActions({
-    demoOfflineMode: DEMO_OFFLINE_MODE,
+  } = useAddFriendPairing({
     sessionEmailRef,
     getBackendSession,
     waitForBackendSession,
-    hydrateFriendByUid,
     acceptFriend,
     syncServerAcceptedFriendBackendUids,
     acceptedFriendBackendUidsRef,
+    persistSocialMessagingNow,
     demoPendingAddableQueue,
     setDemoPendingAddableQueue,
   });
-
-  const confirmUnfriendFriend = (friendId: string, name: string) => {
-    Alert.alert("Unfriend?", `Remove ${name} from your friends list?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Unfriend",
-        style: "destructive",
-        onPress: () => {
-          void (async () => {
-            const session = getBackendSession();
-            const friendRow = friendMap[friendId];
-            const otherUid = friendRow?.backendUid?.trim();
-            unfriendLocally(friendId, otherUid);
-            const chatIdsToLock = collectDirectChatIdsToLockForFriend(
-              chatsRef.current ?? [],
-              friendId,
-              {
-                friendBackendUid: otherUid,
-                sessionAppUid: session?.uid ?? null,
-                friendMap: friendMapRef.current,
-                friendIdToBackendUid,
-              }
-            );
-            if (chatIdsToLock.length > 0) {
-              setIdentityLockedChatIds((cur) => mergeIdentityLockedChatIds(cur, chatIdsToLock));
-            }
-            if (!DEMO_OFFLINE_MODE && session && otherUid) {
-              try {
-                await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {
-                  uid: session.uid,
-                  deviceId: session.deviceId,
-                  otherUid,
-                });
-              } catch (e) {
-                logAppError("unfriend.removeFriendship", e, { friendId });
-                const detail = e instanceof Error ? e.message.trim() : String(e ?? "");
-                Alert.alert(
-                  "Couldn't unfriend",
-                  detail && detail.length < 200 ? detail : "Check your connection and try again."
-                );
-              }
-            }
-            if (otherUid?.startsWith("u_")) {
-              postsSharedWithFriendsRef.current.delete(otherUid);
-              sharePostsBackfillStartedRef.current.delete(otherUid);
-              const email = sessionEmailRef.current?.trim().toLowerCase();
-              if (email) {
-                void writePostsSharedWithFriends(email, postsSharedWithFriendsRef.current);
-              }
-            }
-          })();
-        },
-      },
-    ]);
-  };
-
-  const setFeedMuteForFriend = (friendId: string, durationMs: number | null) => {
-    setFeedMutedUntilByFriendId((current) => ({
-      ...current,
-      [friendId]: durationMs === null ? null : Date.now() + durationMs,
-    }));
-  };
-
-  const clearFeedMuteForFriend = (friendId: string) => {
-    setFeedMutedUntilByFriendId((current) => {
-      if (!(friendId in current)) return current;
-      const next = { ...current };
-      delete next[friendId];
-      return next;
-    });
-  };
-
-  const openFeedMutePicker = (friend: Friend) => {
-    const currentlyMuted = isFriendFeedMuted(friend.id);
-    const cancelButton = { text: "Cancel", style: "cancel" as const };
-    const actionButtons = [
-      {
-        text: "Mute for 24 hours",
-        onPress: () => setFeedMuteForFriend(friend.id, FEED_MUTE_CHOICES[0].durationMs),
-      },
-      {
-        text: "Mute for 1 week",
-        onPress: () => setFeedMuteForFriend(friend.id, FEED_MUTE_CHOICES[1].durationMs),
-      },
-      { text: "Mute until unmuted", onPress: () => setFeedMuteForFriend(friend.id, null) },
-      ...(currentlyMuted
-        ? [{ text: "Unmute feed", onPress: () => clearFeedMuteForFriend(friend.id) }]
-        : []),
-    ];
-    /** Android Alert only reliably surfaces a few actions — keep Cancel visible first. iOS: Cancel last (standard). */
-    const buttons =
-      Platform.OS === "android" ? [cancelButton, ...actionButtons] : [...actionButtons, cancelButton];
-    Alert.alert(
-      `Feed settings: ${friend.displayName}`,
-      "Choose how long to mute this friend in feed.",
-      buttons,
-      Platform.OS === "android" ? { cancelable: true } : undefined
-    );
-  };
-
-  const openFeedPostActions = (post: Post) => {
-    if (post.authorId === CURRENT_USER_ID) {
-      Alert.alert("Post options", undefined, [
-        { text: "Delete post", style: "destructive", onPress: () => confirmDeletePost(post) },
-        { text: "Cancel", style: "cancel" },
-      ]);
-      return;
-    }
-    const friend = friendMap[post.authorId];
-    if (!friend) return;
-    openFeedMutePicker(friend);
-  };
-
-  const handleFriendsListFriendLongPress = (friend: Friend) => {
-    if (isFriendFeedMuted(friend.id)) {
-      Alert.alert(
-        friend.displayName,
-        "Unmute this friend in your feed?",
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Unmute feed", onPress: () => clearFeedMuteForFriend(friend.id) },
-        ]
-      );
-      return;
-    }
-    Alert.alert(friend.displayName, undefined, [
-      { text: "Start chat", onPress: () => findOrCreateChatWithFriend(friend.id) },
-      { text: "Mute feed", onPress: () => openFeedMutePicker(friend) },
-      {
-        text: "Unfriend",
-        style: "destructive",
-        onPress: () => confirmUnfriendFriend(friend.id, friend.displayName),
-      },
-      { text: "Cancel", style: "cancel" },
-    ]);
-  };
 
   /**
    * Swipe between main top-nav screens with a follow-the-finger page slide.
@@ -3895,6 +3480,23 @@ function MainAppInner() {
       postsVisibleForCache,
     });
   };
+
+  const { openFeedPostActions, handleFriendsListFriendLongPress } = createFriendListActions({
+    friendMap,
+    friendMapRef,
+    friendIdToBackendUid,
+    chatsRef,
+    getBackendSession,
+    unfriendLocally,
+    setIdentityLockedChatIds,
+    postsSharedWithFriendsRef,
+    sharePostsBackfillStartedRef,
+    sessionEmailRef,
+    setFeedMutedUntilByFriendId,
+    isFriendFeedMuted,
+    confirmDeletePost,
+    findOrCreateChatWithFriend,
+  });
 
   const handleChatInputChange = (text: string) => {
     chatInputTextRef.current = text;
