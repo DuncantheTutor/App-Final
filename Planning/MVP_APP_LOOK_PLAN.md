@@ -97,6 +97,7 @@ The app must support two core themes:
    - Approved accent/highlight options for active controls, focus states, and key CTAs:
      - **Green** (`#0C8579`)
      - **Hot pink** (`#E91E8C`)
+     - **Fire orange** (`#FF4F00`)
    - **Online / presence indicators** use a **bright online green** distinct from whichever UI accent is selected so “online” remains visually unambiguous.
 
 ---

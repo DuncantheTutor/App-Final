@@ -14,6 +14,7 @@ export {
   type ResetCurrentUserLocalStateDeps,
 } from "./signedOutReset";
 export { useBackendSession, type BackendSessionController } from "./useBackendSession";
+export { usePersistSyncWatermarks } from "./usePersistSyncWatermarks";
 export {
   useSignedInSession,
   type AuthMode,

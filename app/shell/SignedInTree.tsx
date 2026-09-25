@@ -4108,7 +4108,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 <Text style={styles.chatName}>Colour theme</Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                   <Text style={styles.settingsRowHint}>
-                    {colorThemeId === "green" ? "Green" : "Hot pink"}
+                    {colorThemeId === "green" ? "Green" : colorThemeId === "pink" ? "Hot pink" : "Fire orange"}
                   </Text>
                   <Ionicons name="chevron-forward" size={18} color={theme.subtleText} />
                 </View>
@@ -4172,7 +4172,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               )}
             </PressAckButton>
             <PressAckButton
-              style={[styles.themePickerOptionRow, styles.themePickerOptionRowLast]}
+              style={styles.themePickerOptionRow}
               onPress={() => {
                 setColorThemeId("pink");
                 setThemePickerOpen(false);
@@ -4180,6 +4180,20 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
             >
               <Text style={styles.chatName}>Hot pink</Text>
               {colorThemeId === "pink" ? (
+                <Ionicons name="checkmark" size={22} color={theme.accent} />
+              ) : (
+                <View style={{ width: 22 }} />
+              )}
+            </PressAckButton>
+            <PressAckButton
+              style={[styles.themePickerOptionRow, styles.themePickerOptionRowLast]}
+              onPress={() => {
+                setColorThemeId("orange");
+                setThemePickerOpen(false);
+              }}
+            >
+              <Text style={styles.chatName}>Fire orange</Text>
+              {colorThemeId === "orange" ? (
                 <Ionicons name="checkmark" size={22} color={theme.accent} />
               ) : (
                 <View style={{ width: 22 }} />

@@ -28,6 +28,8 @@ export const DEMO_USER_A_QR_PIN = "42424242424242424242424242424242";
 export const ACCENT_GREEN = "#0C8579";
 /** Hot pink accent (paired with same light/dark structure as green). */
 export const ACCENT_PINK = "#E91E8C";
+/** Fire orange accent (paired with the same light/dark structure). */
+export const ACCENT_ORANGE = "#FF4F00";
 /** Bright “online” green — distinct from UI accent. */
 export const ONLINE_GREEN = "#22E55E";
 export const VISIBLE_CHAT_PRIORITY_COUNT = 4;
@@ -968,6 +970,56 @@ export const DARK_THEME_PINK: ThemePalette = {
   replyBannerQuotingSelfBg: "rgba(233,30,140,0.38)",
   replyBannerQuotingOtherBg: "rgba(255,255,255,0.06)",
   replyTargetEchoMineBg: "rgba(233,30,140,0.28)",
+  replyTargetEchoOtherBg: "#2C3136",
+};
+
+export const LIGHT_THEME_ORANGE: ThemePalette = {
+  background: "#FFFFFF",
+  text: "#111111",
+  subtleText: "#666D72",
+  divider: "#DCE0E3",
+  accent: ACCENT_ORANGE,
+  danger: "#C94848",
+  mineBubbleBackground: `${ACCENT_ORANGE}24`,
+  mineBubbleText: "#111111",
+  mineBubbleReplyMuted: "#5A4538",
+  replyContextMineBg: "#FFF0E6",
+  replyQuotedFromSelfBg: "#FFE4D4",
+  replyQuotedFromSelfBorder: ACCENT_ORANGE,
+  replyQuotedFromSelfLabel: "#C2410C",
+  replyQuotedFromSelfBody: "#5A4538",
+  replyQuotedFromOtherBg: "#E3E8EC",
+  replyQuotedFromOtherBorder: "#A09088",
+  replyQuotedFromOtherLabel: "#4A5560",
+  replyQuotedFromOtherBody: "#666D72",
+  replyBannerQuotingSelfBg: "#FFF0E6",
+  replyBannerQuotingOtherBg: "#EEF1F3",
+  replyTargetEchoMineBg: "#FFE8DC",
+  replyTargetEchoOtherBg: "#E3E8EC",
+};
+
+export const DARK_THEME_ORANGE: ThemePalette = {
+  background: "#000000",
+  text: "#F6F7F8",
+  subtleText: "#A2AAB0",
+  divider: "#2B3134",
+  accent: ACCENT_ORANGE,
+  danger: "#E26C6C",
+  mineBubbleBackground: ACCENT_ORANGE,
+  mineBubbleText: "#FFFFFF",
+  mineBubbleReplyMuted: "rgba(255,255,255,0.78)",
+  replyContextMineBg: "rgba(255,255,255,0.14)",
+  replyQuotedFromSelfBg: "rgba(255,79,0,0.38)",
+  replyQuotedFromSelfBorder: ACCENT_ORANGE,
+  replyQuotedFromSelfLabel: "rgba(255,255,255,0.95)",
+  replyQuotedFromSelfBody: "rgba(255,255,255,0.78)",
+  replyQuotedFromOtherBg: "#2C3136",
+  replyQuotedFromOtherBorder: "rgba(255,255,255,0.35)",
+  replyQuotedFromOtherLabel: "rgba(255,255,255,0.82)",
+  replyQuotedFromOtherBody: "rgba(255,255,255,0.65)",
+  replyBannerQuotingSelfBg: "rgba(255,79,0,0.38)",
+  replyBannerQuotingOtherBg: "rgba(255,255,255,0.06)",
+  replyTargetEchoMineBg: "rgba(255,79,0,0.28)",
   replyTargetEchoOtherBg: "#2C3136",
 };
 

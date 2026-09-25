@@ -156,7 +156,7 @@ export type ThemePalette = {
   replyTargetEchoOtherBg: string;
 };
 
-export type ColorThemeId = "green" | "pink";
+export type ColorThemeId = "green" | "pink" | "orange";
 
 export type FriendsListRestore = {
   returnTo: "home" | "chat";

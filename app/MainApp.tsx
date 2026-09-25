@@ -197,7 +197,7 @@ import {
 import { AuthScreens } from "./shell/AuthScreens";
 import { SignedInTree } from "./shell/SignedInTree";
 import { handleAndroidHardwareBack as handleAndroidHardwareBackImpl } from "./shell/androidHardwareBack";
-import { createAccountAuthActions, restoreSignedInAccount, useBackendSession, useSignedInSession } from "./session";
+import { createAccountAuthActions, restoreSignedInAccount, useBackendSession, usePersistSyncWatermarks, useSignedInSession } from "./session";
 import {
   initializeBackendSessionForAccount as initializeBackendSessionForAccountImpl,
   retryInitializeBackendSession,
@@ -235,6 +235,7 @@ import {
   confirmDeleteOwnedPost,
   createPostPublishActions,
   shareOwnedPostsWithNewFriend,
+  usePersistPosts,
   usePublishComposer,
 } from "./posts";
 import {
@@ -318,6 +319,7 @@ import {
   CHAT_XH_HALF,
   CURRENT_USER_ID,
   DARK_THEME_GREEN,
+  DARK_THEME_ORANGE,
   DARK_THEME_PINK,
   DEMO_OFFLINE_MODE,
   EMAIL_OTP_ENABLED,
@@ -333,6 +335,7 @@ import {
   INITIAL_MESSAGES,
   INITIAL_POSTS,
   LIGHT_THEME_GREEN,
+  LIGHT_THEME_ORANGE,
   LIGHT_THEME_PINK,
   MOCK_SESSION_POLL_MS,
   MOCK_SESSION_RTDB_SEGMENT,
@@ -386,7 +389,6 @@ import {
   mockSessionRtdbPathKey,
   multiplyHexColor,
   normalizeSet,
-  postsStorageKeyForEmail,
   profileBioStorageKey,
   profilePictureStorageKey,
   profileUsernameStorageKey,
@@ -402,7 +404,6 @@ import {
   readSyncWatermarks,
   shouldResetSyncCacheForAppBuild,
   writeFriendKeyBundleCache,
-  writeSyncWatermarks,
 } from "./lib/clientSyncCache";
 
 
@@ -426,7 +427,9 @@ function MainAppInner() {
               hapticsEnabled?: unknown;
             };
             if (typeof o.isDarkMode === "boolean") setIsDarkMode(o.isDarkMode);
-            if (o.colorThemeId === "green" || o.colorThemeId === "pink") setColorThemeId(o.colorThemeId);
+            if (o.colorThemeId === "green" || o.colorThemeId === "pink" || o.colorThemeId === "orange") {
+              setColorThemeId(o.colorThemeId);
+            }
             if (typeof o.hapticsEnabled === "boolean") setUserHapticsEnabled(o.hapticsEnabled);
           } catch {
             /* ignore */
@@ -809,7 +812,6 @@ function MainAppInner() {
   const [feedPullNonce, setFeedPullNonce] = useState(0);
   const feedViewabilityConfig = useRef({ itemVisiblePercentThreshold: 55 }).current;
   const feedViewableHydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const persistPostsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [presenceOnlineByBackendUid, setPresenceOnlineByBackendUid] = useState<Record<string, boolean>>({});
   /** Network reachability — drives the "Not connected to internet" profile state. */
   const [isOnline, setIsOnline] = useState(true);
@@ -836,30 +838,21 @@ function MainAppInner() {
    * 200-row backlog. Best-effort: in-memory refs remain authoritative for the
    * current session even if the disk write fails.
    */
-  const persistWatermarksNow = useCallback(() => {
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    void writeSyncWatermarks(email, {
-      messagesWatermarkMs: messagesWatermarkMsRef.current,
-      messagesLastFullSyncAt: messagesLastFullSyncAtRef.current,
-      postsWatermarkMs: postsWatermarkMsRef.current,
-      postsLastFullSyncAt: postsLastFullSyncAtRef.current,
-      deletedPostIds: [...deletedPostIdsRef.current],
-    });
-  }, []);
-  const postsVisibleForCache = useCallback(
-    (list: Post[]) =>
-      list.filter((p) => isPostAlive(p) && !deletedPostIdsRef.current.has(p.id)),
-    []
-  );
-  const persistPostsNow = useCallback(() => {
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    const alive = postsVisibleForCache(postsRef.current);
-    void storageSetItem(postsStorageKeyForEmail(email), JSON.stringify(alive)).catch(() => {
-      logAppError("posts.persistNow", new Error("write failed"), { email });
-    });
-  }, [postsVisibleForCache]);
+  const persistWatermarksNow = usePersistSyncWatermarks({
+    sessionEmailRef,
+    messagesWatermarkMsRef,
+    messagesLastFullSyncAtRef,
+    postsWatermarkMsRef,
+    postsLastFullSyncAtRef,
+    deletedPostIdsRef,
+  });
+  const { postsVisibleForCache, persistPostsNow } = usePersistPosts({
+    signedIn,
+    sessionEmailRef,
+    posts,
+    postsRef,
+    deletedPostIdsRef,
+  });
   /**
    * Snapshot the friend public-key cache to AsyncStorage so the first send
    * after a cold start doesn't need an extra `getFriendKeyBundles` round-trip
@@ -875,6 +868,9 @@ function MainAppInner() {
   const theme = useMemo(() => {
     if (colorThemeId === "pink") {
       return isDarkMode ? DARK_THEME_PINK : LIGHT_THEME_PINK;
+    }
+    if (colorThemeId === "orange") {
+      return isDarkMode ? DARK_THEME_ORANGE : LIGHT_THEME_ORANGE;
     }
     return isDarkMode ? DARK_THEME_GREEN : LIGHT_THEME_GREEN;
   }, [isDarkMode, colorThemeId]);
@@ -1062,25 +1058,6 @@ function MainAppInner() {
       stop();
     };
   }, [authMode, loginEmail, signupEmail]);
-
-  useEffect(() => {
-    if (!signedIn) return;
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    if (persistPostsTimerRef.current) clearTimeout(persistPostsTimerRef.current);
-    persistPostsTimerRef.current = setTimeout(() => {
-      persistPostsTimerRef.current = null;
-      void storageSetItem(
-        postsStorageKeyForEmail(email),
-        JSON.stringify(postsVisibleForCache(posts))
-      ).catch(() => {
-        logAppError("posts.persist", new Error("write failed"), { email });
-      });
-    }, 1800);
-    return () => {
-      if (persistPostsTimerRef.current) clearTimeout(persistPostsTimerRef.current);
-    };
-  }, [posts, signedIn, postsVisibleForCache]);
 
   const persistSocialMessagingNow = usePersistSocialMessaging({
     signedIn,

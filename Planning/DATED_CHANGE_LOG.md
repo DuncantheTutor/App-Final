@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-25 18:19 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:19 +01:00 | Theme / Session | Added a fire-orange accent beside green and hot pink, and moved sync-watermark saving out of MainApp. Saving the friend key cache still stays in MainApp. |
+
+---
+
+## 2026-09-25 18:15 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:15 +01:00 | Posts | Moved the local post-cache save out of MainApp. Saving sync watermarks still stays in MainApp. |
+
+---
+
 ## 2026-09-25 18:02 +01:00
 
 | Time | Area | Change |
