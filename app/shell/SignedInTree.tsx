@@ -165,7 +165,6 @@ import { NotificationPrePromptScreen } from "../components/NotificationPrePrompt
 import { PostGridCell } from "../components/PostGridCell";
 import { ImageCropModal } from "../components/ImageCropModal";
 import { HomeTopNavBar } from "../components/HomeTopNavBar";
-import { AppNameBanner } from "../components/AppNameBanner";
 import { PressAckButton } from "../components/PressAckButton";
 import { FullscreenMediaViewer } from "../components/FullscreenMediaViewer";
 import { VideoPostThumbnailModal } from "../components/VideoPostThumbnailModal";
@@ -535,11 +534,9 @@ type SignedInTreeConstraint = {
   capturePostPhoto: any;
   pickPostPhotos: any;
   pickPostVideo: any;
-  clearPostDraftMedia: any;
   publishCaptionInputRef: any;
   postDraftText: any;
   setPostDraftText: any;
-  closePublishPostScreen: any;
   publishPost: any;
   friendsListSearch: any;
   setFriendsListSearch: any;
@@ -856,11 +853,9 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
     capturePostPhoto,
     pickPostPhotos,
     pickPostVideo,
-    clearPostDraftMedia,
     publishCaptionInputRef,
     postDraftText,
     setPostDraftText,
-    closePublishPostScreen,
     publishPost,
     friendsListSearch,
     setFriendsListSearch,
@@ -2105,6 +2100,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               scrollEventThrottle={16}
               nestedScrollEnabled
             >
+              {postDraftImageUris.length > 0 || postDraftVideoUri ? (
               <PressAckButton
                 onPress={promptPostPhotoSource}
                 style={[
@@ -2114,14 +2110,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 accessibilityRole="button"
                 accessibilityLabel="Add photos to post"
               >
-                {postDraftImageUris.length === 0 && !postDraftVideoUri ? (
-                  <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 24 }}>
-                    <Ionicons name="image-outline" size={44} color={theme.subtleText} />
-                    <Text style={[styles.subtleText, { marginTop: 8, textAlign: "center", paddingHorizontal: 16 }]}>
-                      Take a photo or choose from gallery
-                    </Text>
-                  </View>
-                ) : postDraftVideoUri ? (
+                {postDraftVideoUri ? (
                   <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 20 }}>
                     <Ionicons name="videocam-outline" size={40} color={theme.subtleText} />
                     <Text style={[styles.subtleText, { marginTop: 6 }]}>
@@ -2150,6 +2139,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                   </ScrollViewUntilScroll>
                 )}
               </PressAckButton>
+              ) : null}
 
               <View style={{ flexDirection: "row", gap: 10, marginTop: 10, justifyContent: "center" }}>
                 <PressAckButton
@@ -2173,13 +2163,6 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 >
                   <Ionicons name="videocam-outline" size={22} color={theme.text} />
                 </PressAckButton>
-                <PressAckButton
-                  style={[styles.iconActionPill, { borderColor: theme.divider }]}
-                  onPress={clearPostDraftMedia}
-                  accessibilityLabel="Clear media"
-                >
-                  <Ionicons name="trash-outline" size={22} color={theme.text} />
-                </PressAckButton>
               </View>
 
               <TextInput
@@ -2189,6 +2172,9 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 placeholder="Write something…"
                 placeholderTextColor={theme.subtleText}
                 multiline
+                returnKeyType="done"
+                blurOnSubmit
+                onSubmitEditing={() => publishPost()}
                 onFocus={publishCaptionPin.pinOnFocus}
                 style={[
                   styles.publishPostCaption,
@@ -2203,31 +2189,6 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 ]}
               />
             </ScrollViewUntilScroll>
-
-            {/* Sticky confirm bar — lifted above Android's nav/gesture area so the
-                Publish button never sits inside the protected region. */}
-            <View
-              style={[
-                styles.publishPostFooterRow,
-                {
-                  paddingBottom: keyboardVisible
-                    ? keyboardComposerBottomPadding(insets.bottom, keyboardVisible, keyboardHeight)
-                    : stickyFooterPadding(insets.bottom),
-                  paddingTop: 8,
-                  marginTop: 0,
-                  borderTopWidth: StyleSheet.hairlineWidth,
-                  borderTopColor: theme.divider,
-                  backgroundColor: theme.background,
-                },
-              ]}
-            >
-              <PressAckButton style={styles.publishPostCancelButton} onPress={closePublishPostScreen}>
-                <Text style={styles.publishPostCancelButtonText}>Cancel</Text>
-              </PressAckButton>
-              <PressAckButton style={styles.publishPostPublishButton} onPress={publishPost}>
-                <Text style={styles.publishPostPublishButtonText}>Publish</Text>
-              </PressAckButton>
-            </View>
           </View>
         </KeyboardAvoidingView>
       ) : null}
@@ -2351,7 +2312,6 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               </View>
             </InputAccessoryView>
           ) : null}
-          <AppNameBanner color={theme.accent} />
           <View style={styles.chatHeader}>
             <View style={[styles.chatHeaderSideRail, styles.chatHeaderSideRailLeft]}>
               <PressAckButton style={styles.iconButton} onPress={onBackFromChat}>

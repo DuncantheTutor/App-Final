@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-25 18:02 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:02 +01:00 | Posts / Messaging | Removed the empty photo prompt, trash icon, and Cancel/Publish bar from the post screen. Caption Done publishes. Moved the local social-cache save out of MainApp. Saving posts still stays in MainApp. |
+
+---
+
+## 2026-09-25 17:54 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:54 +01:00 | Friends / UI | Hid the Erdos name inside an open chat, and moved friends list search out of MainApp. Saving the local social cache still stays in MainApp. |
+
+---
+
 ## 2026-09-25 17:47 +01:00
 
 | Time | Area | Change |

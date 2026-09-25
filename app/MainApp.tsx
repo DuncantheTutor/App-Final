@@ -174,6 +174,7 @@ import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
 import { createFriendListActions } from "./friends/friendListActions";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
+import { useFriendsListSearch } from "./friends/useFriendsListSearch";
 import { useOnlineFriendsStrip } from "./friends/useOnlineFriendsStrip";
 import { useFriendsController } from "./friends/useFriendsController";
 import { createOpenFriendProfileActions, useEncryptedProfileSync, useProfileController } from "./profile";
@@ -181,6 +182,7 @@ import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
 import { promotePendingChatToRow } from "./messaging/promotePendingChat";
 import { useMessagingController } from "./messaging/useMessagingController";
+import { usePersistSocialMessaging } from "./messaging/usePersistSocialMessaging";
 import { useMessagingSync } from "./messaging/useMessagingSync";
 import {
   activeChatIdFromView,
@@ -393,7 +395,6 @@ import {
   revokeMockSessionLedger,
   sessionLockStorageKeyForEmail,
   shouldPollMockSession,
-  socialMessagingStorageKeyForEmail,
   writeStoredSessionLockToken
 } from "./theme/preludeConstants";
 import {
@@ -567,7 +568,6 @@ function MainAppInner() {
     openPostComposer,
     postDraftImageCaptions,
     setPostDraftImageCaptions,
-    clearPostDraftMedia,
     appendEditedPostPhoto,
     openVideoThumbnailModal,
     closeVideoThumbnailModal,
@@ -810,7 +810,6 @@ function MainAppInner() {
   const feedViewabilityConfig = useRef({ itemVisiblePercentThreshold: 55 }).current;
   const feedViewableHydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persistPostsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const persistSocialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [presenceOnlineByBackendUid, setPresenceOnlineByBackendUid] = useState<Record<string, boolean>>({});
   /** Network reachability — drives the "Not connected to internet" profile state. */
   const [isOnline, setIsOnline] = useState(true);
@@ -1083,49 +1082,22 @@ function MainAppInner() {
     };
   }, [posts, signedIn, postsVisibleForCache]);
 
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE) return;
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    if (persistSocialTimerRef.current) clearTimeout(persistSocialTimerRef.current);
-    persistSocialTimerRef.current = setTimeout(() => {
-      persistSocialTimerRef.current = null;
-      void storageSetItem(
-        socialMessagingStorageKeyForEmail(email),
-        JSON.stringify({
-          savedAtMs: Date.now(),
-          chats,
-          messages,
-          hiddenChatIds,
-          addedFriendsFromRitual,
-          unfriendedIds,
-          identityLockedChatIds,
-        })
-      ).catch(() => {
-        logAppError("messaging.persist", new Error("write failed"), { email });
-      });
-    }, 2200);
-    return () => {
-      if (persistSocialTimerRef.current) clearTimeout(persistSocialTimerRef.current);
-    };
-  }, [chats, messages, hiddenChatIds, addedFriendsFromRitual, unfriendedIds, identityLockedChatIds, signedIn]);
-
-  const persistSocialMessagingNow = useCallback(() => {
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email || DEMO_OFFLINE_MODE) return;
-    void storageSetItem(
-      socialMessagingStorageKeyForEmail(email),
-      JSON.stringify({
-        savedAtMs: Date.now(),
-        chats: chatsRef.current,
-        messages: messagesRef.current,
-        hiddenChatIds: hiddenChatIdsRef.current,
-        addedFriendsFromRitual: addedFriendsFromRitualRef.current,
-        unfriendedIds: unfriendedIdsRef.current,
-        identityLockedChatIds: identityLockedChatIdsRef.current,
-      })
-    ).catch(() => undefined);
-  }, []);
+  const persistSocialMessagingNow = usePersistSocialMessaging({
+    signedIn,
+    sessionEmailRef,
+    chats,
+    messages,
+    hiddenChatIds,
+    addedFriendsFromRitual,
+    unfriendedIds,
+    identityLockedChatIds,
+    chatsRef,
+    messagesRef,
+    hiddenChatIdsRef,
+    addedFriendsFromRitualRef,
+    unfriendedIdsRef,
+    identityLockedChatIdsRef,
+  });
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -2491,19 +2463,11 @@ function MainAppInner() {
     windowWidth,
   });
 
-  const allFriendsSortedAlphabetically = useMemo(
-    () =>
-      friendsForFriendsList(allFriends, unfriendedIds)
-        .slice()
-        .sort((a, b) => a.displayName.localeCompare(b.displayName)),
-    [unfriendedIds, allFriends]
-  );
-
-  const friendsListFiltered = useMemo(() => {
-    const q = friendsListSearch.trim().toLowerCase();
-    if (!q) return allFriendsSortedAlphabetically;
-    return allFriendsSortedAlphabetically.filter((f) => f.displayName.toLowerCase().includes(q));
-  }, [allFriendsSortedAlphabetically, friendsListSearch]);
+  const friendsListFiltered = useFriendsListSearch({
+    allFriends,
+    unfriendedIds,
+    friendsListSearch,
+  });
 
   const resetLocalSocialStateForSignedOut = useCallback(() => {
     clearSignedOutSocialState({
@@ -4129,11 +4093,9 @@ function MainAppInner() {
         capturePostPhoto,
         pickPostPhotos,
         pickPostVideo,
-        clearPostDraftMedia,
         publishCaptionInputRef,
         postDraftText,
         setPostDraftText,
-        closePublishPostScreen,
         publishPost,
         friendsListSearch,
         setFriendsListSearch,
