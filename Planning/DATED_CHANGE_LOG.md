@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-25 17:47 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:47 +01:00 | Friends | Moved online friends strip ordering and layout out of MainApp. The friends list search still stays in MainApp. |
+
+---
+
 ## 2026-09-25 17:40 +01:00
 
 | Time | Area | Change |

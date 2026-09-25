@@ -174,6 +174,7 @@ import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
 import { createFriendListActions } from "./friends/friendListActions";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
+import { useOnlineFriendsStrip } from "./friends/useOnlineFriendsStrip";
 import { useFriendsController } from "./friends/useFriendsController";
 import { createOpenFriendProfileActions, useEncryptedProfileSync, useProfileController } from "./profile";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
@@ -335,8 +336,6 @@ import {
   MOCK_SESSION_RTDB_SEGMENT,
   NOW,
   ONLINE_GREEN,
-  ONLINE_STRIP_EDGE_PAD,
-  ONLINE_VISIBLE_SLOTS,
   POSTS_STORAGE_KEY,
   PRESENCE_HEARTBEAT_MS,
   PRESENCE_ONLINE_WINDOW_MS,
@@ -355,7 +354,6 @@ import {
   REACTION_EMOJIS,
   SCROLL_TEST_MESSAGES,
   SESSION_LOCK_TOKEN_STORAGE_KEY,
-  VISIBLE_CHAT_PRIORITY_COUNT,
   addUndirectedEdge,
   removeUndirectedEdge,
   blendAccentTowardWhite,
@@ -2486,23 +2484,12 @@ function MainAppInner() {
     [composerMode, composerSearch, selectedComposerIds, unfriendedIds, allFriends, friendLinksState]
   );
 
-  const prioritizedOnlineFriends = useMemo(() => {
-    const online = allFriends.filter((friend) => friend.online && !unfriendedIds.includes(friend.id));
-    const topVisibleChatFriendIds = new Set<string>();
-    visibleSortedChats.slice(0, VISIBLE_CHAT_PRIORITY_COUNT).forEach((chat) => {
-      chat.memberIds.forEach((id) => {
-        if (id !== CURRENT_USER_ID) {
-          topVisibleChatFriendIds.add(id);
-        }
-      });
-    });
-    return [...online].sort((a, b) => {
-      const aPriority = topVisibleChatFriendIds.has(a.id) ? 1 : 0;
-      const bPriority = topVisibleChatFriendIds.has(b.id) ? 1 : 0;
-      if (aPriority !== bPriority) return aPriority - bPriority;
-      return b.messageCount - a.messageCount;
-    });
-  }, [visibleSortedChats, unfriendedIds, allFriends]);
+  const { prioritizedOnlineFriends, onlineStripLayout, onlineStripContentStyle } = useOnlineFriendsStrip({
+    allFriends,
+    unfriendedIds,
+    visibleSortedChats,
+    windowWidth,
+  });
 
   const allFriendsSortedAlphabetically = useMemo(
     () =>
@@ -2517,37 +2504,6 @@ function MainAppInner() {
     if (!q) return allFriendsSortedAlphabetically;
     return allFriendsSortedAlphabetically.filter((f) => f.displayName.toLowerCase().includes(q));
   }, [allFriendsSortedAlphabetically, friendsListSearch]);
-
-  const onlineStripLayout = useMemo(() => {
-    const avail = windowWidth - ONLINE_STRIP_EDGE_PAD * 2;
-    const slotWidth = avail / ONLINE_VISIBLE_SLOTS;
-    /** Large within each equal slot; clip view hides column 7+ without extra gaps. */
-    const avatarSize = Math.min(46, Math.max(34, Math.floor(slotWidth * 0.88)));
-    return { avail, slotWidth, avatarSize };
-  }, [windowWidth]);
-
-  const onlineStripContentStyle = useMemo(() => {
-    const base = {
-      paddingTop: 4,
-      paddingBottom: 6,
-      alignItems: "center" as const,
-    };
-    const n = prioritizedOnlineFriends.length;
-    const { avail, slotWidth } = onlineStripLayout;
-    if (n === 0) {
-      return { ...base, flexGrow: 1, paddingHorizontal: ONLINE_STRIP_EDGE_PAD };
-    }
-    if (n <= ONLINE_VISIBLE_SLOTS) {
-      const extra = (avail - n * slotWidth) / 2;
-      return {
-        ...base,
-        paddingLeft: extra,
-        paddingRight: extra,
-      };
-    }
-    /** More than six: no horizontal padding — equal slots; 7th starts at clip edge. */
-    return { ...base };
-  }, [prioritizedOnlineFriends.length, onlineStripLayout]);
 
   const resetLocalSocialStateForSignedOut = useCallback(() => {
     clearSignedOutSocialState({
