@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-09-25 17:03 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:03 +01:00 | Friends | Moved hydrating a friend from a server uid out of MainApp. Unfriend confirmation and feed mute still stay in MainApp. |
+
+---
+
+## 2026-09-24 22:07 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 22:07 +01:00 | Chat | Moved friend-profile opening, chat list titles, and push routing out of MainApp. Hydrating a friend from a server uid still stays in MainApp. |
+
+---
+
 ## 2026-09-24 19:44 +01:00
 
 | Time | Area | Change |

@@ -49,8 +49,8 @@ export type FriendsController = {
 
 /**
  * Sole owner of in-memory friend roster / unfriend / link-graph state.
- * Pairing callables and profile refresh still live in MainApp; screens should
- * write through this controller.
+ * Pairing callables live in `app/addFriend`. Friend hydration lives in
+ * `hydrateFriendByUid`. Screens should write roster changes through this controller.
  */
 export function useFriendsController(): FriendsController {
   const [unfriendedIds, setUnfriendedIds] = useState<string[]>(() => FRIENDS.map((f) => f.id));

@@ -1,3 +1,4 @@
+export { createOpenFriendProfileActions } from "./openFriendProfile";
 export { useEncryptedProfileSync } from "./useEncryptedProfileSync";
 export {
   useProfileController,

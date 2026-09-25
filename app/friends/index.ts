@@ -1,3 +1,4 @@
+export { useHydrateFriendByUid } from "./hydrateFriendByUid";
 export { attachFriendRosterListener, CURRENT_USER_LOCAL_ID } from "./roster";
 export { refreshFriendProfilesFromServer } from "./refreshFriendProfiles";
 export { useFriendRosterSync } from "./useFriendRosterSync";

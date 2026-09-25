@@ -1,3 +1,4 @@
+export { storedChatListTitle } from "./chatListTitle";
 export { createChatExitActions } from "./chatExit";
 export { createChatMembershipActions } from "./chatMembership";
 export { createChatMetaActions } from "./chatMeta";

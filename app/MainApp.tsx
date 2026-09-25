@@ -124,10 +124,6 @@ import {
   registerPushTokenWithBackend,
   getOsNotificationPermissionStatus,
   isOsNotificationPermissionGranted,
-  addNotificationReceivedListener,
-  addNotificationResponseListener,
-  conversationIdFromNotificationData,
-  pushNotificationType,
 } from "./lib/pushNotifications";
 import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
@@ -174,6 +170,7 @@ import { createChatMembershipActions } from "./chat/chatMembership";
 import { createChatMetaActions } from "./chat/chatMeta";
 import { createFailedMessageActions } from "./chat/failedMessageActions";
 import { createMessageActions } from "./chat/messageActions";
+import { storedChatListTitle } from "./chat/chatListTitle";
 import {
   buildDefaultChatName as chatNameFromFriendIds,
   createOpenOrCreateChatActions,
@@ -182,9 +179,10 @@ import { scheduleDemoAutoReplies } from "./chat/demoAutoReplies";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
+import { useHydrateFriendByUid } from "./friends/hydrateFriendByUid";
 import { useFriendRosterSync } from "./friends/useFriendRosterSync";
 import { useFriendsController } from "./friends/useFriendsController";
-import { useEncryptedProfileSync, useProfileController } from "./profile";
+import { createOpenFriendProfileActions, useEncryptedProfileSync, useProfileController } from "./profile";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
 import { promotePendingChatToRow } from "./messaging/promotePendingChat";
@@ -232,7 +230,7 @@ import {
   promptPostPhotoDraft,
 } from "./media/pickMedia";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
-import { useNotificationPermissionGate } from "./notifications";
+import { useNotificationPermissionGate, usePushNotificationRouting } from "./notifications";
 import { usePairingParentActions } from "./addFriend";
 import { updateOutgoingMessageContent } from "./messaging/send";
 import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
@@ -3515,24 +3513,7 @@ function MainAppInner() {
   };
 
   const resolvedStoredChatListTitle = useCallback(
-    (chat: Chat) => {
-      if (chat.kind === "broadcast") return chat.name;
-      const counterpartIds = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-      if (counterpartIds.length === 1) {
-        if (isChatIdentityLocked(chat.id, identityLockedChatIdsSet)) {
-          return TOMBSTONE_DISPLAY_NAME;
-        }
-        const pd = resolvePd(counterpartIds[0], chat.id);
-        if (!pd.canOpenProfile) return TOMBSTONE_DISPLAY_NAME;
-        return pd.displayName;
-      }
-      if (counterpartIds.length > 1 && !chat.isCustomName) {
-        return counterpartIds
-          .map((id) => resolvePd(id, chat.id).displayName)
-          .join(", ");
-      }
-      return chat.name;
-    },
+    (chat: Chat) => storedChatListTitle(chat, resolvePd, identityLockedChatIdsSet),
     [resolvePd, identityLockedChatIdsSet]
   );
 
@@ -3589,208 +3570,28 @@ function MainAppInner() {
   });
 
 
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE) return;
-    const syncMessagesFromPush = (conversationId: string) => {
-      void pullEncryptedMessagesForConversation(conversationId).catch((err) => {
-        logAppError("messages.push_pull", err, { conversationId });
-      });
-      void pullEncryptedMessagesIncremental().catch((err) => {
-        logAppError("messages.push_inbox_pull", err, { conversationId });
-      });
-    };
-
-    const handlePushData = (data: Record<string, unknown>) => {
-      const type = pushNotificationType(data);
-      if (type === "post_reaction" || type === "new_post") {
-        void pullEncryptedPostsIncremental().catch((err) => {
-          logAppError("posts.push_pull", err, { type });
-        });
-        return;
-      }
-      const conversationId = conversationIdFromNotificationData(data);
-      if (conversationId || type === "chat_message") {
-        if (conversationId) syncMessagesFromPush(conversationId);
-      }
-    };
-
-    const handlePushResponse = (data: Record<string, unknown>) => {
-      const type = pushNotificationType(data);
-      if (type === "post_reaction" || type === "new_post") {
-        void pullEncryptedPostsIncremental().catch((err) => {
-          logAppError("posts.push_pull", err, { type });
-        });
-        openHomeFeedFromNav();
-        return;
-      }
-      const conversationId = conversationIdFromNotificationData(data);
-      if (conversationId) {
-        syncMessagesFromPush(conversationId);
-        const localChatId = conversationId.replace(/^enc_/, "");
-        if (localChatId) goToChat(localChatId);
-      }
-    };
-
-    const unsubReceived = addNotificationReceivedListener(handlePushData);
-    const unsubResponse = addNotificationResponseListener(handlePushResponse);
-    return () => {
-      unsubReceived();
-      unsubResponse();
-    };
-  }, [
+  usePushNotificationRouting({
     signedIn,
     goToChat,
     openHomeFeedFromNav,
     pullEncryptedMessagesForConversation,
     pullEncryptedMessagesIncremental,
     pullEncryptedPostsIncremental,
-  ]);
+  });
 
 
-  const friendHasCachedProfile = useCallback(
-    (friendId: string) => friendHasCachedProfileFromMaps(friendId, friendMap),
-    [friendMap, friendHasCachedProfileFromMaps]
-  );
-
-  const refreshFriendProfileInBackground = useCallback(
-    (friendId: string) => {
-      const session = getBackendSession();
-      if (!session || DEMO_OFFLINE_MODE) return;
-      void refreshFriendProfilesFromServer(session, addedFriendsFromRitualRef.current).then(
-        (refreshed) => {
-          replaceFriendsIfChanged(refreshed);
-        }
-      );
-    },
-    [getBackendSession, replaceFriendsIfChanged]
-  );
-
-  const openFriendProfile = async (
-    friendId: string,
-    from: "home" | "chat",
-    options?: { returnChatId?: string; returnPendingDraft?: PendingDraft }
-  ) => {
-    if (!resolvePd(friendId).canOpenProfile) return;
-    const cached = friendHasCachedProfile(friendId);
-    if (cached) {
-      setChatOverflowOpen(false);
-      setView({
-        screen: "friendProfile",
-        friendId,
-        returnTo: from,
-        returnChatId: from === "chat" ? options?.returnChatId : undefined,
-        returnPendingDraft: from === "chat" ? options?.returnPendingDraft : undefined,
-      });
-      refreshFriendProfileInBackground(friendId);
-      return;
-    }
-
-    const backendUid = friendMap[friendId]?.backendUid?.trim();
-    if (!DEMO_OFFLINE_MODE && backendUid?.startsWith("u_")) {
-      let session = getBackendSession();
-      if (!session) session = await waitForBackendSession(3000);
-      if (!session) {
-        Alert.alert(
-          "Profile unavailable",
-          "You need an internet connection to load this profile."
-        );
-        return;
-      }
-      try {
-        const res = await callEmulatorFunction<{
-          profiles?: Record<string, { username?: string } | null>;
-        }>("getUserProfiles", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          targetUids: [backendUid],
-        });
-        if (!res.profiles?.[backendUid]) {
-          Alert.alert("Profile unavailable", "Could not load this profile right now.");
-          return;
-        }
-      } catch {
-        Alert.alert(
-          "Profile unavailable",
-          "You need an internet connection to load this profile."
-        );
-        return;
-      }
-    }
-    setChatOverflowOpen(false);
-    setView({
-      screen: "friendProfile",
-      friendId,
-      returnTo: from,
-      returnChatId: from === "chat" ? options?.returnChatId : undefined,
-      returnPendingDraft: from === "chat" ? options?.returnPendingDraft : undefined,
-    });
-    refreshFriendProfileInBackground(friendId);
-  };
-
-  const openFriendProfileFromFriendsList = async (friendId: string) => {
-    if (view.screen !== "friendsList") return;
-    if (!resolvePd(friendId).canOpenProfile) return;
-    const cached = friendHasCachedProfile(friendId);
-    if (cached) {
-      setChatOverflowOpen(false);
-      setView({
-        screen: "friendProfile",
-        friendId,
-        returnTo: "friendsList",
-        friendsListRestore: {
-          returnTo: view.returnTo,
-          returnChatId: view.returnChatId,
-          returnPendingDraft: view.returnPendingDraft,
-        },
-      });
-      refreshFriendProfileInBackground(friendId);
-      return;
-    }
-
-    const backendUid = friendMap[friendId]?.backendUid?.trim();
-    if (!DEMO_OFFLINE_MODE && backendUid?.startsWith("u_")) {
-      let session = getBackendSession();
-      if (!session) session = await waitForBackendSession(3000);
-      if (!session) {
-        Alert.alert(
-          "Profile unavailable",
-          "You need an internet connection to load this profile."
-        );
-        return;
-      }
-      try {
-        const res = await callEmulatorFunction<{
-          profiles?: Record<string, { username?: string } | null>;
-        }>("getUserProfiles", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          targetUids: [backendUid],
-        });
-        if (!res.profiles?.[backendUid]) {
-          Alert.alert("Profile unavailable", "Could not load this profile right now.");
-          return;
-        }
-      } catch {
-        Alert.alert(
-          "Profile unavailable",
-          "You need an internet connection to load this profile."
-        );
-        return;
-      }
-    }
-    setChatOverflowOpen(false);
-    setView({
-      screen: "friendProfile",
-      friendId,
-      returnTo: "friendsList",
-      friendsListRestore: {
-        returnTo: view.returnTo,
-        returnChatId: view.returnChatId,
-        returnPendingDraft: view.returnPendingDraft,
-      },
-    });
-    refreshFriendProfileInBackground(friendId);
-  };
+  const { openFriendProfile, openFriendProfileFromFriendsList } = createOpenFriendProfileActions({
+    view,
+    friendMap,
+    resolvePd,
+    friendHasCachedProfile: (friendId) => friendHasCachedProfileFromMaps(friendId, friendMap),
+    getBackendSession,
+    waitForBackendSession,
+    addedFriendsFromRitualRef,
+    replaceFriendsIfChanged,
+    setChatOverflowOpen,
+    setView,
+  });
 
   const openFriendsListFromHome = useCallback(() => {
     setFriendsListSearch("");
@@ -3801,69 +3602,12 @@ function MainAppInner() {
 
   const openSettingsScreen = goToSettings;
 
-  const hydrateFriendByUid = useCallback(
-    async (
-      session: { uid: string; deviceId: string },
-      friendUid: string,
-      opts?: { pairingPin?: string | null; previewOnly?: boolean }
-    ): Promise<Friend | null> => {
-      const offerId = (opts?.pairingPin?.trim() ?? "").replace(/\s+/g, "");
-      const pairingProfileArg =
-        /^\d{4}$/.test(offerId) || /^[0-9a-f]{32}$/i.test(offerId)
-          ? { pairingPin: offerId.toLowerCase(), pairingToken: offerId.toLowerCase() }
-          : {};
-      const profiles = await callEmulatorFunction<{
-        profiles?: Record<string, { username?: string; bio?: string; profilePictureUrl?: string | null } | null>;
-      }>("getUserProfiles", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        targetUids: [friendUid],
-        ...pairingProfileArg,
-      });
-      const profile = profiles.profiles?.[friendUid] ?? {};
-      const friend: Friend = {
-        id: backendUidForFriendId(friendUid),
-        backendUid: friendUid,
-        displayName: friendDisplayNameFromProfile(profile?.username, friendUid),
-        online: false,
-        profilePictureUrl: profile?.profilePictureUrl || "",
-        bio: profile?.bio || "",
-        messageCount: 0,
-      };
-      if (!opts?.previewOnly) {
-        const friendsRes = await callEmulatorFunction<{ friendUids?: string[] }>("listMyFriends", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-        });
-        if (!(friendsRes.friendUids ?? []).includes(friendUid)) {
-          return friend;
-        }
-        acceptFriend(friend, { withLink: true });
-        syncServerAcceptedFriendBackendUids(
-          new Set([...acceptedFriendBackendUidsRef.current, friendUid])
-        );
-        persistSocialMessagingNow();
-        const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
-        if (firebaseAuthUid) {
-          try {
-            await callEmulatorFunction("registerFirebaseAuthUid", {
-              uid: session.uid,
-              deviceId: session.deviceId,
-              firebaseAuthUid,
-            });
-          } catch (err) {
-            logAppError("friends.hydrate.register_firebase_uid", err, { friendUid });
-          }
-        }
-        void registerPushTokenWithBackend(session).catch((err) => {
-          logAppError("friends.hydrate.push_token", err, { friendUid });
-        });
-        void publishActivePresence(session, Date.now()).catch(() => undefined);
-      }
-      return friend;
-    },
-    [syncServerAcceptedFriendBackendUids, persistSocialMessagingNow, acceptFriend]
-  );
+  const hydrateFriendByUid = useHydrateFriendByUid({
+    acceptFriend,
+    syncServerAcceptedFriendBackendUids,
+    acceptedFriendBackendUidsRef,
+    persistSocialMessagingNow,
+  });
 
   const {
     ensurePairingLocationPermission,
