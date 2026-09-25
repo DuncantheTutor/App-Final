@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-25 19:13 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:13 +01:00 | Session | Moved the friend public-key cache save out of MainApp. Uploading the social snapshot still stays in MainApp. |
+
+---
+
 ## 2026-09-25 18:19 +01:00
 
 | Time | Area | Change |

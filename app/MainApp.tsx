@@ -197,7 +197,7 @@ import {
 import { AuthScreens } from "./shell/AuthScreens";
 import { SignedInTree } from "./shell/SignedInTree";
 import { handleAndroidHardwareBack as handleAndroidHardwareBackImpl } from "./shell/androidHardwareBack";
-import { createAccountAuthActions, restoreSignedInAccount, useBackendSession, usePersistSyncWatermarks, useSignedInSession } from "./session";
+import { createAccountAuthActions, restoreSignedInAccount, useBackendSession, usePersistFriendKeyCache, usePersistSyncWatermarks, useSignedInSession } from "./session";
 import {
   initializeBackendSessionForAccount as initializeBackendSessionForAccountImpl,
   retryInitializeBackendSession,
@@ -403,7 +403,6 @@ import {
   readFriendKeyBundleCache,
   readSyncWatermarks,
   shouldResetSyncCacheForAppBuild,
-  writeFriendKeyBundleCache,
 } from "./lib/clientSyncCache";
 
 
@@ -858,11 +857,10 @@ function MainAppInner() {
    * after a cold start doesn't need an extra `getFriendKeyBundles` round-trip
    * to encrypt the payload. Best-effort.
    */
-  const persistFriendKeyCacheNow = useCallback(() => {
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    void writeFriendKeyBundleCache(email, { ...recipientKeyCacheRef.current });
-  }, []);
+  const persistFriendKeyCacheNow = usePersistFriendKeyCache({
+    sessionEmailRef,
+    recipientKeyCacheRef,
+  });
   const messageSoundRef = useRef<Audio.Sound | null>(null);
 
   const theme = useMemo(() => {
