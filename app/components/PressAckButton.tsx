@@ -10,12 +10,8 @@ import {
 
 import { playPressHaptic } from "../lib/haptics";
 
-export type PressAckVariant = "send" | "flash";
-
 type Props = Omit<PressableProps, "style" | "children"> & {
   style?: StyleProp<ViewStyle>;
-  /** `send` = paper-plane nudge plus shimmer. `flash` = shimmer only. Never scales or resizes. */
-  variant?: PressAckVariant;
   children?: ReactNode;
 };
 
@@ -24,14 +20,31 @@ function clipRadius(style: StyleProp<ViewStyle> | undefined): number {
   return typeof flat?.borderRadius === "number" ? flat.borderRadius : 0;
 }
 
+/** Solid accent (or other chromatic) fills only. Posts, nav icons, and text rows stay still. */
+function fillWarrantsShimmer(style: StyleProp<ViewStyle> | undefined): boolean {
+  const bg = StyleSheet.flatten(style)?.backgroundColor;
+  if (typeof bg !== "string") return false;
+  const match = bg.trim().match(/^#([0-9a-f]{6})([0-9a-f]{2})?$/i);
+  if (!match) return false;
+  const alpha = match[2] ? parseInt(match[2], 16) / 255 : 1;
+  if (alpha < 0.6) return false;
+  const n = parseInt(match[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max < 40 || min > 230) return false;
+  return max - min >= 28;
+}
+
 /**
  * Press acknowledgement that keeps the outer button size unchanged.
- * A diagonal highlight travels across the control inside an absolute clip.
+ * Accent fills get a soft wipe that fades back to the original colour.
  * Haptic and motion run in parallel with `onPress` (press is not delayed).
  */
 export function PressAckButton({
   style,
-  variant = "flash",
   children,
   disabled,
   onPress,
@@ -39,47 +52,24 @@ export function PressAckButton({
   onLayout,
   ...rest
 }: Props) {
-  const travel = useRef(new Animated.Value(0)).current;
   const shimmer = useRef(new Animated.Value(0)).current;
   const [metrics, setMetrics] = useState({ w: 120, h: 40 });
   const radius = clipRadius(style);
-  const bandW = Math.max(16, metrics.w * 0.34);
+  const showShimmer = fillWarrantsShimmer(style);
+  const bandW = Math.max(28, metrics.w * 0.72);
 
   const playAck = useCallback(() => {
     if (disabled) return;
     playPressHaptic();
+    if (!showShimmer) return;
     shimmer.stopAnimation();
     shimmer.setValue(0);
     Animated.timing(shimmer, {
       toValue: 1,
-      duration: 520,
+      duration: 680,
       useNativeDriver: true,
     }).start();
-    if (variant !== "send") return;
-    travel.stopAnimation();
-    travel.setValue(0);
-    Animated.sequence([
-      Animated.timing(travel, { toValue: 1, duration: 90, useNativeDriver: true }),
-      Animated.timing(travel, { toValue: 0, duration: 140, useNativeDriver: true }),
-    ]).start();
-  }, [disabled, shimmer, travel, variant]);
-
-  const content =
-    variant === "send" ? (
-      <Animated.View
-        style={{
-          opacity: travel.interpolate({ inputRange: [0, 1], outputRange: [1, 0.35] }),
-          transform: [
-            { translateX: travel.interpolate({ inputRange: [0, 1], outputRange: [0, 5] }) },
-            { translateY: travel.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) },
-          ],
-        }}
-      >
-        {children}
-      </Animated.View>
-    ) : (
-      children
-    );
+  }, [disabled, showShimmer, shimmer]);
 
   return (
     <Pressable
@@ -100,38 +90,33 @@ export function PressAckButton({
       }}
       style={style}
     >
-      {content}
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.clip,
-          { borderRadius: radius },
-        ]}
-      >
-        <Animated.View
-          style={[
-            styles.band,
-            {
-              width: bandW,
-              height: metrics.h * 3,
-              top: -metrics.h,
-              opacity: shimmer.interpolate({
-                inputRange: [0, 0.08, 0.82, 1],
-                outputRange: [0, 0.72, 0.72, 0],
-              }),
-              transform: [
-                {
-                  translateX: shimmer.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [-bandW, metrics.w + bandW],
-                  }),
-                },
-                { rotate: "-24deg" },
-              ],
-            },
-          ]}
-        />
-      </Animated.View>
+      {children}
+      {showShimmer ? (
+        <Animated.View pointerEvents="none" style={[styles.clip, { borderRadius: radius }]}>
+          <Animated.View
+            style={[
+              styles.band,
+              {
+                width: bandW,
+                height: metrics.h * 2.4,
+                top: -metrics.h * 0.7,
+                opacity: shimmer.interpolate({
+                  inputRange: [0, 0.22, 0.55, 1],
+                  outputRange: [0, 0.38, 0.16, 0],
+                }),
+                transform: [
+                  {
+                    translateX: shimmer.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [-bandW, metrics.w + bandW * 0.2],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          />
+        </Animated.View>
+      ) : null}
     </Pressable>
   );
 }
@@ -144,6 +129,6 @@ const styles = StyleSheet.create({
   band: {
     position: "absolute",
     left: 0,
-    backgroundColor: "rgba(255,255,255,0.7)",
+    backgroundColor: "rgba(255,255,255,0.55)",
   },
 });

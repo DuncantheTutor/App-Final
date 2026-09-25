@@ -165,6 +165,7 @@ import { PostGridCell } from "../components/PostGridCell";
 import { ImageCropModal } from "../components/ImageCropModal";
 import { HomeTopNavBar } from "../components/HomeTopNavBar";
 import { PressAckButton } from "../components/PressAckButton";
+import { AppNameBanner } from "../components/AppNameBanner";
 import { FullscreenMediaViewer } from "../components/FullscreenMediaViewer";
 import { VideoPostThumbnailModal } from "../components/VideoPostThumbnailModal";
 import { OpenSourceLicensesScreen } from "../screens/OpenSourceLicensesScreen";
@@ -509,6 +510,7 @@ export function AuthScreens<P extends AuthScreensConstraint>(props: P) {
       ]}
     >
       <StatusBar style={isDarkMode ? "light" : "dark"} />
+      <AppNameBanner color={theme.accent} />
       {authMode === "login" || (!EMAIL_OTP_ENABLED && authMode === "loginOtp") ? (
         <View style={styles.authLoginRoot}>
           <View style={styles.authTopBar}>

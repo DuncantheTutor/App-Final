@@ -44,6 +44,7 @@ import {
 } from "react-native";
 
 import { FlatListUntilScroll, ScrollViewUntilScroll } from "../../ScrollUntilScroll";
+import { suspendMediaPlayback } from "../lib/suspendMediaPlayback";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -164,6 +165,7 @@ import { NotificationPrePromptScreen } from "../components/NotificationPrePrompt
 import { PostGridCell } from "../components/PostGridCell";
 import { ImageCropModal } from "../components/ImageCropModal";
 import { HomeTopNavBar } from "../components/HomeTopNavBar";
+import { AppNameBanner } from "../components/AppNameBanner";
 import { PressAckButton } from "../components/PressAckButton";
 import { FullscreenMediaViewer } from "../components/FullscreenMediaViewer";
 import { VideoPostThumbnailModal } from "../components/VideoPostThumbnailModal";
@@ -1237,7 +1239,6 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                       }}
                     />
                     <PressAckButton
-                      variant="send"
                       disabled={
                         (fullScreenPostLive.authorId === CURRENT_USER_ID &&
                           !postFullscreenThreadReplyKey) ||
@@ -1559,6 +1560,11 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 style={styles.chatListFlex}
                 data={displayedFeedPosts}
                 keyExtractor={(item) => item.id}
+                onScrollBeginDrag={() => {
+                  suspendMediaPlayback();
+                  setPlayingVideoMessageId(null);
+                  setVideoPlayAfterPrepareId(null);
+                }}
                 initialNumToRender={FEED_UI_INITIAL_COUNT}
                 maxToRenderPerBatch={2}
                 windowSize={5}
@@ -1646,6 +1652,11 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
             <ScrollViewUntilScroll
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
+              onScrollBeginDrag={() => {
+                suspendMediaPlayback();
+                setPlayingVideoMessageId(null);
+                setVideoPlayAfterPrepareId(null);
+              }}
               contentContainerStyle={[
                 styles.friendProfileScroll,
                 keyboardHeight > 0 ? { paddingBottom: keyboardScrollPadding(keyboardHeight) } : null,
@@ -1776,6 +1787,11 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
               onScroll={myProfileBioPin.onScroll}
+              onScrollBeginDrag={() => {
+                suspendMediaPlayback();
+                setPlayingVideoMessageId(null);
+                setVideoPlayAfterPrepareId(null);
+              }}
               scrollEventThrottle={16}
               contentContainerStyle={[
                 styles.friendProfileScroll,
@@ -2208,7 +2224,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               <PressAckButton style={styles.publishPostCancelButton} onPress={closePublishPostScreen}>
                 <Text style={styles.publishPostCancelButtonText}>Cancel</Text>
               </PressAckButton>
-              <PressAckButton variant="flash" style={styles.publishPostPublishButton} onPress={publishPost}>
+              <PressAckButton style={styles.publishPostPublishButton} onPress={publishPost}>
                 <Text style={styles.publishPostPublishButtonText}>Publish</Text>
               </PressAckButton>
             </View>
@@ -2335,6 +2351,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               </View>
             </InputAccessoryView>
           ) : null}
+          <AppNameBanner color={theme.accent} />
           <View style={styles.chatHeader}>
             <View style={[styles.chatHeaderSideRail, styles.chatHeaderSideRailLeft]}>
               <PressAckButton style={styles.iconButton} onPress={onBackFromChat}>
@@ -2424,6 +2441,17 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
             style={{ flex: 1 }}
             data={invertedChatMessagesForList}
             keyExtractor={(item) => item.id}
+            onScrollBeginDrag={() => {
+              suspendMediaPlayback();
+              setPlayingVideoMessageId(null);
+              setVideoPlayAfterPrepareId(null);
+              setVideoPrepareRequestedIds((prev) => {
+                if (!videoPlayAfterPrepareId || !prev.has(videoPlayAfterPrepareId)) return prev;
+                const next = new Set(prev);
+                next.delete(videoPlayAfterPrepareId);
+                return next;
+              });
+            }}
             extraData={[replyTargetMessageId, activeChatListRenderKey, unfriendedIds, readAvatarsForActiveChat]}
             initialNumToRender={8}
             maxToRenderPerBatch={6}
@@ -3420,7 +3448,6 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                     }}
                   />
                   <PressAckButton
-                    variant={voiceNoteMode ? "flash" : "send"}
                     style={[
                       styles.sendButtonChat,
                       voiceNoteMode && voiceRecordStartedAt
@@ -4090,17 +4117,12 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                 />
               </View>
               <View style={[styles.settingsRow, { paddingVertical: 12 }]}>
-                <View style={{ flex: 1, paddingRight: 12 }}>
-                  <Text style={styles.chatName}>Haptic feedback</Text>
-                  {!hapticSettings.systemEnabled ? (
-                    <Text style={styles.settingsRowHint}>
-                      System touch haptics are off. Erdos can still vibrate for this app.
-                    </Text>
-                  ) : null}
-                </View>
+                <Text style={styles.chatName}>Haptic feedback</Text>
                 <Switch
-                  value={hapticSettings.userEnabled}
+                  value={hapticSettings.systemEnabled && hapticSettings.userEnabled}
+                  disabled={!hapticSettings.systemEnabled}
                   onValueChange={(next) => {
+                    if (!hapticSettings.systemEnabled) return;
                     hapticSettings.setUserEnabled(next);
                   }}
                   thumbColor="#FFFFFF"

@@ -106,31 +106,60 @@ export function VideoWithFadeControls({
   }, [clearHideTimer]);
 
   useEffect(() => {
+    let cancelled = false;
     const run = async () => {
       const ref = videoRef.current;
       if (!ref) return;
       if (!shouldPlay) {
-        await ref.pauseAsync();
-        setIsPlaying(false);
-        fadeControlsOut();
+        try {
+          await ref.pauseAsync();
+          await ref.unloadAsync();
+        } catch {
+          /* player may already be unloaded */
+        }
+        if (!cancelled) {
+          setIsPlaying(false);
+          fadeControlsOut();
+        }
         return;
       }
-      const status = await ref.getStatusAsync();
-      if (status.isLoaded && restartOnPlay) {
-        const duration = status.durationMillis ?? 0;
-        const atEnd = duration > 0 && (status.positionMillis ?? 0) >= duration - 250;
-        if (atEnd) {
-          await ref.setPositionAsync(0);
-          setPositionMs(0);
+      try {
+        const status = await ref.getStatusAsync();
+        if (cancelled) return;
+        if (status.isLoaded && restartOnPlay) {
+          const duration = status.durationMillis ?? 0;
+          const atEnd = duration > 0 && (status.positionMillis ?? 0) >= duration - 250;
+          if (atEnd) {
+            await ref.setPositionAsync(0);
+            if (!cancelled) setPositionMs(0);
+          }
         }
+        if (cancelled) return;
+        await ref.playAsync();
+        if (cancelled) {
+          await ref.pauseAsync().catch(() => undefined);
+          return;
+        }
+        setIsPlaying(true);
+        showControlsBriefly();
+      } catch {
+        if (!cancelled) setIsPlaying(false);
       }
-      await ref.playAsync();
-      setIsPlaying(true);
-      showControlsBriefly();
     };
     void run();
+    return () => {
+      cancelled = true;
+    };
     // Intentionally only `shouldPlay` — avoid rewinding when controls/scrub state changes.
   }, [shouldPlay]);
+
+  useEffect(() => {
+    return () => {
+      const ref = videoRef.current;
+      if (!ref) return;
+      void ref.unloadAsync().catch(() => undefined);
+    };
+  }, []);
 
   const onPlaybackStatusUpdate = useCallback(
     (status: AVPlaybackStatus) => {

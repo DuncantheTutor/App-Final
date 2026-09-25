@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing } from "react-native";
 
 import { neighborMainNav, type MainNavSurface } from "./mainNavOrder";
+import { suspendMediaPlayback } from "../lib/suspendMediaPlayback";
 
 export type MainNavIncoming = { surface: MainNavSurface; fromRight: boolean };
 
@@ -68,6 +69,7 @@ export function useMainNavSlide(params: {
         lastDirRef.current = dir;
         const next = neighborMainNav(current, dir);
         if (next) {
+          suspendMediaPlayback();
           const fromRight = dir === 1;
           incomingOffset.setValue(fromRight ? width : -width);
           const nextIncoming: MainNavIncoming = { surface: next, fromRight };

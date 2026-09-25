@@ -18,6 +18,7 @@ import {
   preloadFeedImageAspects,
   rememberFeedImageAspect,
 } from "../lib/feedPostLayout";
+import { subscribeSuspendMediaPlayback } from "../lib/suspendMediaPlayback";
 import { useResolvedPostMedia, postHasVideo } from "../hooks/useResolvedPostMedia";
 import type { BackendSession } from "../messaging/types";
 
@@ -350,6 +351,21 @@ function FeedPostCardView({
     }
   }, [post.videoEncryptedMedia, post.videoUri]);
 
+  const cancelFeedVideoPlayback = useCallback(() => {
+    setFeedVideoInlinePlaying(false);
+    setFeedVideoDecryptRequested(false);
+    setFeedVideoFinished(false);
+  }, []);
+
+  useEffect(() => {
+    return subscribeSuspendMediaPlayback(cancelFeedVideoPlayback);
+  }, [cancelFeedVideoPlayback]);
+
+  useEffect(() => {
+    if (resolveMediaEnabled) return;
+    cancelFeedVideoPlayback();
+  }, [resolveMediaEnabled, cancelFeedVideoPlayback]);
+
   const renderFeedVideoSurface = () => (
     <View style={styles.postFeedVideoWrap as object}>
       <View
@@ -615,6 +631,10 @@ function FeedPostCardView({
                   { height: mediaTallestHeight },
                 ]}
                 onTouchStart={() => onHorizontalMediaCarouselTouchChange?.(true)}
+                onScrollBeginDrag={() => {
+                  onHorizontalMediaCarouselTouchChange?.(true);
+                  cancelFeedVideoPlayback();
+                }}
                 onTouchEnd={() => onHorizontalMediaCarouselTouchChange?.(false)}
                 onTouchCancel={() => onHorizontalMediaCarouselTouchChange?.(false)}
                 onMomentumScrollEnd={({ nativeEvent }) => {

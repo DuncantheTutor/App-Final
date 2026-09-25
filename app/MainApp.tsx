@@ -21,7 +21,6 @@ import {
   Animated,
   AppState,
   BackHandler,
-  InteractionManager,
   Image,
   InputAccessoryView,
   Keyboard,
@@ -73,11 +72,9 @@ import {
   debugSessionLog,
   firebaseAuth,
   firebaseSessionSurvivesNullEvent,
-  getFirestoreDb,
   warmFirebaseIdToken,
 } from "../firebaseAuthClient";
-import { doc as firestoreDoc, onSnapshot } from "firebase/firestore";
-import { joinCutoffMsForViewer, normalizeMemberJoinedAtForClient } from "./lib/chatMemberJoinedAt";
+import { joinCutoffMsForViewer } from "./lib/chatMemberJoinedAt";
 import {
   broadcastCreatorFriendId,
   isBroadcastCreator,
@@ -157,6 +154,8 @@ import {
 } from "./lib/socialSnapshotBackup";
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
+import { useChatReadPosition } from "./chat/useChatReadPosition";
+import { useOpenChatSnapshot } from "./chat/useOpenChatSnapshot";
 import { useOlderChatMessages } from "./chat/useOlderChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
 import { createChatExitActions } from "./chat/chatExit";
@@ -288,7 +287,6 @@ import {
   readFeedReactionSeenForEmail,
 } from "./lib/feedReactionUnread";
 import { mergeSyncedPosts } from "./lib/mergeEncryptedSync";
-import { mergeCloudChatsWithLocalReadBy, mergeReadByMaps } from "./lib/mergeChatReadBy";
 import { yieldToUi } from "./lib/yieldToUi";
 import { makeStyles } from "./styles/makeAppStyles";
 import { AddFriendScreen } from "./screens/AddFriendScreen";
@@ -2447,56 +2445,22 @@ function MainAppInner() {
     setProfileFeedPostLimit((current) => current + PROFILE_FEED_POSTS_PAGE_SIZE);
   }, []);
 
-  useEffect(() => {
-    if (view.screen !== "chat" || !("chatId" in view) || DEMO_OFFLINE_MODE) return;
-    const chatRowId = activeChatForRead?.id ?? view.chatId;
-    const session = getBackendSession();
-    if (!session) return;
-    const db = getFirestoreDb();
-    const conversationDocId = resolveConversationId(chatRowId);
-    const unsub = onSnapshot(firestoreDoc(db, "conversations", conversationDocId), (snap) => {
-      if (!snap.exists()) return;
-      const data = snap.data() as {
-        readBy?: Chat["readBy"];
-        memberJoinedAt?: Record<string, number>;
-        adminIds?: string[];
-        participantUids?: string[];
-        mutedBy?: Record<string, boolean>;
-      };
-      const serverMuted = Boolean(data.mutedBy?.[session.uid]);
-      applyChats((current) =>
-        current.map((c) =>
-          c.id === chatRowId
-            ? {
-                ...c,
-                readBy: mergeReadByMaps(c.readBy, data.readBy),
-                memberJoinedAt:
-                  normalizeMemberJoinedAtForClient(
-                    data.memberJoinedAt,
-                    session.uid,
-                    c.memberIds,
-                    friendIdToBackendUid
-                  ) ?? c.memberJoinedAt,
-                adminIds: data.adminIds ?? c.adminIds,
-                mutedForNotifications: serverMuted,
-              }
-            : c
-        )
-      );
-    });
-    return () => unsub();
-  }, [view, activeChatForRead?.id, getBackendSession, resolveConversationId, friendIdToBackendUid]);
+  useOpenChatSnapshot({
+    view,
+    activeChatForRead,
+    friendIdToBackendUid,
+    getBackendSession,
+    resolveConversationId,
+    applyChats,
+  });
 
-  const activeChatLatestMessage = activeChatMessages[activeChatMessages.length - 1] ?? null;
-  const activeChatReadTargetRef = useRef<{ chatId: string; message: Message } | null>(null);
-
-  useEffect(() => {
-    if (view.screen !== "chat" || !activeChatLatestMessage || !("chatId" in view)) return;
-    activeChatReadTargetRef.current = {
-      chatId: activeChatForRead?.id ?? view.chatId,
-      message: activeChatLatestMessage,
-    };
-  }, [view, activeChatForRead?.id, activeChatLatestMessage?.id, activeChatLatestMessage?.createdAt]);
+  useChatReadPosition({
+    view,
+    activeChatMessages,
+    activeChatForRead,
+    getBackendSession,
+    resolveConversationId,
+  });
 
   const activeChatSharedMedia = useMemo(
     () =>
@@ -2508,60 +2472,6 @@ function MainAppInner() {
       ),
     [activeChatMessages]
   );
-  const pushChatReadPositionToServer = useCallback(
-    (chatRowId: string, readMessage: Message) => {
-      if (DEMO_OFFLINE_MODE) return;
-      const session = getBackendSession();
-      if (!session) return;
-      void callEmulatorFunction("updateConversationReadPosition", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        conversationId: resolveConversationId(chatRowId),
-        lastReadAtMs: readMessage.createdAt,
-        lastReadMessageId: readMessage.id,
-      }).catch((err) => {
-        logAppError("chat.read_position.update", err, { chatId: chatRowId });
-      });
-    },
-    [DEMO_OFFLINE_MODE, getBackendSession, resolveConversationId]
-  );
-
-  useEffect(() => {
-    if (view.screen !== "chat" || !activeChatLatestMessage || DEMO_OFFLINE_MODE) return;
-    if (!("chatId" in view)) return;
-    if (
-      activeChatLatestMessage.senderId === CURRENT_USER_ID &&
-      activeChatLatestMessage.deliveryStatus === "sending"
-    ) {
-      return;
-    }
-    const chatRowId = activeChatForRead?.id ?? view.chatId;
-    const message = activeChatLatestMessage;
-    const task = InteractionManager.runAfterInteractions(() => {
-      pushChatReadPositionToServer(chatRowId, message);
-    });
-    return () => task.cancel();
-  }, [
-    view,
-    activeChatForRead?.id,
-    activeChatLatestMessage?.id,
-    activeChatLatestMessage?.createdAt,
-    activeChatLatestMessage?.senderId,
-    activeChatLatestMessage?.deliveryStatus,
-    pushChatReadPositionToServer,
-  ]);
-
-  const prevViewRef = useRef(view);
-  useEffect(() => {
-    const prev = prevViewRef.current;
-    prevViewRef.current = view;
-    if (prev.screen !== "chat" || !("chatId" in prev)) return;
-    if (view.screen === "chat" && "chatId" in view && view.chatId === prev.chatId) return;
-    const stored = activeChatReadTargetRef.current;
-    if (stored) {
-      pushChatReadPositionToServer(stored.chatId, stored.message);
-    }
-  }, [view, pushChatReadPositionToServer]);
 
   const availableComposerFriends = useMemo(
     () =>

@@ -8,6 +8,8 @@ export { buildDefaultChatName, createOpenOrCreateChatActions } from "./openOrCre
 export { scheduleDemoAutoReplies } from "./demoAutoReplies";
 export { availableStartChatFriends } from "./availableStartChatFriends";
 export type { StartChatComposerMode } from "./availableStartChatFriends";
+export { useOpenChatSnapshot } from "./useOpenChatSnapshot";
+export { useChatReadPosition } from "./useChatReadPosition";
 export { useOlderChatMessages } from "./useOlderChatMessages";
 export { useActiveChatMessages } from "./useActiveChatMessages";
 export { createLeaveChatActions } from "./leaveChat";

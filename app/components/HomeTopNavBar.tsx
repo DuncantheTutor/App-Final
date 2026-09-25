@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { PressAckButton } from "./PressAckButton";
+import { AppNameBanner } from "./AppNameBanner";
 
 import type { ThemePalette } from "../domain/types";
 
@@ -95,7 +96,6 @@ export function HomeTopNavBar({
 
   const accent = theme.accent;
 
-  const pill = (active: boolean) => (active ? (styles.homeModeIconActive as object) : null);
 
 
 
@@ -290,8 +290,9 @@ export function HomeTopNavBar({
 
 
   return (
-
-    <View style={styles.homeTopBar as object}>
+    <View>
+      <AppNameBanner color={accent} />
+      <View style={styles.homeTopBar as object}>
 
       <View style={navStyles.iconRow}>
 
@@ -304,43 +305,7 @@ export function HomeTopNavBar({
             onPress={item.onPress}
 
 
-            style={[
-
-              styles.iconButton as object,
-
-              navStyles.iconSlot,
-
-              pill(
-
-                item.key === "create"
-
-                  ? highlight.createPost
-
-                  : item.key === "profile"
-
-                    ? highlight.myProfile
-
-                    : item.key === "friends"
-
-                      ? highlight.friendsList
-
-                      : item.key === "chats"
-
-                        ? highlight.chats
-
-                        : item.key === "feed"
-
-                          ? highlight.feed
-
-                          : item.key === "addFriend"
-
-                            ? highlight.addFriend
-
-                            : highlight.settings
-
-              ),
-
-            ]}
+            style={[styles.iconButton as object, navStyles.iconSlot]}
 
             accessibilityLabel={item.label}
 
@@ -382,6 +347,7 @@ export function HomeTopNavBar({
 
       </PressAckButton>
 
+    </View>
     </View>
 
   );

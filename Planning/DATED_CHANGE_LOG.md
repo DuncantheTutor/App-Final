@@ -10,6 +10,30 @@
 
 ---
 
+## 2026-09-25 17:40 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:40 +01:00 | UI / Chat | App haptics stay off when the phone's haptics are off, Erdos is shown in the theme colour, and the open-chat snapshot moved out of MainApp. |
+
+---
+
+## 2026-09-25 17:37 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:37 +01:00 | UI | Removed the selected top-nav wash and send-arrow nudge, limited press wipe to accent buttons, and cancel in-flight video loads on scroll or swipe. |
+
+---
+
+## 2026-09-25 17:18 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:18 +01:00 | Chat | Moved pushing the chat read position out of MainApp. The open-chat conversation snapshot still stays in MainApp. |
+
+---
+
 ## 2026-09-25 17:11 +01:00
 
 | Time | Area | Change |

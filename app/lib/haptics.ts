@@ -25,7 +25,7 @@ function bindAppStateOnce() {
 }
 
 export function areHapticsEffective(): boolean {
-  return userEnabled;
+  return userEnabled && systemEnabled;
 }
 
 export function getUserHapticsEnabled(): boolean {
@@ -37,6 +37,7 @@ export function getSystemHapticsEnabled(): boolean {
 }
 
 export function setUserHapticsEnabled(next: boolean) {
+  if (next && !systemEnabled) return;
   if (userEnabled === next) return;
   userEnabled = next;
   notify();
@@ -94,7 +95,7 @@ export function useHapticSettings() {
   const [snapshot, setSnapshot] = useState(() => ({
     userEnabled,
     systemEnabled,
-    effective: userEnabled,
+    effective: userEnabled && systemEnabled,
   }));
 
   useEffect(() => {
@@ -102,7 +103,7 @@ export function useHapticSettings() {
       setSnapshot({
         userEnabled,
         systemEnabled,
-        effective: userEnabled,
+        effective: userEnabled && systemEnabled,
       });
     };
     const unsub = subscribeHapticSettings(sync);
