@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-25 17:11 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:11 +01:00 | Chat | Moved loading older chat messages out of MainApp. Pushing the chat read position still stays in MainApp. |
+
+---
+
 ## 2026-09-25 17:08 +01:00
 
 | Time | Area | Change |

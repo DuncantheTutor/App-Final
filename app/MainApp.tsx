@@ -58,7 +58,6 @@ import {
   getOrCreateBackendDeviceId,
 } from "../backendBridge";
 import { logAppError, logAppEvent, setTelemetryContext } from "../telemetry";
-import { parseMessageMediaFromPlain } from "./lib/tierBMedia/messageMedia";
 import {
   ChatMessageMediaResolver,
   messageHasResolvableMedia,
@@ -97,7 +96,6 @@ import {
   isCanonicalDirectChatId,
   localChatIdsForDirectThread,
   resolveCanonicalDirectChatLocalId,
-  resolveInboundDirectMessageTarget,
   resolveIncomingDirectChatId,
   serverConversationIdForChat,
   serverConversationIdFromLocalChatId,
@@ -150,10 +148,6 @@ import { VideoPostThumbnailModal } from "./components/VideoPostThumbnailModal";
 import { OpenSourceLicensesScreen } from "./screens/OpenSourceLicensesScreen";
 import { ReactionBubbleHost } from "./components/ReactionBubbleHost";
 import { aggregateReactionCounts } from "./lib/reactionHelpers";
-import {
-  overlayMessageDocMetadata,
-  type MessageDocMetadata,
-} from "./messaging/messageMetadata";
 import { readAvatarsByMessageId, type ReadByMap } from "./lib/readReceipts";
 import { useInitialServerSync } from "./boot/useInitialServerSync";
 import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "./lib/e2eeKeyBackup";
@@ -163,6 +157,7 @@ import {
 } from "./lib/socialSnapshotBackup";
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
 import { useActiveChatMessages } from "./chat/useActiveChatMessages";
+import { useOlderChatMessages } from "./chat/useOlderChatMessages";
 import { useStartChatComposer } from "./chat/useStartChatComposer";
 import { createChatExitActions } from "./chat/chatExit";
 import { createChatMembershipActions } from "./chat/chatMembership";
@@ -252,7 +247,6 @@ import {
   normalizeHttpsProfilePictureUrl,
 } from "./lib/profilePictureUrl";
 import {
-  decryptPayloadForRecipient,
   ensureLocalKeyBundle,
   encryptPayloadForRecipients,
 } from "../e2eeCrypto";
@@ -293,7 +287,7 @@ import {
   markOwnedPostReactionsSeen,
   readFeedReactionSeenForEmail,
 } from "./lib/feedReactionUnread";
-import { mergeSyncedMessages, mergeSyncedPosts } from "./lib/mergeEncryptedSync";
+import { mergeSyncedPosts } from "./lib/mergeEncryptedSync";
 import { mergeCloudChatsWithLocalReadBy, mergeReadByMaps } from "./lib/mergeChatReadBy";
 import { yieldToUi } from "./lib/yieldToUi";
 import { makeStyles } from "./styles/makeAppStyles";
@@ -355,7 +349,6 @@ import {
   FEED_UI_DISPLAY_PAGE_SIZE,
   ENCRYPTED_MESSAGES_SYNC_LIMIT,
   CHAT_INITIAL_MESSAGE_LIMIT,
-  CHAT_OLDER_MESSAGES_PAGE_SIZE,
   CHAT_UI_INITIAL_DISPLAY_COUNT,
   CHAT_UI_DISPLAY_PAGE_SIZE,
   PROFILE_FEED_POSTS_INITIAL,
@@ -2420,218 +2413,35 @@ function MainAppInner() {
     return readAvatarsByMessageId(activeChatMessages, readByFriendIds, CURRENT_USER_ID);
   }, [activeChatMessages, activeChatForRead?.readBy, backendUidToFriendId, getBackendSession]);
 
-  const loadOlderChatMessages = useCallback(async () => {
-    if (view.screen !== "chat" || !("chatId" in view) || chatLoadingOlder) return;
-    const chatId = view.chatId;
-    if (chatHasMoreOlder[chatId] === false) return;
-    const session = getBackendSession();
-    if (!session || DEMO_OFFLINE_MODE) return;
-    const oldest = activeChatMessages[0];
-    const paginationBeforeMs =
-      chatPaginationBeforeMsRef.current[chatId] ?? oldest?.createdAt;
-    setChatLoadingOlder(true);
-    try {
-      const res = await callEmulatorFunction<{
-        items: Array<{
-          messageId: string;
-          conversationId: string;
-          senderUid: string;
-          ciphertext: string;
-          nonce: string;
-          envelope: string;
-          createdAtMs: number;
-          reactions?: Record<string, string>;
-          editedAt?: number | null;
-          unsentAt?: number | null;
-        }>;
-        hasMore?: boolean;
-      }>("listConversationMessages", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        conversationId: resolveConversationId(chatId),
-        beforeMs: paginationBeforeMs,
-        limit: CHAT_OLDER_MESSAGES_PAGE_SIZE,
-      });
-      const chatRow = chats.find((c) => c.id === chatId) ?? null;
-      const cutoff = joinCutoffForViewer(chatRow);
-      const hiddenLocal = new Set(hiddenChatIdsRef.current);
-      const hiddenServer = hiddenServerConversationIdsRef.current;
-      const decoded: Message[] = [];
-      for (const item of res.items ?? []) {
-        const rawLocal = item.conversationId.replace(/^enc_/, "");
-        const preTarget = resolveInboundDirectMessageTarget({
-          conversationId: item.conversationId,
-          rawLocalChatId: rawLocal,
-          senderAppUid: item.senderUid,
-          sessionAppUid: session.uid,
-          chats,
-          friendMap,
-          friendIdToBackendUid,
-          hiddenLocalChatIds: hiddenLocal,
-          hiddenServerConversationIds: hiddenServer,
-          identityLockedChatIds: identityLockedChatIdsSet,
-        });
-        if ("drop" in preTarget) continue;
-        try {
-          const plain = await decryptPayloadForRecipient<{
-            messageId: string;
-            chatId: string;
-            text: string;
-            createdAt: number;
-            kind?: Message["kind"];
-            mediaUri?: string | null;
-            mediaTier?: number | null;
-            mediaObjectPath?: string | null;
-            mediaKeyB64?: string | null;
-            mediaNonceB64?: string | null;
-            mediaContentType?: string | null;
-            durationSec?: number | null;
-            replyToMessageId?: string | null;
-            broadcastThreadFriendId?: string | null;
-          }>(session.uid, item.ciphertext, item.nonce, item.envelope);
-          const createdAt = item.createdAtMs ?? plain.createdAt ?? Date.now();
-          if (createdAt < cutoff) continue;
-          const docMeta: MessageDocMetadata = {
-            reactions: item.reactions,
-            editedAt: item.editedAt,
-            unsentAt: item.unsentAt,
-          };
-          const postTarget = resolveInboundDirectMessageTarget({
-            conversationId: item.conversationId,
-            rawLocalChatId: rawLocal,
-            senderAppUid: item.senderUid,
-            sessionAppUid: session.uid,
-            chats,
-            friendMap,
-            friendIdToBackendUid,
-            hiddenLocalChatIds: hiddenLocal,
-            hiddenServerConversationIds: hiddenServer,
-            identityLockedChatIds: identityLockedChatIdsSet,
-            plainLocalChatId: plain.chatId,
-          });
-          if ("drop" in postTarget) continue;
-          const parsedMedia = parseMessageMediaFromPlain(plain);
-          const messageChatId = postTarget.resolvedLocalChatId;
-          const baseRow: Message = {
-            id: item.messageId,
-            chatId: messageChatId,
-            senderId:
-              item.senderUid === session.uid
-                ? CURRENT_USER_ID
-                : backendUidToFriendId[item.senderUid] ?? item.senderUid,
-            text: plain.text ?? "",
-            createdAt,
-            kind: plain.kind,
-            mediaUri: parsedMedia.mediaUri,
-            mediaEncrypted: parsedMedia.mediaEncrypted,
-            durationSec:
-              typeof plain.durationSec === "number" && Number.isFinite(plain.durationSec)
-                ? Math.max(0, Math.round(plain.durationSec))
-                : undefined,
-            replyToMessageId: plain.replyToMessageId ?? undefined,
-            broadcastThreadFriendId: plain.broadcastThreadFriendId ?? undefined,
-          };
-          const row = overlayMessageDocMetadata(
-            baseRow,
-            docMeta,
-            session.uid,
-            backendUidToFriendId
-          );
-          decoded.push(row);
-        } catch (err) {
-          logAppError("chat.pagination.decode", err, {
-            chatId,
-            conversationId: item.conversationId,
-          });
-        }
-      }
-      if (decoded.length > 0) {
-        applyMessages((current) => mergeSyncedMessages(current, decoded, { incremental: true, optimisticWindowMs: 120_000 }));
-      }
-      const fetchedCount = res.items?.length ?? 0;
-      if (fetchedCount > 0) {
-        setChatListDisplayLimit((current) =>
-          current + Math.max(decoded.length, CHAT_UI_DISPLAY_PAGE_SIZE)
-        );
-      }
-      if (fetchedCount === 0) {
-        setChatHasMoreOlder((current) => ({ ...current, [chatId]: false }));
-      } else if (decoded.length === 0) {
-        const oldestFetchedMs = Math.min(
-          ...(res.items ?? []).map((item) => item.createdAtMs ?? Number.MAX_SAFE_INTEGER)
-        );
-        if (
-          Number.isFinite(oldestFetchedMs) &&
-          oldestFetchedMs < Number.MAX_SAFE_INTEGER &&
-          oldestFetchedMs !== paginationBeforeMs
-        ) {
-          chatPaginationBeforeMsRef.current[chatId] = oldestFetchedMs;
-          setChatHasMoreOlder((current) => ({
-            ...current,
-            [chatId]: Boolean(res.hasMore),
-          }));
-        } else {
-          setChatHasMoreOlder((current) => ({ ...current, [chatId]: false }));
-        }
-      } else {
-        const decodedOldestMs = decoded.reduce(
-          (min, row) => Math.min(min, row.createdAt),
-          Number.MAX_SAFE_INTEGER
-        );
-        if (decodedOldestMs < Number.MAX_SAFE_INTEGER) {
-          chatPaginationBeforeMsRef.current[chatId] = decodedOldestMs;
-        }
-        setChatHasMoreOlder((current) => ({
-          ...current,
-          [chatId]: Boolean(res.hasMore),
-        }));
-      }
-    } finally {
-      setChatLoadingOlder(false);
-    }
-  }, [
+  const { handleChatListEndReached } = useOlderChatMessages({
     view,
     chats,
-    joinCutoffForViewer,
+    friendMap,
+    friendIdToBackendUid,
+    backendUidToFriendId,
+    identityLockedChatIdsSet,
+    activeChatMessages,
+    invertedChatMessages,
     chatLoadingOlder,
     chatHasMoreOlder,
-    activeChatMessages,
+    chatListDisplayLimit,
+    setChatLoadingOlder,
+    setChatHasMoreOlder,
+    setChatListDisplayLimit,
+    chatPaginationBeforeMsRef,
+    chatEndReachedBusyRef,
+    hiddenChatIdsRef,
+    hiddenServerConversationIdsRef,
     getBackendSession,
-    backendUidToFriendId,
-  ]);
-
-  useEffect(() => {
-    if (view.screen !== "chat" || !("chatId" in view)) return;
-    setChatListDisplayLimit(CHAT_UI_INITIAL_DISPLAY_COUNT);
-    delete chatPaginationBeforeMsRef.current[view.chatId];
-  }, [view]);
+    joinCutoffForViewer,
+    resolveConversationId,
+    applyMessages,
+  });
 
   useEffect(() => {
     if (view.screen !== "myProfile" && view.screen !== "friendProfile") return;
     setProfileFeedPostLimit(PROFILE_FEED_POSTS_INITIAL);
   }, [view]);
-
-  const handleChatListEndReached = useCallback(() => {
-    if (view.screen !== "chat" || !("chatId" in view)) return;
-    const chatId = view.chatId;
-    if (invertedChatMessages.length > chatListDisplayLimit) {
-      setChatListDisplayLimit((current) => current + CHAT_UI_DISPLAY_PAGE_SIZE);
-      return;
-    }
-    if (chatHasMoreOlder[chatId] === false) return;
-    if (chatEndReachedBusyRef.current || chatLoadingOlder) return;
-    chatEndReachedBusyRef.current = true;
-    void loadOlderChatMessages().finally(() => {
-      chatEndReachedBusyRef.current = false;
-    });
-  }, [
-    view,
-    invertedChatMessages.length,
-    chatListDisplayLimit,
-    chatHasMoreOlder,
-    chatLoadingOlder,
-    loadOlderChatMessages,
-  ]);
 
   const loadMoreProfileFeedPosts = useCallback(() => {
     setProfileFeedPostLimit((current) => current + PROFILE_FEED_POSTS_PAGE_SIZE);
