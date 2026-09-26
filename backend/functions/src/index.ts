@@ -65,6 +65,13 @@ import { assertEmailOtpAvailable } from "./emailOtpAvailability";
 import { verifyKeyBundleSignature } from "./keyBundleSignature";
 import { assertPairingProximity, type PairingProximityEvidence } from "./pairingProximity";
 import { getEncryptedMediaReadUrl } from "./encryptedMediaRead";
+import {
+  decideSendMembership,
+  decideUpsertMembership,
+  normalizeParticipantUids,
+} from "./conversationMembership";
+import { parsePasswordKeyBackup } from "./passwordKeyBackup";
+import { grantFriendReadOnOwnedContent } from "./friendContentKeyAccess";
 
 export {
   beginNfcHandshakeSession,
@@ -1085,51 +1092,81 @@ export const seedDemoFriendships = onCall(async (req) => {
   return { ok: true, count: friendUids.length };
 });
 
+const MEMBERSHIP_LOCKED =
+  "Conversation members can only change when someone is added, leaves, or is removed.";
+
 /**
- * Ensures a conversation document exists with expected participants.
+ * Creates a conversation, or leaves the stored member list as it is.
+ * A different list is refused. Add, leave, and kick use `manageConversationMembership`.
  */
 export const upsertConversation = onCall(async (req) => {
   const uid = await resolveAppUidFromRequest(req);
   const deviceId = String(req.data?.deviceId ?? "").trim();
   await assertActiveDeviceSession(uid, deviceId);
   const conversationId = String(req.data?.conversationId ?? "").trim();
-  const participantUids = Array.isArray(req.data?.participantUids)
-    ? (req.data.participantUids as unknown[]).map((x) => String(x)).filter(Boolean)
-    : [];
+  const uniqueParticipants = normalizeParticipantUids(req.data?.participantUids);
   if (!conversationId) throw new HttpsError("invalid-argument", "conversationId is required.");
-  if (!participantUids.includes(uid)) {
+  if (uniqueParticipants.length < 2 || !uniqueParticipants.includes(uid)) {
     throw new HttpsError("invalid-argument", "Caller must be in participantUids.");
   }
-  const uniqueParticipants = [...new Set(participantUids)].sort();
-  await assertEveryPairFriends(uniqueParticipants);
-  const participantAuthUids = await resolveParticipantAuthUids(uniqueParticipants);
-  const existing = await db.collection("conversations").doc(conversationId).get();
-  const existingData = existing.data() as
-    | { createdBy?: string; adminIds?: string[]; memberJoinedAt?: Record<string, number> }
-    | undefined;
-  const createdBy = existingData?.createdBy ?? uid;
-  const adminIds =
-    existingData?.adminIds?.length ? existingData.adminIds : [createdBy];
-  const memberJoinedAt = { ...(existingData?.memberJoinedAt ?? {}) };
-  const now = nowMs();
-  // Only stamp join time for the caller. Setting every participant's cutoff when
-  // someone else sends would hide the first message on the recipient's device.
-  if (memberJoinedAt[uid] == null) {
-    memberJoinedAt[uid] = now;
+
+  const convRef = db.collection("conversations").doc(conversationId);
+  const preview = await convRef.get();
+  const previewStored = preview.exists
+    ? normalizeParticipantUids(preview.data()?.participantUids)
+    : null;
+  const previewDecision = decideUpsertMembership(previewStored, uniqueParticipants);
+  if (previewDecision === "reject") {
+    throw new HttpsError("permission-denied", MEMBERSHIP_LOCKED);
   }
-  await db.collection("conversations").doc(conversationId).set(
-    {
-      conversationId,
-      participantUids: uniqueParticipants,
-      participantAuthUids,
-      createdBy,
-      adminIds,
-      memberJoinedAt,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-  return { ok: true, createdBy, adminIds, memberJoinedAt };
+  const participants =
+    previewDecision === "create" ? uniqueParticipants : previewStored ?? uniqueParticipants;
+  await assertEveryPairFriends(participants);
+  const participantAuthUids = await resolveParticipantAuthUids(participants);
+
+  return db.runTransaction(async (tx) => {
+    const existing = await tx.get(convRef);
+    const stored = existing.exists ? normalizeParticipantUids(existing.data()?.participantUids) : null;
+    const decision = decideUpsertMembership(stored, uniqueParticipants);
+    if (decision === "reject") {
+      throw new HttpsError("permission-denied", MEMBERSHIP_LOCKED);
+    }
+    const existingData = (existing.data() ?? {}) as {
+      createdBy?: string;
+      adminIds?: string[];
+      memberJoinedAt?: Record<string, number>;
+    };
+    const createdBy = existingData.createdBy ?? uid;
+    const adminIds = existingData.adminIds?.length ? existingData.adminIds : [createdBy];
+    const memberJoinedAt = { ...(existingData.memberJoinedAt ?? {}) };
+    // Only stamp join time for the caller. Setting every participant's cutoff when
+    // someone else sends would hide the first message on the recipient's device.
+    if (memberJoinedAt[uid] == null) {
+      memberJoinedAt[uid] = nowMs();
+    }
+    if (!existing.exists) {
+      tx.set(convRef, {
+        conversationId,
+        participantUids: uniqueParticipants,
+        participantAuthUids,
+        createdBy,
+        adminIds,
+        memberJoinedAt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      tx.set(
+        convRef,
+        {
+          participantAuthUids,
+          memberJoinedAt,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    return { ok: true, createdBy, adminIds, memberJoinedAt };
+  });
 });
 
 /**
@@ -1176,30 +1213,39 @@ export const publishUserKeyBundle = onCall(async (req) => {
 });
 
 /**
- * Deletes any server-held key backup. The previous wrapping key was derived from
- * public ids, so those blobs were readable by the backend. New clients do not upload one.
+ * Stores a password-wrapped copy of the device keys. The password is not sent.
+ * A backup that is not the current scrypt format is refused.
  */
 export const putUserKeyBackup = onCall(async (req) => {
   const uid = await resolveAppUidFromRequest(req);
   const deviceId = String(req.data?.deviceId ?? "").trim();
   await assertActiveDeviceSession(uid, deviceId);
-  await db.collection("users").doc(uid).set(
-    { keyBackup: admin.firestore.FieldValue.delete() },
-    { merge: true }
-  );
-  return { ok: true, purged: true };
+  const keyBackup = parsePasswordKeyBackup(req.data?.keyBackup);
+  if (!keyBackup) {
+    throw new HttpsError("invalid-argument", "A password-wrapped key backup is required.");
+  }
+  await db.collection("users").doc(uid).set({ keyBackup }, { merge: true });
+  return { ok: true };
 });
 
-/** Always empty. Also deletes a leftover backup so it cannot be decrypted later. */
+/** Returns the password-wrapped backup, or null. A legacy server-readable blob is deleted. */
 export const getUserKeyBackup = onCall(async (req) => {
   const uid = await resolveAppUidFromRequest(req);
   const deviceId = String(req.data?.deviceId ?? "").trim();
   await assertActiveDeviceSession(uid, deviceId);
-  await db.collection("users").doc(uid).set(
-    { keyBackup: admin.firestore.FieldValue.delete() },
-    { merge: true }
+  const snap = await db.collection("users").doc(uid).get();
+  const stored = snap.data()?.keyBackup;
+  const keyBackup = parsePasswordKeyBackup(stored);
+  const hasPublishedKeyBundle = Boolean(
+    (snap.data()?.keyBundle as { encryptionPublicKey?: string } | undefined)?.encryptionPublicKey
   );
-  return { ciphertext: null, nonce: null };
+  if (!keyBackup && stored) {
+    await db.collection("users").doc(uid).set(
+      { keyBackup: admin.firestore.FieldValue.delete() },
+      { merge: true }
+    );
+  }
+  return { keyBackup, hasPublishedKeyBundle };
 });
 
 /**
@@ -1229,7 +1275,43 @@ export const getUserSocialSnapshot = onCall(async (req) => {
 });
 
 /**
- * Stores fully encrypted profile blob. Only friend recipients should be present in envelopes.
+ * Stores the wraps of the account friends key. Ciphertext of posts is not rewritten
+ * when a friend is added; `grantUid` only adds that friend to the read mirrors.
+ */
+export const putFriendContentKey = onCall(async (req) => {
+  const uid = await resolveAppUidFromRequest(req);
+  const deviceId = String(req.data?.deviceId ?? "").trim();
+  await assertActiveDeviceSession(uid, deviceId);
+  const generation = Number(req.data?.generation);
+  const envelopes = (req.data?.envelopes ?? {}) as EnvelopeMap;
+  const grantUid = String(req.data?.grantUid ?? "").trim();
+  if (!Number.isInteger(generation) || generation < 1) {
+    throw new HttpsError("invalid-argument", "generation must be an integer >= 1.");
+  }
+  if (!envelopes[uid]) throw new HttpsError("invalid-argument", "Owner envelope is required.");
+  const accepted = await filterAcceptedFriendUids(uid, Object.keys(envelopes));
+  const recipientUids = [uid, ...accepted];
+  const filtered: EnvelopeMap = {};
+  for (const recipientUid of recipientUids) {
+    const envelope = envelopes[recipientUid];
+    if (envelope) filtered[recipientUid] = envelope;
+  }
+  const recipientAuthUids = await resolveParticipantAuthUids(recipientUids);
+  await db.collection("friendContentKeys").doc(uid).set({
+    ownerUid: uid,
+    generation,
+    envelopes: filtered,
+    recipientAuthUids,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  if (grantUid && grantUid !== uid && accepted.includes(grantUid)) {
+    await grantFriendReadOnOwnedContent(uid, grantUid);
+  }
+  return { ok: true, generation, recipientUids };
+});
+
+/**
+ * Stores fully encrypted profile blob. A friends-key seal has no per-friend envelopes.
  */
 export const putEncryptedProfile = onCall(async (req) => {
   const uid = await resolveAppUidFromRequest(req);
@@ -1238,27 +1320,39 @@ export const putEncryptedProfile = onCall(async (req) => {
 
   const ciphertext = String(req.data?.ciphertext ?? "");
   const nonce = String(req.data?.nonce ?? "");
+  const sealedWithFriendContentKey = req.data?.sealedWith === "friend-content-key";
   const envelopes = (req.data?.envelopes ?? {}) as EnvelopeMap;
   assertReasonableCiphertext(ciphertext);
   if (!nonce) throw new HttpsError("invalid-argument", "nonce is required.");
-  if (!envelopes || typeof envelopes !== "object") {
-    throw new HttpsError("invalid-argument", "envelopes map is required.");
-  }
 
-  /**
-   * Mirror app uids → Firebase Auth UIDs onto the profile doc so signed-in
-   * clients can subscribe directly with
-   * `where("recipientAuthUids", "array-contains", auth.uid)` and receive
-   * profile updates (including their own writes from another device) in real
-   * time. The legacy `envelopes` keyed by app uid stays unchanged.
-   */
-  const recipientAuthUids = await resolveParticipantAuthUids(Object.keys(envelopes));
+  let recipientAuthUids: string[];
+  let storedEnvelopes: EnvelopeMap = {};
+  let keyGeneration: number | null = null;
+  if (sealedWithFriendContentKey) {
+    const keySnap = await db.collection("friendContentKeys").doc(uid).get();
+    const keyData = keySnap.data() as { generation?: number; envelopes?: EnvelopeMap } | undefined;
+    keyGeneration = Number(keyData?.generation);
+    if (!keySnap.exists || !Number.isInteger(keyGeneration)) {
+      throw new HttpsError("failed-precondition", "Save the friends key before updating your profile.");
+    }
+    const accepted = await filterAcceptedFriendUids(uid, Object.keys(keyData?.envelopes ?? {}));
+    recipientAuthUids = await resolveParticipantAuthUids([uid, ...accepted]);
+  } else {
+    if (!envelopes || typeof envelopes !== "object") {
+      throw new HttpsError("invalid-argument", "envelopes map is required.");
+    }
+    storedEnvelopes = envelopes;
+    recipientAuthUids = await resolveParticipantAuthUids(Object.keys(envelopes));
+  }
 
   await db.collection("encryptedProfiles").doc(uid).set({
     ownerUid: uid,
     ciphertext,
     nonce,
-    envelopes,
+    envelopes: storedEnvelopes,
+    ...(sealedWithFriendContentKey
+      ? { sealedWith: "friend-content-key", keyGeneration }
+      : {}),
     recipientAuthUids,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
@@ -1275,6 +1369,8 @@ export const createEncryptedPost = onCall(async (req) => {
 
   const ciphertext = String(req.data?.ciphertext ?? "");
   const nonce = String(req.data?.nonce ?? "");
+  const sealedWithFriendContentKey = req.data?.sealedWith === "friend-content-key";
+  const requestedGeneration = Number(req.data?.keyGeneration);
   const envelopes = (req.data?.envelopes ?? {}) as EnvelopeMap;
   const mediaObjectPath = String(req.data?.mediaObjectPath ?? "").trim();
   const storageObjectPaths = normalizePostStorageObjectPaths(req.data?.storageObjectPaths);
@@ -1284,17 +1380,30 @@ export const createEncryptedPost = onCall(async (req) => {
   const uniqueStoragePaths = [...new Set(storageObjectPaths)];
   assertReasonableCiphertext(ciphertext);
   if (!nonce) throw new HttpsError("invalid-argument", "nonce is required.");
-  if (!envelopes[uid]) throw new HttpsError("invalid-argument", "Sender envelope is required.");
 
-  const acceptedRecipients = await filterAcceptedFriendUids(uid, Object.keys(envelopes));
-  const recipientUids = [uid, ...acceptedRecipients];
+  let recipientUids: string[];
+  let filteredEnvelopes: EnvelopeMap = {};
+  let keyGeneration: number | null = null;
+  if (sealedWithFriendContentKey) {
+    const keySnap = await db.collection("friendContentKeys").doc(uid).get();
+    const keyData = keySnap.data() as { generation?: number; envelopes?: EnvelopeMap } | undefined;
+    keyGeneration = Number(keyData?.generation);
+    if (!keySnap.exists || keyGeneration !== requestedGeneration) {
+      throw new HttpsError("failed-precondition", "Save the friends key before posting.");
+    }
+    const accepted = await filterAcceptedFriendUids(uid, Object.keys(keyData?.envelopes ?? {}));
+    recipientUids = [uid, ...accepted];
+  } else {
+    if (!envelopes[uid]) throw new HttpsError("invalid-argument", "Sender envelope is required.");
+    const acceptedRecipients = await filterAcceptedFriendUids(uid, Object.keys(envelopes));
+    recipientUids = [uid, ...acceptedRecipients];
+    for (const recipientUid of recipientUids) {
+      const envelope = envelopes[recipientUid];
+      if (envelope) filteredEnvelopes[recipientUid] = envelope;
+    }
+  }
   if (!recipientUids.includes(uid)) {
     throw new HttpsError("invalid-argument", "Sender envelope is required.");
-  }
-  const filteredEnvelopes: EnvelopeMap = {};
-  for (const recipientUid of recipientUids) {
-    const envelope = envelopes[recipientUid];
-    if (envelope) filteredEnvelopes[recipientUid] = envelope;
   }
 
   if (uniqueStoragePaths.length > 0) {
@@ -1331,6 +1440,9 @@ export const createEncryptedPost = onCall(async (req) => {
     ciphertext,
     nonce,
     envelopes: filteredEnvelopes,
+    ...(sealedWithFriendContentKey
+      ? { sealedWith: "friend-content-key", keyGeneration }
+      : {}),
     mediaObjectPath: uniqueStoragePaths[0] ?? (mediaObjectPath || null),
     storageObjectPaths: uniqueStoragePaths,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1405,54 +1517,31 @@ export const sendEncryptedMessage = onCall(async (req) => {
   assertReasonableCiphertext(ciphertext);
   if (!nonce) throw new HttpsError("invalid-argument", "nonce is required.");
 
+  const requestedParticipants = normalizeParticipantUids(req.data?.participantUids);
   const convRef = db.collection("conversations").doc(conversationId);
-  const convSnap = await convRef.get();
-  const requestedParticipants = Array.isArray(req.data?.participantUids)
-    ? [...new Set((req.data.participantUids as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean))].sort()
-    : [];
-  const creating = !convSnap.exists;
-  if (creating && (requestedParticipants.length < 2 || !requestedParticipants.includes(uid))) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Conversation not found. Reopen the chat and try again."
-    );
+  const preview = await convRef.get();
+  const previewDecision = decideSendMembership(
+    preview.exists ? normalizeParticipantUids(preview.data()?.participantUids) : null,
+    requestedParticipants,
+    uid
+  );
+  if (!previewDecision.ok) {
+    if (previewDecision.reason === "missing") {
+      throw new HttpsError("failed-precondition", "Conversation not found. Reopen the chat and try again.");
+    }
+    if (previewDecision.reason === "not-member") {
+      throw new HttpsError("permission-denied", "User is not in this conversation.");
+    }
+    throw new HttpsError("permission-denied", MEMBERSHIP_LOCKED);
   }
-  const conv = (convSnap.data() ?? {}) as {
-    participantUids?: string[];
-    memberJoinedAt?: Record<string, number>;
-  };
-  let participants = conv.participantUids ?? [];
-  if (requestedParticipants.length >= 2 && requestedParticipants.includes(uid)) {
-    participants = requestedParticipants;
-  }
-  if (!participants.includes(uid)) {
-    throw new HttpsError("permission-denied", "User is not in this conversation.");
-  }
-  for (const participantUid of participants) {
+  for (const participantUid of previewDecision.participants) {
     if (!envelopes[participantUid]) {
       throw new HttpsError("invalid-argument", "Envelope missing for a participant.");
     }
   }
-  await assertAcceptedFriendships(uid, participants);
+  await assertAcceptedFriendships(uid, previewDecision.participants);
+  const participantAuthUids = await resolveParticipantAuthUids(previewDecision.participants);
 
-  const memberJoinedAt = { ...(conv.memberJoinedAt ?? {}) };
-  const nowSend = nowMs();
-  if (memberJoinedAt[uid] == null) {
-    memberJoinedAt[uid] = nowSend;
-  }
-  const joinCutoff = Number(memberJoinedAt[uid] ?? 0);
-  const participantAuthUids = await resolveParticipantAuthUids(participants);
-  await convRef.set(
-    {
-      conversationId,
-      participantUids: participants,
-      participantAuthUids,
-      memberJoinedAt,
-      ...(creating ? { createdBy: uid, adminIds: [uid] } : {}),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
   const requestedMessageId = String(req.data?.messageId ?? "").trim();
   if (requestedMessageId && !/^[a-zA-Z0-9_-]{1,128}$/.test(requestedMessageId)) {
     throw new HttpsError("invalid-argument", "messageId format is invalid.");
@@ -1460,30 +1549,65 @@ export const sendEncryptedMessage = onCall(async (req) => {
   const msgRef = requestedMessageId
     ? convRef.collection("messages").doc(requestedMessageId)
     : convRef.collection("messages").doc();
-  const msgSnap = requestedMessageId ? await msgRef.get() : null;
-  if (msgSnap?.exists) {
-    const existing = msgSnap.data() as { senderUid?: string };
-    if (existing.senderUid !== uid) {
-      throw new HttpsError("permission-denied", "messageId already in use.");
+
+  const joinCutoff = await db.runTransaction(async (tx) => {
+    const convSnap = await tx.get(convRef);
+    const decision = decideSendMembership(
+      convSnap.exists ? normalizeParticipantUids(convSnap.data()?.participantUids) : null,
+      requestedParticipants,
+      uid
+    );
+    if (!decision.ok) {
+      if (decision.reason === "missing") {
+        throw new HttpsError("failed-precondition", "Conversation not found. Reopen the chat and try again.");
+      }
+      if (decision.reason === "not-member") {
+        throw new HttpsError("permission-denied", "User is not in this conversation.");
+      }
+      throw new HttpsError("permission-denied", MEMBERSHIP_LOCKED);
     }
-  }
-  await msgRef.set({
-    messageId: msgRef.id,
-    senderUid: uid,
-    participantUids: participants,
-    // Mirror of app uid -> Firebase Auth UID for direct client snapshot reads.
-    // Rules consult this field; the app-uid array stays for backwards
-    // compatibility with the existing `listEncryptedMessages` callable path.
-    participantAuthUids,
-    ciphertext,
-    nonce,
-    envelopes,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    if (requestedMessageId) {
+      const msgSnap = await tx.get(msgRef);
+      if (msgSnap.exists) {
+        const existing = msgSnap.data() as { senderUid?: string };
+        if (existing.senderUid !== uid) {
+          throw new HttpsError("permission-denied", "messageId already in use.");
+        }
+      }
+    }
+    const conv = (convSnap.data() ?? {}) as { memberJoinedAt?: Record<string, number> };
+    const memberJoinedAt = { ...(conv.memberJoinedAt ?? {}) };
+    if (memberJoinedAt[uid] == null) {
+      memberJoinedAt[uid] = nowMs();
+    }
+    tx.set(
+      convRef,
+      {
+        participantAuthUids,
+        memberJoinedAt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    tx.set(msgRef, {
+      messageId: msgRef.id,
+      senderUid: uid,
+      participantUids: decision.participants,
+      // Mirror of app uid -> Firebase Auth UID for direct client snapshot reads.
+      // Rules consult this field; the app-uid array stays for backwards
+      // compatibility with the existing `listEncryptedMessages` callable path.
+      participantAuthUids,
+      ciphertext,
+      nonce,
+      envelopes,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return Number(memberJoinedAt[uid] ?? 0);
   });
   void notifyConversationParticipantsPush({
     senderUid: uid,
     conversationId,
-    participantUids: participants,
+    participantUids: previewDecision.participants,
     title: String(req.data?.notificationTitle ?? "").trim() || undefined,
     body: "New message",
   });
@@ -1584,16 +1708,21 @@ export const listEncryptedPosts = onCall(async (req) => {
         ciphertext: string;
         nonce: string;
         envelopes: EnvelopeMap;
+        sealedWith?: string;
+        keyGeneration?: number;
         createdAt?: unknown;
       };
+      const sealed = data.sealedWith === "friend-content-key";
       const envelope = data.envelopes?.[uid];
-      if (!envelope) return null;
+      if (!sealed && !envelope) return null;
       return {
         postId: data.postId || doc.id,
         ownerUid: data.ownerUid,
         ciphertext: data.ciphertext,
         nonce: data.nonce,
-        envelope,
+        envelope: envelope ?? "",
+        sealedWith: sealed ? "friend-content-key" : undefined,
+        keyGeneration: sealed ? Number(data.keyGeneration) : undefined,
         createdAtMs: timestampToMs(data.createdAt),
       };
     })
@@ -1652,11 +1781,15 @@ export const listMyOwnedEncryptedPosts = onCall(async (req) => {
         ciphertext?: string;
         nonce?: string;
         envelopes?: EnvelopeMap;
+        sealedWith?: string;
+        keyGeneration?: number;
         recipientUids?: string[];
         createdAt?: unknown;
       };
+      const sealed = data.sealedWith === "friend-content-key";
       const envelope = data.envelopes?.[uid];
-      if (!envelope || !data.ciphertext || !data.nonce) return null;
+      if (!sealed && (!envelope || !data.ciphertext || !data.nonce)) return null;
+      if (sealed && (!data.ciphertext || !data.nonce)) return null;
       const recipientUids = Array.isArray(data.recipientUids)
         ? data.recipientUids.map((x) => String(x ?? "").trim()).filter(Boolean)
         : [];
@@ -1668,7 +1801,9 @@ export const listMyOwnedEncryptedPosts = onCall(async (req) => {
         ownerUid: data.ownerUid ?? uid,
         ciphertext: data.ciphertext,
         nonce: data.nonce,
-        envelope,
+        envelope: envelope ?? "",
+        sealedWith: sealed ? "friend-content-key" : undefined,
+        keyGeneration: sealed ? Number(data.keyGeneration) : undefined,
         recipientUids,
         createdAtMs: timestampToMs(data.createdAt),
       };

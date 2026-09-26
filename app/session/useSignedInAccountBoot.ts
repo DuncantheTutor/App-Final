@@ -71,7 +71,7 @@ export function useSignedInAccountBoot(params: BootParams) {
     async (account: MockAuthAccount) => {
       await initializeBackendSessionForAccountImpl(account, params);
     },
-    [params.markSessionReady, params.hydrateMyProfile, params.refreshHiddenConversationIdsFromServer]
+    [params.markSessionReady, params.hydrateMyProfile, params.refreshHiddenConversationIdsFromServer, params.requestKeyBackupPassword]
   );
 
   const retryInitializeBackendForAccount = useCallback(

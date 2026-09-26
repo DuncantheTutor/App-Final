@@ -13,7 +13,7 @@ export { publicBundleSigningMessage, safetyNumberForIdentityKey, verifyPublicBun
 
 const KEY_BUNDLE_PREFIX = "app.e2ee.bundle.v1.";
 
-type PersistedKeyBundle = {
+export type PersistedKeyBundle = {
   v: 1;
   encryptionPublicKey: string;
   encryptionSecretKey: string;
@@ -56,27 +56,39 @@ async function generateBundle(): Promise<PersistedKeyBundle> {
   };
 }
 
-async function getOrCreatePersistedBundle(uid: string): Promise<PersistedKeyBundle> {
-  const storageKey = keyForUid(uid);
-  const raw = await SecureStore.getItemAsync(storageKey);
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as PersistedKeyBundle;
-      if (
-        parsed?.v === 1 &&
-        parsed.encryptionPublicKey &&
-        parsed.encryptionSecretKey &&
-        parsed.identitySigningPublicKey &&
-        parsed.identitySigningSecretKey
-      ) {
-        return parsed;
-      }
-    } catch {
-      // fall through to regeneration
-    }
+function isPersistedKeyBundle(value: unknown): value is PersistedKeyBundle {
+  if (!value || typeof value !== "object") return false;
+  const parsed = value as PersistedKeyBundle;
+  return (
+    parsed.v === 1 &&
+    Boolean(parsed.encryptionPublicKey) &&
+    Boolean(parsed.encryptionSecretKey) &&
+    Boolean(parsed.identitySigningPublicKey) &&
+    Boolean(parsed.identitySigningSecretKey)
+  );
+}
+
+export async function readPersistedKeyBundle(uid: string): Promise<PersistedKeyBundle | null> {
+  const raw = await SecureStore.getItemAsync(keyForUid(uid));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isPersistedKeyBundle(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
+}
+
+export async function savePersistedKeyBundle(uid: string, bundle: PersistedKeyBundle): Promise<void> {
+  if (!isPersistedKeyBundle(bundle)) throw new Error("Message keys are incomplete.");
+  await SecureStore.setItemAsync(keyForUid(uid), JSON.stringify(bundle));
+}
+
+async function getOrCreatePersistedBundle(uid: string): Promise<PersistedKeyBundle> {
+  const existing = await readPersistedKeyBundle(uid);
+  if (existing) return existing;
   const next = await generateBundle();
-  await SecureStore.setItemAsync(storageKey, JSON.stringify(next));
+  await savePersistedKeyBundle(uid, next);
   return next;
 }
 
@@ -108,8 +120,10 @@ export async function signLocalPublicBundle(
 /**
  * Encrypts a payload with a fresh symmetric key, then wraps that key for each
  * recipient using the sender's long-term encryption key (nacl.box).
- * This is not forward secret: a later copy of that secret key can unwrap old
- * content keys. The envelope field `epk` is the long-term public key.
+ * This is not forward secret. A copy of the secret key unwraps older content
+ * keys. The same secret is restored on a new phone from the password-wrapped
+ * backup, so that phone can read older messages. The envelope field `epk` is
+ * the long-term public key. A ratchet is a later protocol change.
  */
 export async function encryptPayloadForRecipients(
   senderUid: string,

@@ -1,5 +1,5 @@
 import { callEmulatorFunction } from "../../backendBridge";
-import { encryptPayloadForRecipients } from "../../e2eeCrypto";
+import { sealForFriends } from "../lib/friendContentKey";
 import { firebaseAuth } from "../../firebaseAuthClient";
 import type { Friend, Post } from "../domain/types";
 import { resolvePostMediaForEncrypt } from "../lib/tierBMedia/postMedia";
@@ -41,7 +41,6 @@ export async function uploadEncryptedPost(params: UploadEncryptedPostParams): Pr
     allFriends,
     acceptedFriendBackendUids,
   });
-  const keyMap = await resolveRecipientEncryptionKeys(recipientUids);
   const authUid = firebaseAuth.currentUser?.uid;
   if (!authUid) throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
   const remoteMedia = await resolvePostMediaForEncrypt(
@@ -50,8 +49,8 @@ export async function uploadEncryptedPost(params: UploadEncryptedPostParams): Pr
     post.videoPosterUri,
     authUid
   );
-  const encrypted = await encryptPayloadForRecipients(
-    session.uid,
+  const encrypted = await sealForFriends(
+    session,
     {
       postId: post.id,
       authorId: CURRENT_USER_ID,
@@ -66,7 +65,8 @@ export async function uploadEncryptedPost(params: UploadEncryptedPostParams): Pr
       videoMedia: remoteMedia.videoMedia ?? null,
       videoPosterMedia: remoteMedia.videoPosterMedia ?? null,
     },
-    keyMap
+    recipientUids.filter((id) => id !== session.uid),
+    resolveRecipientEncryptionKeys
   );
   const created = await callEmulatorFunction<{ ok?: boolean; postId?: string }>("createEncryptedPost", {
     uid: session.uid,

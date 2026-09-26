@@ -82,8 +82,10 @@ export function attachFriendRosterListener(params: {
         // we previously had live friendship docs and the server snapshot is empty.
         if (snap.metadata.fromCache) return;
         if (liveFriendBackendUidsRef.current.size > 0) {
+          const removed = [...liveFriendBackendUidsRef.current];
           publishServerFriendUids(new Set());
           liveFriendBackendUidsRef.current = new Set();
+          onFriendsRemoved?.(removed);
         }
         return;
       }

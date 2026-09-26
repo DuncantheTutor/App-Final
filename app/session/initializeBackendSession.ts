@@ -4,9 +4,13 @@ import { Alert } from "react-native";
 import { callEmulatorFunction, getOrCreateBackendDeviceId } from "../../backendBridge";
 import { firebaseAuth } from "../../firebaseAuthClient";
 import { logAppError, setTelemetryContext } from "../../telemetry";
-import { ensureLocalKeyBundle, signLocalPublicBundle } from "../../e2eeCrypto";
+import { ensureLocalKeyBundle, readPersistedKeyBundle, signLocalPublicBundle } from "../../e2eeCrypto";
 import { storageGetItem, storageSetItem } from "../lib/encryptedLocalStorage";
-import { restoreKeyBundleFromCloudIfMissing } from "../lib/e2eeKeyBackup";
+import {
+  fetchPasswordKeyBackup,
+  restoreKeyBundleFromCloud,
+  uploadKeyBundleToCloudBackup,
+} from "../lib/e2eeKeyBackup";
 import { mergeProfilePictureUrl, normalizeHttpsProfilePictureUrl } from "../lib/profilePictureUrl";
 import { publishActivePresence } from "../presence/heartbeat";
 import { registerFirebaseAuthUidOnce } from "./registerFirebaseAuthUidOnce";
@@ -14,6 +18,7 @@ import type { Chat, Message, MockAuthAccount, Post } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
 import type { EncryptedSyncState } from "./useSignedInSession";
 import {
+  DEMO_OFFLINE_MODE,
   isEmailDerivedUsername,
   isPlaceholderProfileUsername,
   profileBioStorageKey,
@@ -39,6 +44,7 @@ export type InitializeBackendSessionDeps = {
   myDisplayNameRef: MutableRefObject<string>;
   hydrateMyProfile: (next: { bio?: string; profilePictureUrl?: string | null }) => void;
   refreshHiddenConversationIdsFromServer: () => Promise<void>;
+  requestKeyBackupPassword?: () => void;
 };
 
 export async function initializeBackendSessionForAccount(
@@ -52,6 +58,7 @@ export async function initializeBackendSessionForAccount(
     myDisplayNameRef,
     hydrateMyProfile,
     refreshHiddenConversationIdsFromServer,
+    requestKeyBackupPassword,
   } = deps;
   const deviceId = await getOrCreateBackendDeviceId();
   const persistedUsername =
@@ -79,11 +86,47 @@ export async function initializeBackendSessionForAccount(
     throw new Error("Could not start the signed-in session.");
   }
 
-  await restoreKeyBundleFromCloudIfMissing(uid, deviceId);
-  try {
-    await callEmulatorFunction("getUserSocialSnapshot", { uid, deviceId });
-  } catch (err) {
-    logAppError("e2ee.social_snapshot.purge", err, { uid });
+  const password = account.password.trim();
+  if (!DEMO_OFFLINE_MODE) {
+    let fetched: Awaited<ReturnType<typeof fetchPasswordKeyBackup>> | null = null;
+    try {
+      fetched = await fetchPasswordKeyBackup(uid, deviceId);
+    } catch (err) {
+      logAppError("e2ee.key_backup.fetch", err, { uid });
+      if (password) {
+        throw new Error("Could not reach the server to open your message keys. Try again when you have a connection.");
+      }
+    }
+    if (fetched && password) {
+      if (fetched.backup) {
+        await restoreKeyBundleFromCloud(uid, password, fetched.backup);
+      } else {
+        const existing = await readPersistedKeyBundle(uid);
+        if (!existing && fetched.hasPublishedKeyBundle) {
+          throw new Error(
+            "Open Erdos on the phone that already has your messages and confirm your password. Then sign in on this phone again."
+          );
+        }
+        if (!existing) await ensureLocalKeyBundle(uid);
+      }
+      await uploadKeyBundleToCloudBackup(uid, deviceId, password);
+    } else if (fetched && !password) {
+      const existing = await readPersistedKeyBundle(uid);
+      if (existing && fetched.status === "missing") {
+        requestKeyBackupPassword?.();
+      } else if (!existing && (fetched.status === "present" || fetched.hasPublishedKeyBundle)) {
+        throw new Error("Sign in with your password to open your messages on this phone.");
+      }
+    }
+    try {
+      await callEmulatorFunction("getUserSocialSnapshot", { uid, deviceId });
+    } catch (err) {
+      logAppError("e2ee.social_snapshot.purge", err, { uid });
+    }
+  }
+  const existingBeforePublish = await readPersistedKeyBundle(uid);
+  if (!DEMO_OFFLINE_MODE && !existingBeforePublish && !password) {
+    throw new Error("Sign in with your password to open your messages on this phone.");
   }
   const ownBundle = await ensureLocalKeyBundle(uid);
   const signedBundle = await signLocalPublicBundle(uid);

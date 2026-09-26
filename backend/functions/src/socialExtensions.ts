@@ -635,6 +635,8 @@ export const updateEncryptedPost = onCall(async (req) => {
   const postId = String(req.data?.postId ?? "").trim();
   const ciphertext = String(req.data?.ciphertext ?? "");
   const nonce = String(req.data?.nonce ?? "");
+  const sealedWithFriendContentKey = req.data?.sealedWith === "friend-content-key";
+  const requestedGeneration = Number(req.data?.keyGeneration);
   const envelopes = (req.data?.envelopes ?? {}) as EnvelopeMap;
   if (!postId) throw new HttpsError("invalid-argument", "postId is required.");
   if (!ciphertext || !nonce) throw new HttpsError("invalid-argument", "ciphertext and nonce required.");
@@ -647,29 +649,42 @@ export const updateEncryptedPost = onCall(async (req) => {
     throw new HttpsError("permission-denied", "Only the post owner can edit.");
   }
 
-  const envelopeRecipientUids = Object.keys(envelopes).filter(Boolean);
-  const requestedRecipientUids = Array.isArray(req.data?.recipientUids)
-    ? (req.data.recipientUids as unknown[])
-        .map((x) => String(x ?? "").trim())
-        .filter((x) => x.length > 0)
-    : [];
-  const candidateUids = [
-    ...new Set(
-      (requestedRecipientUids.length > 0 ? requestedRecipientUids : envelopeRecipientUids).filter(Boolean)
-    ),
-  ];
-  if (!candidateUids.includes(uid)) {
-    candidateUids.unshift(uid);
-  }
-  const acceptedRecipients = await filterAcceptedFriendUids(uid, candidateUids);
-  const recipientUids = [...new Set([uid, ...acceptedRecipients])];
-  if (recipientUids.length === 0 || !recipientUids.includes(uid)) {
-    throw new HttpsError("invalid-argument", "At least one recipient is required.");
-  }
-  const filteredEnvelopes: EnvelopeMap = {};
-  for (const recipientUid of recipientUids) {
-    const envelope = envelopes[recipientUid];
-    if (envelope) filteredEnvelopes[recipientUid] = envelope;
+  let recipientUids: string[];
+  let filteredEnvelopes: EnvelopeMap = {};
+  let keyGeneration: number | null = null;
+  if (sealedWithFriendContentKey) {
+    const keySnap = await firestoreDb().collection("friendContentKeys").doc(uid).get();
+    const keyData = keySnap.data() as { generation?: number; envelopes?: EnvelopeMap } | undefined;
+    keyGeneration = Number(keyData?.generation);
+    if (!keySnap.exists || keyGeneration !== requestedGeneration) {
+      throw new HttpsError("failed-precondition", "Save the friends key before updating the post.");
+    }
+    const accepted = await filterAcceptedFriendUids(uid, Object.keys(keyData?.envelopes ?? {}));
+    recipientUids = [...new Set([uid, ...accepted])];
+  } else {
+    const envelopeRecipientUids = Object.keys(envelopes).filter(Boolean);
+    const requestedRecipientUids = Array.isArray(req.data?.recipientUids)
+      ? (req.data.recipientUids as unknown[])
+          .map((x) => String(x ?? "").trim())
+          .filter((x) => x.length > 0)
+      : [];
+    const candidateUids = [
+      ...new Set(
+        (requestedRecipientUids.length > 0 ? requestedRecipientUids : envelopeRecipientUids).filter(Boolean)
+      ),
+    ];
+    if (!candidateUids.includes(uid)) {
+      candidateUids.unshift(uid);
+    }
+    const acceptedRecipients = await filterAcceptedFriendUids(uid, candidateUids);
+    recipientUids = [...new Set([uid, ...acceptedRecipients])];
+    if (!recipientUids.includes(uid)) {
+      throw new HttpsError("invalid-argument", "At least one recipient is required.");
+    }
+    for (const recipientUid of recipientUids) {
+      const envelope = envelopes[recipientUid];
+      if (envelope) filteredEnvelopes[recipientUid] = envelope;
+    }
   }
 
   const recipientAuthUids = await resolveParticipantAuthUids(recipientUids);
@@ -680,6 +695,9 @@ export const updateEncryptedPost = onCall(async (req) => {
       envelopes: filteredEnvelopes,
       recipientUids,
       recipientAuthUids,
+      ...(sealedWithFriendContentKey
+        ? { sealedWith: "friend-content-key", keyGeneration }
+        : {}),
       editedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true }

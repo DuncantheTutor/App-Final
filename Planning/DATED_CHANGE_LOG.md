@@ -10,6 +10,30 @@
 
 ---
 
+## 2026-09-26 16:32 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 16:32 +01:00 | Encryption | Adding a friend wraps the existing friends key. Removing a friend replaces that key and re-seals posts and the profile. |
+
+---
+
+## 2026-09-26 16:16 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 16:16 +01:00 | Encryption | A new phone that signs in with the account password installs the same message keys from a password-wrapped backup the server cannot read. |
+
+---
+
+## 2026-09-26 13:49 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 13:49 +01:00 | Chat, App shell | Conversation membership is the stored member list. MainApp only chooses a screen, and Settings states that a new phone cannot read older messages and a copied key can. |
+
+---
+
 ## 2026-09-26 13:18 +01:00
 
 | Time | Area | Change |

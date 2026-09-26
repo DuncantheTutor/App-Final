@@ -54,6 +54,8 @@ export async function pullEncryptedPostsIncremental(
       ciphertext: string;
       nonce: string;
       envelope: string;
+      sealedWith?: string;
+      keyGeneration?: number;
       createdAtMs?: number;
     }>;
     reactionsByPostId?: Record<string, Record<string, string>>;

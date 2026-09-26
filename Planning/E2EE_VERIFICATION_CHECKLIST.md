@@ -30,7 +30,7 @@ Use this checklist for the current encrypted profile/posts/messages stack. Log e
 | C2 | Auth/session | Sign out then sign in again | Fresh OTP challenge required and succeeds | BLOCKED | Requires device/manual runtime pass. |
 | C3 | Device policy | Attempt concurrent second-device login | Previous device/session invalidated per one-device policy | BLOCKED | Requires two-device manual validation. |
 | C4 | Key bootstrap | First launch after login | Key bundle publish succeeds; no permanent sync error | BLOCKED | Requires live mobile runtime validation. |
-| C5 | Messaging E2EE | Send encrypted message A -> B | B can decrypt/read message content | BLOCKED | Requires two-account manual runtime validation. |
+| C5 | Messaging E2EE | Send encrypted message A -> B | B can decrypt/read message content. Signing in as A on a second phone with A's password restores the same keys, so A can read older messages there. | BLOCKED | Requires two-account manual runtime validation. |
 | C6 | Messaging E2EE | Receive encrypted message B -> A | A can decrypt/read message content | BLOCKED | Requires two-account manual runtime validation. |
 | C7 | Messaging integrity | Tampered/invalid envelope (if test hook exists) | Message fails decrypt safely; app does not crash | PASS | `npm run test:e2ee` includes tamper + recipient mismatch failure tests. |
 | C8 | Profile E2EE | Update encrypted profile fields | Readback returns updated decrypted values | BLOCKED | Requires live backend + app runtime validation. |

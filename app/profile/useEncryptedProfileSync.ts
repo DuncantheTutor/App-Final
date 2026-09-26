@@ -3,6 +3,8 @@ import { collection, onSnapshot, query as firestoreQuery, where } from "firebase
 
 import { callEmulatorFunction } from "../../backendBridge";
 import { decryptPayloadForRecipient } from "../../e2eeCrypto";
+import { openSealedJson } from "../lib/friendContentKey";
+import { FRIEND_CONTENT_SEAL } from "../lib/friendContentSeal";
 import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
 import { storageSetItem } from "../lib/encryptedLocalStorage";
 import { mergeProfilePictureUrl, storageObjectPathFromDownloadUrl } from "../lib/profilePictureUrl";
@@ -66,17 +68,25 @@ export function useEncryptedProfileSync(params: {
         for (const doc of snap.docs) {
           const data = doc.data() as {
             ownerUid?: string;
+            sealedWith?: string;
+            keyGeneration?: number;
             ciphertext?: string;
             nonce?: string;
             envelopes?: Record<string, string>;
           };
           const envelope = data.envelopes?.[session.uid];
-          if (!envelope || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
+          const sealed = data.sealedWith === FRIEND_CONTENT_SEAL;
+          if ((!sealed && !envelope) || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
           try {
-            const plain = await decryptPayloadForRecipient<{
-              profilePictureUrl?: string | null;
-              profilePicturePath?: string | null;
-            }>(session.uid, data.ciphertext, data.nonce, envelope);
+            const plain = sealed
+              ? await openSealedJson<{
+                  profilePictureUrl?: string | null;
+                  profilePicturePath?: string | null;
+                }>(session.uid, data.ownerUid, data.ciphertext, data.nonce, Number(data.keyGeneration))
+              : await decryptPayloadForRecipient<{
+                  profilePictureUrl?: string | null;
+                  profilePicturePath?: string | null;
+                }>(session.uid, data.ciphertext, data.nonce, envelope ?? "");
             const rawPic = plain.profilePictureUrl;
             const tokenized = storageObjectPathFromDownloadUrl(rawPic);
             const safePic =

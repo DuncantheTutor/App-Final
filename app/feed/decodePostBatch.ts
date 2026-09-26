@@ -1,5 +1,7 @@
 import { backendUidForFriendId } from "../../backendBridge";
 import { decryptPayloadForRecipient } from "../../e2eeCrypto";
+import { openSealedJson } from "../lib/friendContentKey";
+import { FRIEND_CONTENT_SEAL } from "../lib/friendContentSeal";
 import type { Post } from "../domain/types";
 import { yieldToUi } from "../lib/yieldToUi";
 import {
@@ -14,6 +16,8 @@ export type EncryptedPostPullItem = {
   ciphertext: string;
   nonce: string;
   envelope: string;
+  sealedWith?: string;
+  keyGeneration?: number;
   createdAtMs?: number;
 };
 
@@ -37,15 +41,26 @@ export async function decodeEncryptedPostPullItems(params: {
 
   for (const item of params.items) {
     try {
-      const plain = await decryptPayloadForRecipient<
-        PostMediaPlainPayload & {
-          postId: string;
-          authorUid?: string;
-          createdAt?: number;
-          text?: string | null;
-          imageCaptions?: string[] | null;
-        }
-      >(params.sessionUid, item.ciphertext, item.nonce, item.envelope);
+      const plain =
+        item.sealedWith === FRIEND_CONTENT_SEAL
+          ? await openSealedJson<
+              PostMediaPlainPayload & {
+                postId: string;
+                authorUid?: string;
+                createdAt?: number;
+                text?: string | null;
+                imageCaptions?: string[] | null;
+              }
+            >(params.sessionUid, item.ownerUid, item.ciphertext, item.nonce, Number(item.keyGeneration))
+          : await decryptPayloadForRecipient<
+              PostMediaPlainPayload & {
+                postId: string;
+                authorUid?: string;
+                createdAt?: number;
+                text?: string | null;
+                imageCaptions?: string[] | null;
+              }
+            >(params.sessionUid, item.ciphertext, item.nonce, item.envelope);
       const authorUid =
         typeof plain.authorUid === "string" && plain.authorUid.trim()
           ? plain.authorUid.trim()

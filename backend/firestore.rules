@@ -25,6 +25,15 @@ service cloud.firestore {
       allow write: if false; // Cloud Functions only
     }
 
+    // Wraps of one account's friends key. Posts and the profile are sealed with
+    // that key. Adding a friend adds a wrap here; it does not rewrite the posts.
+    match /friendContentKeys/{uid} {
+      allow read: if isSignedIn()
+        && resource.data.recipientAuthUids is list
+        && request.auth.uid in resource.data.recipientAuthUids;
+      allow write: if false;
+    }
+
     // Friendship edge is write-only via Cloud Functions; read allowed for
     // participants. Reads gate on the Firebase Auth UID mirror
     // (`participantAuthUids`) populated by every edge-write callable, so that

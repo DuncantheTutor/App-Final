@@ -11,6 +11,8 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import { backendUidForFriendId } from "../../backendBridge";
 import { decryptPayloadForRecipient } from "../../e2eeCrypto";
+import { openSealedJson } from "../lib/friendContentKey";
+import { FRIEND_CONTENT_SEAL } from "../lib/friendContentSeal";
 import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
 import type { Post } from "../domain/types";
 import { mapServerPostReactionsToFeed } from "../lib/mapPostFeedReactions";
@@ -82,10 +84,13 @@ export function attachEncryptedPostsListener(params: {
           envelopes?: Record<string, string>;
           ciphertext?: string;
           nonce?: string;
+          sealedWith?: string;
+          keyGeneration?: number;
           createdAt?: { toMillis?: () => number } | number | null;
         };
         const envelope = data.envelopes?.[session.uid];
-        if (!envelope || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
+        const sealed = data.sealedWith === FRIEND_CONTENT_SEAL;
+        if ((!sealed && !envelope) || !data.ciphertext || !data.nonce || !data.ownerUid) continue;
         const createdAtMs =
           typeof data.createdAt === "number"
             ? data.createdAt
@@ -98,15 +103,25 @@ export function attachEncryptedPostsListener(params: {
           continue;
         }
         try {
-          const plain = await decryptPayloadForRecipient<
-            PostMediaPlainPayload & {
-              postId: string;
-              authorId?: string;
-              authorUid?: string;
-              createdAt?: number;
-              text?: string | null;
-            }
-          >(session.uid, data.ciphertext, data.nonce, envelope);
+          const plain = sealed
+            ? await openSealedJson<
+                PostMediaPlainPayload & {
+                  postId: string;
+                  authorId?: string;
+                  authorUid?: string;
+                  createdAt?: number;
+                  text?: string | null;
+                }
+              >(session.uid, data.ownerUid, data.ciphertext, data.nonce, Number(data.keyGeneration))
+            : await decryptPayloadForRecipient<
+                PostMediaPlainPayload & {
+                  postId: string;
+                  authorId?: string;
+                  authorUid?: string;
+                  createdAt?: number;
+                  text?: string | null;
+                }
+              >(session.uid, data.ciphertext, data.nonce, envelope ?? "");
           const authorUid =
             typeof plain.authorUid === "string" && plain.authorUid.trim()
               ? plain.authorUid.trim()

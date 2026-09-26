@@ -32,6 +32,7 @@ export const FirebaseCallables = {
   getEncryptedMediaReadUrl: "getEncryptedMediaReadUrl",
   getFriendKeyBundles: "getFriendKeyBundles",
   putEncryptedProfile: "putEncryptedProfile",
+  putFriendContentKey: "putFriendContentKey",
   getEncryptedProfile: "getEncryptedProfile",
 
   upsertConversation: "upsertConversation",

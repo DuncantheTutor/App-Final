@@ -4072,6 +4072,12 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               keyboardShouldPersistTaps="handled"
             >
               <Text style={[styles.chatScreenTitle, { flex: 0, textAlign: "left" }]}>Settings</Text>
+              <View style={{ gap: 6, paddingVertical: 4 }}>
+                <Text style={styles.chatName}>Your messages</Text>
+                <Text style={[styles.settingsRowHint, { fontSize: 14, lineHeight: 20 }]}>
+                  Messages are encrypted so the server cannot read them. Signing in on a new phone with your password opens the same messages, posts, and profile. The server keeps a locked copy of the keys, and only your password can open it.
+                </Text>
+              </View>
               <View style={[styles.settingsRow, { paddingVertical: 12 }]}>
                 <Text style={styles.chatName}>Dark mode</Text>
                 <Switch
