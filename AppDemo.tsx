@@ -57,7 +57,6 @@ import { HomeTopNavBar } from "./app/components/HomeTopNavBar";
 import LottieView from "lottie-react-native";
 
 import {
-  backendUidForEmail,
   backendUidForFriendId,
   callEmulatorFunction,
   getOrCreateBackendDeviceId,
@@ -74,6 +73,7 @@ import {
   decryptPayloadForRecipient,
   ensureLocalKeyBundle,
   encryptPayloadForRecipients,
+  signLocalPublicBundle,
 } from "./e2eeCrypto";
 import { cancelInPersonPairingHardware } from "./addFriend/inPersonPairingGateway";
 import {
@@ -4058,13 +4058,16 @@ export default function App() {
   }, [resetLocalSocialStateForSignedOut]);
 
   const initializeBackendSessionForAccount = useCallback(async (account: MockAuthAccount) => {
-    const uid = backendUidForEmail(account.email);
     const deviceId = await getOrCreateBackendDeviceId();
-    const ownBundle = await ensureLocalKeyBundle(uid);
-    await callEmulatorFunction("claimDeviceSession", {
-      uid,
+    const claimed = await callEmulatorFunction<{ uid?: string }>("claimDeviceSession", {
       deviceId,
     });
+    const uid = String(claimed.uid ?? "").trim();
+    if (!uid.startsWith("u_")) {
+      throw new Error("Could not start the signed-in session.");
+    }
+    const signedBundle = await signLocalPublicBundle(uid);
+    const ownBundle = signedBundle.bundle;
 
     const emailGuess = emailLocalPartGuess(account.email);
     let resolvedUsername =
@@ -4111,6 +4114,7 @@ export default function App() {
       keyVersion: ownBundle.keyVersion,
       encryptionPublicKey: ownBundle.encryptionPublicKey,
       identitySigningPublicKey: ownBundle.identitySigningPublicKey,
+      bundleSignature: signedBundle.signature,
     });
     await callEmulatorFunction("upsertUserProfile", {
       uid,

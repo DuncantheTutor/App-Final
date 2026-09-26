@@ -33,13 +33,14 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.setMyPresence = exports.removeFriendship = exports.listMyFriends = exports.listEncryptedMessages = exports.getHiddenConversationIds = exports.unhideConversationForUser = exports.hideConversationForUser = exports.listMyOwnedEncryptedPosts = exports.listEncryptedPosts = exports.getEncryptedProfile = exports.getFriendKeyBundles = exports.sendEncryptedMessage = exports.deleteEncryptedPost = exports.createEncryptedPost = exports.putEncryptedProfile = exports.getUserSocialSnapshot = exports.putUserSocialSnapshot = exports.getUserKeyBackup = exports.putUserKeyBackup = exports.publishUserKeyBundle = exports.upsertConversation = exports.seedDemoFriendships = exports.consumeHandshake = exports.finalizeNfcHandshakeSession = exports.getNfcHandshakeSessionStatus = exports.respondNfcHandshakeSession = exports.beginNfcHandshakeSession = exports.finalizeNfcPinPairOffer = exports.confirmRedeemerNfcPinPairOffer = exports.confirmNfcPinPairOffer = exports.previewNfcPinPairOffer = exports.getNfcPinPairOfferStatus = exports.cancelNfcPinPairOffer = exports.registerNfcPinPairOffer = exports.peekBleFriendSessionForJoin = exports.getBleFriendSessionStatus = exports.joinBleFriendSession = exports.createBleFriendSession = exports.getNfcFriendVoucherStatus = exports.redeemNfcFriendVoucher = exports.mintNfcFriendVoucher = exports.createHandshake = exports.verifyEmailOtp = exports.cleanupExpiredTransientDocs = exports.logClientTelemetry = exports.requestEmailOtp = exports.upsertUserProfile = exports.releaseDeviceSession = exports.claimDeviceSession = exports.registerFirebaseAuthUid = void 0;
-exports.updateEncryptedMessage = exports.updateMessageMetadata = exports.updateEncryptedPost = exports.setEncryptedPostReaction = exports.manageConversationMembership = exports.setConversationNotificationMute = exports.updateConversationReadPosition = exports.listConversationMessages = exports.registerPushToken = exports.listPrivatePostThreadMessages = exports.togglePrivatePostThreadMessageReaction = exports.createPrivatePostThreadMessage = exports.getUserProfiles = exports.getFriendPresence = void 0;
+exports.removeFriendship = exports.listMyFriends = exports.listEncryptedMessages = exports.getHiddenConversationIds = exports.unhideConversationForUser = exports.hideConversationForUser = exports.listMyOwnedEncryptedPosts = exports.listEncryptedPosts = exports.getEncryptedProfile = exports.getFriendKeyBundles = exports.sendEncryptedMessage = exports.deleteEncryptedPost = exports.createEncryptedPost = exports.putEncryptedProfile = exports.getUserSocialSnapshot = exports.putUserSocialSnapshot = exports.getUserKeyBackup = exports.putUserKeyBackup = exports.publishUserKeyBundle = exports.upsertConversation = exports.seedDemoFriendships = exports.finalizeNfcPinPairOffer = exports.confirmRedeemerNfcPinPairOffer = exports.confirmNfcPinPairOffer = exports.previewNfcPinPairOffer = exports.getNfcPinPairOfferStatus = exports.cancelNfcPinPairOffer = exports.registerNfcPinPairOffer = exports.verifyEmailOtp = exports.cleanupExpiredTransientDocs = exports.logClientTelemetry = exports.requestEmailOtp = exports.upsertUserProfile = exports.releaseDeviceSession = exports.claimDeviceSession = exports.registerFirebaseAuthUid = exports.getEncryptedMediaReadUrl = exports.respondNfcHandshakeSession = exports.redeemNfcFriendVoucher = exports.peekBleFriendSessionForJoin = exports.mintNfcFriendVoucher = exports.joinBleFriendSession = exports.getNfcHandshakeSessionStatus = exports.getNfcFriendVoucherStatus = exports.getBleFriendSessionStatus = exports.finalizeNfcHandshakeSession = exports.createHandshake = exports.createBleFriendSession = exports.consumeHandshake = exports.beginNfcHandshakeSession = void 0;
+exports.updateEncryptedMessage = exports.updateMessageMetadata = exports.updateEncryptedPost = exports.setEncryptedPostReaction = exports.manageConversationMembership = exports.setConversationNotificationMute = exports.updateConversationReadPosition = exports.listConversationMessages = exports.registerPushToken = exports.listPrivatePostThreadMessages = exports.togglePrivatePostThreadMessageReaction = exports.createPrivatePostThreadMessage = exports.getUserProfiles = exports.getFriendPresence = exports.setMyPresence = void 0;
 require("./firebaseAdmin");
 const admin = __importStar(require("firebase-admin"));
 const https_1 = require("firebase-functions/v2/https");
 const scheduler_1 = require("firebase-functions/v2/scheduler");
 const crypto_1 = require("crypto");
+const canonicalizeEmail_1 = require("./canonicalizeEmail");
 const firebaseAdmin_1 = require("./firebaseAdmin");
 const socialExtensions_1 = require("./socialExtensions");
 Object.defineProperty(exports, "listConversationMessages", { enumerable: true, get: function () { return socialExtensions_1.listConversationMessages; } });
@@ -51,11 +52,35 @@ Object.defineProperty(exports, "updateEncryptedPost", { enumerable: true, get: f
 Object.defineProperty(exports, "updateMessageMetadata", { enumerable: true, get: function () { return socialExtensions_1.updateMessageMetadata; } });
 Object.defineProperty(exports, "updateEncryptedMessage", { enumerable: true, get: function () { return socialExtensions_1.updateEncryptedMessage; } });
 Object.defineProperty(exports, "setConversationNotificationMute", { enumerable: true, get: function () { return socialExtensions_1.setConversationNotificationMute; } });
+const accountIds_1 = require("./accountIds");
 const deviceSession_1 = require("./deviceSession");
+const profilePictureAccess_1 = require("./profilePictureAccess");
 const postStorageCleanup_1 = require("./postStorageCleanup");
+const authUidMirror_1 = require("./authUidMirror");
+const emailOtpAvailability_1 = require("./emailOtpAvailability");
+const keyBundleSignature_1 = require("./keyBundleSignature");
+const pairingProximity_1 = require("./pairingProximity");
+const encryptedMediaRead_1 = require("./encryptedMediaRead");
+Object.defineProperty(exports, "getEncryptedMediaReadUrl", { enumerable: true, get: function () { return encryptedMediaRead_1.getEncryptedMediaReadUrl; } });
+var legacyFriendshipCallables_1 = require("./legacyFriendshipCallables");
+Object.defineProperty(exports, "beginNfcHandshakeSession", { enumerable: true, get: function () { return legacyFriendshipCallables_1.beginNfcHandshakeSession; } });
+Object.defineProperty(exports, "consumeHandshake", { enumerable: true, get: function () { return legacyFriendshipCallables_1.consumeHandshake; } });
+Object.defineProperty(exports, "createBleFriendSession", { enumerable: true, get: function () { return legacyFriendshipCallables_1.createBleFriendSession; } });
+Object.defineProperty(exports, "createHandshake", { enumerable: true, get: function () { return legacyFriendshipCallables_1.createHandshake; } });
+Object.defineProperty(exports, "finalizeNfcHandshakeSession", { enumerable: true, get: function () { return legacyFriendshipCallables_1.finalizeNfcHandshakeSession; } });
+Object.defineProperty(exports, "getBleFriendSessionStatus", { enumerable: true, get: function () { return legacyFriendshipCallables_1.getBleFriendSessionStatus; } });
+Object.defineProperty(exports, "getNfcFriendVoucherStatus", { enumerable: true, get: function () { return legacyFriendshipCallables_1.getNfcFriendVoucherStatus; } });
+Object.defineProperty(exports, "getNfcHandshakeSessionStatus", { enumerable: true, get: function () { return legacyFriendshipCallables_1.getNfcHandshakeSessionStatus; } });
+Object.defineProperty(exports, "joinBleFriendSession", { enumerable: true, get: function () { return legacyFriendshipCallables_1.joinBleFriendSession; } });
+Object.defineProperty(exports, "mintNfcFriendVoucher", { enumerable: true, get: function () { return legacyFriendshipCallables_1.mintNfcFriendVoucher; } });
+Object.defineProperty(exports, "peekBleFriendSessionForJoin", { enumerable: true, get: function () { return legacyFriendshipCallables_1.peekBleFriendSessionForJoin; } });
+Object.defineProperty(exports, "redeemNfcFriendVoucher", { enumerable: true, get: function () { return legacyFriendshipCallables_1.redeemNfcFriendVoucher; } });
+Object.defineProperty(exports, "respondNfcHandshakeSession", { enumerable: true, get: function () { return legacyFriendshipCallables_1.respondNfcHandshakeSession; } });
 const db = (0, firebaseAdmin_1.getFirestore)();
-const HANDSHAKE_TTL_MS = 1000 * 60 * 2;
-const HANDSHAKE_SESSION_TTL_MS = 1000 * 60 * 2;
+async function presentStoredProfilePicture(ownerAppUid, fields) {
+    const ownerAuth = await (0, postStorageCleanup_1.resolveFirebaseAuthUidForAppUid)(ownerAppUid);
+    return (0, profilePictureAccess_1.profilePictureUrlForClient)(ownerAuth, fields);
+}
 const OTP_TTL_MS = 1000 * 60 * 10;
 const OTP_RESEND_COOLDOWN_MS = 1000 * 30;
 const OTP_MAX_VERIFY_ATTEMPTS = 6;
@@ -64,10 +89,6 @@ const OTP_IP_MAX_REQUESTS_PER_WINDOW = 20;
 const TELEMETRY_DETAILS_MAX_LEN = 4000;
 const TELEMETRY_IP_WINDOW_MS = 1000 * 60 * 10;
 const TELEMETRY_IP_MAX_EVENTS_PER_WINDOW = 200;
-const PROXIMITY_MAX_DISTANCE_M = 100;
-const PROXIMITY_MAX_ACCURACY_M = 50;
-const PROXIMITY_MAX_LOCATION_AGE_MS = 60_000;
-const PROXIMITY_GPS_UNCERTAINTY_MULTIPLIER = 1.75;
 const PRESENCE_STALE_MS = 45_000;
 function requireAuthUid(uid) {
     if (!uid)
@@ -81,41 +102,10 @@ function sha256Hex(input) {
     return (0, crypto_1.createHash)("sha256").update(input).digest("hex");
 }
 function randomOtp() {
-    return String(Math.floor(100000 + Math.random() * 900000));
-}
-function displayNameFromEmail(email) {
-    const left = email.split("@")[0] ?? "user";
-    return left
-        .replace(/[._-]+/g, " ")
-        .trim()
-        .replace(/\b\w/g, (c) => c.toUpperCase());
+    return String((0, crypto_1.randomInt)(0, 1_000_000)).padStart(6, "0");
 }
 function emailLocalPartLower(email) {
     return (email.split("@")[0] ?? "").trim().toLowerCase();
-}
-/**
- * Collapses mailbox aliases to a single canonical address so one inbox cannot
- * own multiple accounts. Mirrors the client `canonicalizeEmail` in
- * `backendBridge.ts` — keep both in sync.
- */
-function canonicalizeEmail(email) {
-    const trimmed = String(email ?? "").trim().toLowerCase();
-    const at = trimmed.lastIndexOf("@");
-    if (at <= 0)
-        return trimmed;
-    let local = trimmed.slice(0, at);
-    const domain = trimmed.slice(at + 1);
-    const plus = local.indexOf("+");
-    if (plus >= 0)
-        local = local.slice(0, plus);
-    if (domain === "gmail.com" || domain === "googlemail.com") {
-        local = local.replace(/\./g, "");
-    }
-    return `${local}@${domain}`;
-}
-/** Firestore doc id binding a canonical email to its owning app uid. */
-function emailAccountDocId(email) {
-    return sha256Hex(`email-account|${canonicalizeEmail(email)}`);
 }
 function isEmailDerivedUsername(username, email) {
     const u = username.trim().toLowerCase();
@@ -132,10 +122,6 @@ function isEmailDerivedUsername(username, email) {
         .replace(/\s+/g, " ")
         .trim();
     return norm(u) === norm(local);
-}
-function normalizeHandshakeCode(raw) {
-    const t = raw.trim();
-    return t.startsWith("FN1.") ? t.slice(4) : t;
 }
 function randomNonceHex(bytes = 16) {
     return (0, crypto_1.randomBytes)(bytes).toString("hex");
@@ -213,63 +199,6 @@ function normalizePairingProximityEvidence(raw) {
     const localIp = localIpRaw.length > 0 ? localIpRaw : null;
     return { lat, lng, horizontalAccuracyM, locationTimestampMs, isWifiConnected, localIp };
 }
-function toRadians(deg) {
-    return (deg * Math.PI) / 180;
-}
-function haversineMeters(lat1, lng1, lat2, lng2) {
-    const earthRadiusM = 6371000;
-    const dLat = toRadians(lat2 - lat1);
-    const dLng = toRadians(lng2 - lng1);
-    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return earthRadiusM * c;
-}
-function isGpsEvidenceUsable(e) {
-    if (typeof e.lat !== "number" ||
-        typeof e.lng !== "number" ||
-        typeof e.horizontalAccuracyM !== "number" ||
-        typeof e.locationTimestampMs !== "number") {
-        return false;
-    }
-    if (Math.abs(e.lat) > 90 || Math.abs(e.lng) > 180)
-        return false;
-    if (e.horizontalAccuracyM <= 0 || e.horizontalAccuracyM > PROXIMITY_MAX_ACCURACY_M)
-        return false;
-    if (Math.abs(nowMs() - e.locationTimestampMs) > PROXIMITY_MAX_LOCATION_AGE_MS)
-        return false;
-    return true;
-}
-function ipv4ToOctets(ip) {
-    const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (!m)
-        return null;
-    const octets = m.slice(1).map((x) => Number(x));
-    if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
-        return null;
-    return octets;
-}
-function isPrivateIpv4(octets) {
-    const [a, b] = octets;
-    if (a === 10)
-        return true;
-    if (a === 172 && b >= 16 && b <= 31)
-        return true;
-    if (a === 192 && b === 168)
-        return true;
-    return false;
-}
-function hasSameWifiSubnetFallback(a, b) {
-    if (!a.isWifiConnected || !b.isWifiConnected || !a.localIp || !b.localIp)
-        return false;
-    const aOctets = ipv4ToOctets(a.localIp);
-    const bOctets = ipv4ToOctets(b.localIp);
-    if (!aOctets || !bOctets)
-        return false;
-    if (!isPrivateIpv4(aOctets) || !isPrivateIpv4(bOctets))
-        return false;
-    return aOctets[0] === bOctets[0] && aOctets[1] === bOctets[1] && aOctets[2] === bOctets[2];
-}
 async function assertAcceptedFriendship(uid, otherUid) {
     if (uid === otherUid)
         return;
@@ -300,80 +229,27 @@ async function assertAcceptedFriendship(uid, otherUid) {
     throw new https_1.HttpsError("permission-denied", "You can only view profiles of friends.");
 }
 /**
- * Resolves the canonical app uid (`u_…`) for each participant to the
- * recipient's **Firebase Auth UID** by reading from `userFirebaseAuthMap`.
- *
- * Direct client `onSnapshot` listeners can only authenticate against
- * `request.auth.uid` (Firebase Auth UID), but the app's identity model is
- * keyed on the app uid. We mirror the app-uid → authUid mapping into every
- * message and conversation document as `participantAuthUids` so the
- * Firestore client SDK can run `collectionGroup("messages").where(
- * "participantAuthUids", "array-contains", auth.uid)` for push-based
- * message delivery without needing custom auth tokens.
- *
- * Missing entries are simply omitted from the returned array — those
- * recipients won't see the message via push and will continue to receive
- * via the next `listEncryptedMessages` callable pull instead. This keeps the
- * old-data fallback intact.
- */
-async function resolveParticipantAuthUids(uids) {
-    const unique = [...new Set(uids.filter((x) => !!x))];
-    if (unique.length === 0)
-        return [];
-    const refs = unique.map((uid) => db.collection("userFirebaseAuthMap").doc(uid));
-    const snaps = await db.getAll(...refs);
-    const out = [];
-    for (const snap of snaps) {
-        const data = snap.data();
-        const uid = (data?.firebaseAuthUid ?? "").trim();
-        if (uid)
-            out.push(uid);
-    }
-    return [...new Set(out)].sort();
-}
-/**
- * Registers the caller's Firebase Auth UID against their app uid so future
- * encrypted-message writes can populate `participantAuthUids` for direct
- * client snapshot listening. Idempotent.
- *
- * Trust model: the device session lock (`assertActiveDeviceSession`) is the
- * authority on "is this client really uid X". Once that check passes, the
- * caller is asserting "and my Firebase Auth UID is Y" — which can also be
- * cross-checked when the caller is properly authenticated (`req.auth.uid`).
- * Direct read access from a forged Firebase Auth UID is still impossible
- * because Firestore rules only honour the **real** `request.auth.uid` value.
+ * Refreshes the Firebase Auth UID mirror for the signed-in account.
+ * The uid is taken from the ID token. A value in the request body is ignored.
  */
 exports.registerFirebaseAuthUid = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const claimedAuthUid = String(req.data?.firebaseAuthUid ?? req.auth?.uid ?? "").trim();
-    if (!claimedAuthUid) {
-        throw new https_1.HttpsError("invalid-argument", "firebaseAuthUid is required.");
-    }
-    if (claimedAuthUid.length > 200 || !/^[A-Za-z0-9_:.-]+$/.test(claimedAuthUid)) {
-        throw new https_1.HttpsError("invalid-argument", "firebaseAuthUid is not a well-formed identifier.");
-    }
-    // When the caller is properly authenticated via Firebase Auth (httpsCallable
-    // with token), `req.auth.uid` is the truth — refuse mismatched claims.
-    if (req.auth?.uid && req.auth.uid !== claimedAuthUid) {
-        throw new https_1.HttpsError("permission-denied", "firebaseAuthUid does not match authenticated session.");
-    }
+    const { appUid: uid, deviceId } = await (0, deviceSession_1.assertVerifiedCallableCaller)(req);
+    const { firebaseAuthUid } = (0, deviceSession_1.requireVerifiedFirebaseIdentity)(req);
     const updatedAt = admin.firestore.FieldValue.serverTimestamp();
     await db.collection("userFirebaseAuthMap").doc(uid).set({
         uid,
-        firebaseAuthUid: claimedAuthUid,
+        firebaseAuthUid,
         updatedAt,
     }, { merge: true });
-    await db.collection("firebaseAuthToAppUid").doc(claimedAuthUid).set({
+    await db.collection("firebaseAuthToAppUid").doc(firebaseAuthUid).set({
         appUid: uid,
-        firebaseAuthUid: claimedAuthUid,
+        firebaseAuthUid,
         updatedAt,
     }, { merge: true });
     await (0, socialExtensions_1.propagateFirebaseAuthUidToFriendsPresenceViewers)(uid);
     await (0, socialExtensions_1.mergeFriendAuthOntoRegistrantPresence)(uid);
     await (0, socialExtensions_1.refreshPresenceViewerAuthUids)(uid, deviceId);
-    void (0, socialExtensions_1.backfillMessageParticipantAuthUid)(uid, claimedAuthUid).catch(() => undefined);
+    void (0, socialExtensions_1.backfillMessageParticipantAuthUid)(uid, firebaseAuthUid).catch(() => undefined);
     return { ok: true };
 });
 /** Optional pairing offer id (legacy 4-digit or opaque 32-hex); does not throw. */
@@ -453,65 +329,76 @@ async function assertTelemetryIpThrottle(rawIp) {
     });
 }
 /**
- * Enforces one-device-only sign-in lock.
+ * Binds this device to the Firebase-authenticated account.
+ * The app account id is looked up from the verified email, or minted if this
+ * mailbox has never signed in. A `uid` in the body is ignored.
+ * Returns the app account id the client must use from then on.
  */
 exports.claimDeviceSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const { firebaseAuthUid, email } = (0, deviceSession_1.requireVerifiedFirebaseIdentity)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     if (!deviceId)
         throw new https_1.HttpsError("invalid-argument", "deviceId is required.");
-    const email = String(req.auth?.token?.email ?? req.data?.email ?? "").trim().toLowerCase();
     const requestedUsername = String(req.data?.username ?? "").trim();
-    const userRef = db.collection("users").doc(uid);
-    // One account per email: bind the canonical mailbox to the first uid that
-    // claims it. A later claim from a *different* uid for the same mailbox is a
-    // duplicate-account attempt (e.g. via Gmail dot/+ aliases) and is rejected.
-    const emailRef = email ? db.collection("emailAccounts").doc(emailAccountDocId(email)) : null;
+    let appUid = await (0, deviceSession_1.lookupBoundAppUid)(firebaseAuthUid, email);
+    if (!appUid) {
+        const legacyId = (0, accountIds_1.legacyAppUidForEmail)(email);
+        const legacySnap = await db.collection("users").doc(legacyId).get();
+        if (legacySnap.exists) {
+            const storedEmail = (0, canonicalizeEmail_1.canonicalizeEmail)(String(legacySnap.data()?.email ?? ""));
+            const boundFirebase = String(legacySnap.data()?.firebaseAuthUid ?? "").trim();
+            if ((!storedEmail || storedEmail === email) && (!boundFirebase || boundFirebase === firebaseAuthUid)) {
+                appUid = legacyId;
+            }
+        }
+    }
+    if (!appUid)
+        appUid = (0, accountIds_1.mintAppUid)();
+    const userRef = db.collection("users").doc(appUid);
+    const emailRef = db.collection("emailAccounts").doc((0, accountIds_1.emailAccountDocId)(email));
+    const authMapRef = db.collection("userFirebaseAuthMap").doc(appUid);
+    const reverseRef = db.collection("firebaseAuthToAppUid").doc(firebaseAuthUid);
     await db.runTransaction(async (tx) => {
         const snap = await tx.get(userRef);
-        const emailSnap = emailRef ? await tx.get(emailRef) : null;
-        if (emailSnap?.exists) {
+        const emailSnap = await tx.get(emailRef);
+        const reverseSnap = await tx.get(reverseRef);
+        const reverseOwner = String(reverseSnap.data()?.appUid ?? "").trim();
+        if (reverseOwner && reverseOwner !== appUid) {
+            throw new https_1.HttpsError("permission-denied", "This sign-in cannot be used.");
+        }
+        if (emailSnap.exists) {
             const ownerUid = String(emailSnap.data()?.uid ?? "").trim();
-            if (ownerUid && ownerUid !== uid) {
-                throw new https_1.HttpsError("already-exists", "An account already exists for this email address. Sign in instead of creating a new account.");
+            if (ownerUid && ownerUid !== appUid) {
+                throw new https_1.HttpsError("permission-denied", "This sign-in cannot be used.");
             }
         }
         const existing = (snap.data() ?? {});
         const existingUsername = String(existing.username ?? "").trim();
         const patch = {
-            uid,
-            email: email || null,
+            uid: appUid,
+            email,
             activeDeviceId: deviceId,
             sessionIssuedAt: nowMs(),
+            phoneNumber: admin.firestore.FieldValue.delete(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
-        // Never overwrite a real chosen username with an email-derived default on re-login.
-        if (requestedUsername) {
-            if (!existingUsername || isEmailDerivedUsername(existingUsername, email)) {
-                patch.username = requestedUsername;
-            }
+        const chosenUsername = requestedUsername && !isEmailDerivedUsername(requestedUsername, email) ? requestedUsername : "";
+        if (chosenUsername && (!existingUsername || isEmailDerivedUsername(existingUsername, email))) {
+            patch.username = chosenUsername;
         }
-        else if (!existingUsername && email) {
-            patch.username = displayNameFromEmail(email);
-        }
-        // One-device policy: the latest successful claim owns the account. A previous
-        // device loses the lock on its next `assertActiveDeviceSession` call.
+        const updatedAt = admin.firestore.FieldValue.serverTimestamp();
         tx.set(userRef, patch, { merge: true });
-        if (emailRef) {
-            tx.set(emailRef, {
-                uid,
-                canonicalEmail: canonicalizeEmail(email),
-                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            }, { merge: true });
-        }
+        tx.set(emailRef, { uid: appUid, canonicalEmail: email, updatedAt }, { merge: true });
+        tx.set(authMapRef, { uid: appUid, firebaseAuthUid, updatedAt }, { merge: true });
+        tx.set(reverseRef, { appUid, firebaseAuthUid, updatedAt }, { merge: true });
     });
-    return { ok: true };
+    return { ok: true, uid: appUid };
 });
 /**
  * Releases one-device lock for current authenticated caller.
  */
 exports.releaseDeviceSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     if (!deviceId)
         throw new https_1.HttpsError("invalid-argument", "deviceId is required.");
@@ -536,36 +423,48 @@ exports.releaseDeviceSession = (0, https_1.onCall)(async (req) => {
  * Upserts profile metadata for current user (non-sensitive public profile).
  */
 exports.upsertUserProfile = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
+    const { email, firebaseAuthUid } = (0, deviceSession_1.requireVerifiedFirebaseIdentity)(req);
     const username = String(req.data?.username ?? "").trim();
     const bio = String(req.data?.bio ?? "").trim();
     const profilePictureUrl = String(req.data?.profilePictureUrl ?? "").trim();
-    const phoneNumber = String(req.data?.phoneNumber ?? "").trim();
+    const profilePicturePath = String(req.data?.profilePicturePath ?? "").trim();
     const patch = {
         uid,
         bio: bio || null,
-        phoneNumber: phoneNumber || null,
+        phoneNumber: admin.firestore.FieldValue.delete(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
-    // Only touch `username` / `profilePictureUrl` when the client sends a non-empty
-    // value — never write null on boot upserts that omit the field (that was wiping
-    // Console edits, prior uploads, and AsyncStorage-restored avatars).
-    if (username) {
+    // Only touch `username` when the client sends a real chosen name. Never store
+    // a name copied from the email, and never write null on boot upserts that omit it.
+    if (username && !isEmailDerivedUsername(username, email)) {
         patch.username = username;
     }
-    if (profilePictureUrl) {
-        patch.profilePictureUrl = profilePictureUrl;
+    if (profilePictureUrl || profilePicturePath) {
+        const picture = (0, profilePictureAccess_1.profilePictureFieldsForStorage)(profilePictureUrl, profilePicturePath, firebaseAuthUid);
+        if (picture.profilePicturePath) {
+            patch.profilePicturePath = picture.profilePicturePath;
+            patch.profilePictureUrl =
+                process.env.FUNCTIONS_EMULATOR === "true" && profilePictureUrl
+                    ? profilePictureUrl
+                    : admin.firestore.FieldValue.delete();
+        }
+        else if (picture.profilePictureUrl) {
+            patch.profilePictureUrl = picture.profilePictureUrl;
+            patch.profilePicturePath = admin.firestore.FieldValue.delete();
+        }
     }
     await db.collection("users").doc(uid).set(patch, { merge: true });
     return { ok: true };
 });
 /**
- * Prototype OTP request for email auth step-up.
- * In emulator/dev this returns `debugCode` so client can complete flow.
+ * Email OTP step-up for the emulator only. Production refuses the call until
+ * a mail sender exists. The app keeps EMAIL_OTP_ENABLED off for the same reason.
  */
 exports.requestEmailOtp = (0, https_1.onCall)(async (req) => {
+    (0, emailOtpAvailability_1.assertEmailOtpAvailable)();
     const email = String(req.data?.email ?? "").trim().toLowerCase();
     const purpose = String(req.data?.purpose ?? "signup").trim().toLowerCase();
     if (!email.includes("@") || !email.includes(".")) {
@@ -599,7 +498,8 @@ exports.requestEmailOtp = (0, https_1.onCall)(async (req) => {
         expiresAt,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    return { ok: true, expiresAt, debugCode: code };
+    const emulator = process.env.FUNCTIONS_EMULATOR === "true";
+    return emulator ? { ok: true, expiresAt, debugCode: code } : { ok: true, expiresAt };
 });
 /**
  * Lightweight telemetry ingestion for prototype diagnostics.
@@ -677,9 +577,11 @@ exports.cleanupExpiredTransientDocs = (0, scheduler_1.onSchedule)("every 15 minu
     await commitDeletes(oldTelemetryThrottle.docs.map((d) => d.ref));
 });
 /**
- * Verifies and consumes OTP for email auth step-up.
+ * Verifies and consumes OTP for email auth step-up. Refused in production
+ * until a mail sender exists.
  */
 exports.verifyEmailOtp = (0, https_1.onCall)(async (req) => {
+    (0, emailOtpAvailability_1.assertEmailOtpAvailable)();
     const email = String(req.data?.email ?? "").trim().toLowerCase();
     const purpose = String(req.data?.purpose ?? "signup").trim().toLowerCase();
     const code = String(req.data?.code ?? "").trim();
@@ -717,327 +619,36 @@ exports.verifyEmailOtp = (0, https_1.onCall)(async (req) => {
         throw new https_1.HttpsError("permission-denied", "Incorrect OTP.");
     return { ok: true };
 });
-/**
- * Creates short-lived NFC handshake token to share as FN1.<code>.
- */
-exports.createHandshake = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const handshakeCode = `H_${Math.random().toString(16).slice(2, 14)}${Math.random().toString(16).slice(2, 14)}`;
-    const expiresAt = nowMs() + HANDSHAKE_TTL_MS;
-    await db.collection("handshakes").doc(handshakeCode).set({
-        ownerUid: uid,
-        ownerDeviceId: deviceId,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        expiresAt,
-        consumed: false,
-    });
-    return { handshakeCode, expiresAt };
-});
-const NFC_FRIEND_VOUCHER_TTL_MS = HANDSHAKE_SESSION_TTL_MS;
-/**
- * Mint a single-use NFC friend voucher (Transmit side writes `FN1.AF1|<voucherCode>` once).
- */
-exports.mintNfcFriendVoucher = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const voucherCode = `AF1_${randomNonceHex(12)}`;
-    const expiresAt = nowMs() + NFC_FRIEND_VOUCHER_TTL_MS;
-    await db.collection("nfcFriendVouchers").doc(voucherCode).set({
-        voucherCode,
-        issuerUid: uid,
-        issuerDeviceId: deviceId,
-        expiresAt,
-        consumed: false,
-        redeemerUid: null,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return { ok: true, voucherCode, expiresAt };
-});
-/**
- * Redeem voucher after reading it from peer NFC (Receive side).
- */
-exports.redeemNfcFriendVoucher = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const voucherCode = String(req.data?.voucherCode ?? "").trim();
-    if (!/^AF1_[a-f0-9]{24}$/i.test(voucherCode)) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid voucher code.");
-    }
-    const ref = db.collection("nfcFriendVouchers").doc(voucherCode);
-    const snap = await ref.get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Voucher not found.");
-    const data = snap.data();
-    if (data.expiresAt < nowMs())
-        throw new https_1.HttpsError("deadline-exceeded", "Voucher expired.");
-    if (data.consumed)
-        throw new https_1.HttpsError("failed-precondition", "Voucher already used.");
-    if (data.issuerUid === uid) {
-        throw new https_1.HttpsError("failed-precondition", "Cannot redeem your own voucher.");
-    }
-    const issuerUid = data.issuerUid;
-    const redeemerUid = uid;
-    const edgeId = friendshipId(issuerUid, redeemerUid);
-    // Resolved outside the tx because `userFirebaseAuthMap` is write-once-stable
-    // per user (only updated when a device re-registers its Firebase Auth UID),
-    // so there's no consistency window to worry about. Mirroring the app uids
-    // into `participantAuthUids` lets signed-in clients run a direct
-    // `where("participantAuthUids", "array-contains", auth.uid)` snapshot
-    // listener on the `friendships` collection — no callable round-trip required.
-    const participantAuthUids = await resolveParticipantAuthUids([issuerUid, redeemerUid]);
-    await db.runTransaction(async (tx) => {
-        const fresh = await tx.get(ref);
-        if (!fresh.exists)
-            throw new https_1.HttpsError("not-found", "Voucher not found.");
-        const d = fresh.data();
-        if (d.expiresAt < nowMs())
-            throw new https_1.HttpsError("deadline-exceeded", "Voucher expired.");
-        if (d.consumed)
-            throw new https_1.HttpsError("failed-precondition", "Voucher already used.");
-        if (d.issuerUid === redeemerUid) {
-            throw new https_1.HttpsError("failed-precondition", "Cannot redeem your own voucher.");
-        }
-        const edgeRef = db.collection("friendships").doc(edgeId);
-        tx.set(edgeRef, {
-            participants: [issuerUid, redeemerUid].sort(),
-            participantAuthUids,
-            status: "accepted",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            establishedByNfcFriendVoucher: voucherCode,
-        }, { merge: true });
-        tx.set(ref, {
-            consumed: true,
-            redeemerUid,
-            redeemedAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-    });
-    return { ok: true, accepted: true, friendUid: issuerUid, voucherCode };
-});
-/**
- * Issuer polls after NFC write until Receive side redeems.
- */
-exports.getNfcFriendVoucherStatus = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const voucherCode = String(req.data?.voucherCode ?? "").trim();
-    if (!/^AF1_[a-f0-9]{24}$/i.test(voucherCode)) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid voucher code.");
-    }
-    const snap = await db.collection("nfcFriendVouchers").doc(voucherCode).get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Voucher not found.");
-    const data = snap.data();
-    if (data.issuerUid !== uid) {
-        throw new https_1.HttpsError("permission-denied", "Not the voucher issuer.");
-    }
-    return {
-        ok: true,
-        voucherCode,
-        status: data.consumed ? "redeemed" : "pending",
-        redeemerUid: data.redeemerUid?.trim() || null,
-        expiresAt: data.expiresAt,
-    };
-});
-const BLE_FRIEND_SESSION_TTL_MS = HANDSHAKE_SESSION_TTL_MS;
-const BLE_JOIN_MAX_CODE_ATTEMPTS = 10;
-function bleFriendDisplayCode() {
-    return String(Math.floor(100000 + Math.random() * 900000));
-}
-function bleFriendCodeHash(sessionId, displayCode) {
-    return sha256Hex(`bleFriendSession|${sessionId}|${displayCode}`);
-}
-/**
- * Host (issuer): creates BLE Add Friend session with random 6-digit code and `BF1_<12 hex>` session id.
- * Client shows the 6-digit code (human pairing number); Android advertises the session beacon over BLE.
- */
-exports.createBleFriendSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = `BF1_${(0, crypto_1.randomBytes)(6).toString("hex")}`;
-    const displayCode = bleFriendDisplayCode();
-    const codeHash = bleFriendCodeHash(sessionId, displayCode);
-    const expiresAt = nowMs() + BLE_FRIEND_SESSION_TTL_MS;
-    await db.collection("bleFriendSessions").doc(sessionId).set({
-        sessionId,
-        displayCode,
-        issuerUid: uid,
-        issuerDeviceId: deviceId,
-        codeHash,
-        wrongAttempts: 0,
-        expiresAt,
-        consumed: false,
-        redeemerUid: null,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return { ok: true, sessionId, displayCode, expiresAt };
-});
-/**
- * Joiner: verifies 6-digit code and creates friendship with issuer (same edge rules as NFC voucher redeem).
- */
-exports.joinBleFriendSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = String(req.data?.sessionId ?? "").trim();
-    const displayCode = String(req.data?.displayCode ?? "").trim().replace(/\s+/g, "");
-    if (!/^BF1_[a-f0-9]{12}$/i.test(sessionId)) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid session id.");
-    }
-    if (!/^\d{6}$/.test(displayCode)) {
-        throw new https_1.HttpsError("invalid-argument", "Enter the 6-digit code.");
-    }
-    const ref = db.collection("bleFriendSessions").doc(sessionId);
-    const submittedHash = bleFriendCodeHash(sessionId, displayCode);
-    const snap = await ref.get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Session not found.");
-    const pre = snap.data();
-    if (pre.expiresAt < nowMs())
-        throw new https_1.HttpsError("deadline-exceeded", "Session expired.");
-    if (pre.consumed)
-        throw new https_1.HttpsError("failed-precondition", "Session already used.");
-    if (pre.issuerUid === uid) {
-        throw new https_1.HttpsError("failed-precondition", "Cannot join your own session.");
-    }
-    if ((pre.wrongAttempts ?? 0) >= BLE_JOIN_MAX_CODE_ATTEMPTS) {
-        throw new https_1.HttpsError("resource-exhausted", "Too many incorrect codes.");
-    }
-    if (pre.codeHash !== submittedHash) {
-        await ref.set({
-            wrongAttempts: (pre.wrongAttempts ?? 0) + 1,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        throw new https_1.HttpsError("permission-denied", "Incorrect code.");
-    }
-    const issuerUid = pre.issuerUid;
-    const redeemerUid = uid;
-    const edgeId = friendshipId(issuerUid, redeemerUid);
-    const participantAuthUids = await resolveParticipantAuthUids([issuerUid, redeemerUid]);
-    await db.runTransaction(async (tx) => {
-        const fresh = await tx.get(ref);
-        if (!fresh.exists)
-            throw new https_1.HttpsError("not-found", "Session not found.");
-        const d = fresh.data();
-        if (d.expiresAt < nowMs())
-            throw new https_1.HttpsError("deadline-exceeded", "Session expired.");
-        if (d.consumed)
-            throw new https_1.HttpsError("failed-precondition", "Session already used.");
-        if (d.issuerUid === redeemerUid) {
-            throw new https_1.HttpsError("failed-precondition", "Cannot join your own session.");
-        }
-        if (d.codeHash !== submittedHash) {
-            throw new https_1.HttpsError("permission-denied", "Incorrect code.");
-        }
-        const edgeRef = db.collection("friendships").doc(edgeId);
-        tx.set(edgeRef, {
-            participants: [issuerUid, redeemerUid].sort(),
-            participantAuthUids,
-            status: "accepted",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            establishedByBleFriendSession: sessionId,
-        }, { merge: true });
-        tx.set(ref, {
-            consumed: true,
-            redeemerUid,
-            redeemedAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-    });
-    return { ok: true, accepted: true, friendUid: issuerUid, sessionId };
-});
-/** Issuer polls until joiner completes `joinBleFriendSession`. */
-exports.getBleFriendSessionStatus = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = String(req.data?.sessionId ?? "").trim();
-    if (!/^BF1_[a-f0-9]{12}$/i.test(sessionId)) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid session id.");
-    }
-    const snap = await db.collection("bleFriendSessions").doc(sessionId).get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Session not found.");
-    const data = snap.data();
-    if (data.issuerUid !== uid) {
-        throw new https_1.HttpsError("permission-denied", "Not the session host.");
-    }
-    return {
-        ok: true,
-        sessionId,
-        status: data.consumed ? "joined" : "pending",
-        redeemerUid: data.redeemerUid?.trim() || null,
-        expiresAt: data.expiresAt,
-    };
-});
-/**
- * Joiner: read the host's 6-digit code for a pending BLE session (for multi-host picker UX).
- * Requires auth; caller must not be the issuer. Session docs created before `displayCode` was
- * stored will fail with failed-precondition.
- */
-exports.peekBleFriendSessionForJoin = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = String(req.data?.sessionId ?? "").trim();
-    if (!/^BF1_[a-f0-9]{12}$/i.test(sessionId)) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid session id.");
-    }
-    const snap = await db.collection("bleFriendSessions").doc(sessionId).get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Session not found.");
-    const data = snap.data();
-    if (data.expiresAt < nowMs())
-        throw new https_1.HttpsError("deadline-exceeded", "Session expired.");
-    if (data.consumed)
-        throw new https_1.HttpsError("failed-precondition", "Session already used.");
-    if (data.issuerUid === uid) {
-        throw new https_1.HttpsError("failed-precondition", "Cannot join your own session.");
-    }
-    const displayCode = String(data.displayCode ?? "").trim();
-    if (!/^\d{6}$/.test(displayCode)) {
-        throw new https_1.HttpsError("failed-precondition", "This session has no pairing code on file. Ask your friend to start a new Share session.");
-    }
-    return { ok: true, sessionId, displayCode };
-});
-/** In-person pair offers: opaque token (doc id) or legacy 4-digit PIN. */
+/** In-person pair offers: server-minted opaque token (doc id). */
 const NFC_PIN_PAIR_TTL_MS = 1000 * 60 * 5;
-/** After scanner validates (proximity + phase 1), allow long in-app confirm; offer doc TTL is extended. */
-const NFC_PIN_PAIR_AWAIT_DUAL_CONFIRM_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+/** After phase 1, both people must confirm before this window. Matches the client dual-confirm idle timeout. */
+const NFC_PIN_PAIR_AWAIT_DUAL_CONFIRM_MS = 45_000;
 const PAIRING_OFFER_TOKEN_HEX_LEN = 32;
 function normalizePairingOfferId(raw) {
     const id = String(raw ?? "").trim().replace(/\s+/g, "");
-    if (/^\d{4}$/.test(id))
-        return id;
     if (new RegExp(`^[0-9a-f]{${PAIRING_OFFER_TOKEN_HEX_LEN}}$`, "i").test(id)) {
         return id.toLowerCase();
     }
-    throw new https_1.HttpsError("invalid-argument", "Offer token must be 4 digits (legacy) or 32 hex characters.");
+    throw new https_1.HttpsError("invalid-argument", "Offer token must be 32 hex characters.");
 }
 function mintPairingOfferToken() {
     return randomNonceHex(16);
 }
 /**
- * Issuer: server-mints an opaque pairing token (128-bit hex). Legacy clients may still pass a 4-digit
- * `pin` to claim that id; new clients omit `pin` and use the returned `pairingToken` / `pin` field.
+ * Issuer: server-mints an opaque pairing token (128-bit hex). Client-chosen PINs are rejected.
  */
 exports.registerNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const proximityEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
-    const clientPinRaw = String(req.data?.pin ?? "").trim();
-    const useLegacyClientPin = /^\d{4}$/.test(clientPinRaw);
+    if (String(req.data?.pin ?? "").trim()) {
+        throw new https_1.HttpsError("invalid-argument", "Pairing tokens are minted by the server.");
+    }
     const expiresAt = nowMs() + NFC_PIN_PAIR_TTL_MS;
-    const maxAttempts = useLegacyClientPin ? 1 : 10;
+    const maxAttempts = 10;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const offerId = useLegacyClientPin ? clientPinRaw : mintPairingOfferToken();
+        const offerId = mintPairingOfferToken();
         const ref = db.collection("nfcPinPairSessions").doc(offerId);
         try {
             await db.runTransaction(async (tx) => {
@@ -1068,8 +679,6 @@ exports.registerNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
             return { ok: true, pin: offerId, pairingToken: offerId, expiresAt };
         }
         catch (e) {
-            if (useLegacyClientPin)
-                throw e;
             const msg = e instanceof Error ? e.message : String(e ?? "");
             if (msg.includes("Offer token unavailable") && attempt < maxAttempts - 1)
                 continue;
@@ -1083,7 +692,7 @@ exports.registerNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
  * dual-confirm (after scanner phase 1). Deletes the session so the other device sees offer gone.
  */
 exports.cancelNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
@@ -1108,7 +717,7 @@ exports.cancelNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
 });
 /** Issuer: poll until joiner confirms. */
 exports.getNfcPinPairOfferStatus = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
@@ -1136,19 +745,30 @@ exports.getNfcPinPairOfferStatus = (0, https_1.onCall)(async (req) => {
         const edgeStatus = edgeSnap.data()?.status;
         status = edgeSnap.exists && edgeStatus === "accepted" ? "joined" : status;
     }
+    const joined = status === "joined";
+    let username = null;
+    let profilePictureUrl = null;
+    const otherUid = (isIssuer ? redeemerUid : data.issuerUid)?.trim() || "";
+    if (otherUid) {
+        const userSnap = await db.collection("users").doc(otherUid).get();
+        const profile = (userSnap.data() ?? {});
+        username = String(profile.username ?? "").trim() || "Friend";
+        profilePictureUrl = await presentStoredProfilePicture(otherUid, profile);
+    }
     return {
         ok: true,
         pin,
         status,
-        issuerUid: data.issuerUid,
-        redeemerUid,
+        username,
+        profilePictureUrl,
         redeemerConfirmed: Boolean(data.redeemerConfirmed),
         expiresAt: data.expiresAt,
+        ...(joined ? { issuerUid: data.issuerUid, redeemerUid } : {}),
     };
 });
 /** Scanner preview: returns issuer identity so scanner can confirm before redeem. */
 exports.previewNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
@@ -1167,15 +787,14 @@ exports.previewNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
     const profile = (userSnap.data() ?? {});
     return {
         ok: true,
-        issuerUid: data.issuerUid,
-        username: String(profile.username ?? "").trim() || `User ${data.issuerUid.slice(0, 6)}`,
-        profilePictureUrl: String(profile.profilePictureUrl ?? "").trim() || null,
+        username: String(profile.username ?? "").trim() || "Friend",
+        profilePictureUrl: await presentStoredProfilePicture(data.issuerUid, profile),
         expiresAt: data.expiresAt,
     };
 });
 /** Scanner (Read QR / NFC join): phase 1 — proximity + claim offer; no friendship yet. */
 exports.confirmNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
@@ -1200,41 +819,29 @@ exports.confirmNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
             return d.issuerUid;
         }
         const issuerEvidence = normalizePairingProximityEvidence(d.issuerProximityEvidence);
-        const issuerGpsUsable = isGpsEvidenceUsable(issuerEvidence);
-        const scannerGpsUsable = isGpsEvidenceUsable(scannerEvidence);
-        if (issuerGpsUsable && scannerGpsUsable) {
-            const separationM = haversineMeters(issuerEvidence.lat, issuerEvidence.lng, scannerEvidence.lat, scannerEvidence.lng);
-            const combinedUncertaintyM = Math.sqrt(Math.pow(issuerEvidence.horizontalAccuracyM, 2) +
-                Math.pow(scannerEvidence.horizontalAccuracyM, 2));
-            const dynamicToleranceM = PROXIMITY_GPS_UNCERTAINTY_MULTIPLIER * combinedUncertaintyM;
-            const allowedGpsRadiusM = Math.min(PROXIMITY_MAX_DISTANCE_M, Math.max(0, dynamicToleranceM));
-            if (separationM > allowedGpsRadiusM) {
-                throw new https_1.HttpsError("failed-precondition", "Could not verify in-person proximity (GPS distance exceeds 100m cap).");
-            }
-        }
-        else if (!hasSameWifiSubnetFallback(issuerEvidence, scannerEvidence)) {
-            throw new https_1.HttpsError("failed-precondition", "Could not verify proximity with GPS. Connect both phones to the same Wi-Fi network (personal hotspot also counts) and try again.");
-        }
+        (0, pairingProximity_1.assertPairingProximity)(issuerEvidence, scannerEvidence, nowMs());
         const issuer = d.issuerUid;
         const redeemerUid = uid;
         const extendedExpiresAt = nowMs() + NFC_PIN_PAIR_AWAIT_DUAL_CONFIRM_MS;
         tx.set(ref, {
             scannerConfirmed: true,
             redeemerUid,
+            scannerProximityEvidence: scannerEvidence,
             scannerConfirmedAt: admin.firestore.FieldValue.serverTimestamp(),
             expiresAt: extendedExpiresAt,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         }, { merge: true });
         return issuer;
     });
-    return { ok: true, accepted: true, pendingDualConfirm: true, friendUid: issuerUid, pin };
+    return { ok: true, accepted: true, pendingDualConfirm: true, pin };
 });
 /** Scanner dual-confirm (phase 2a): explicit "add friend?" on Read QR device after phase 1. */
 exports.confirmRedeemerNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
+    const scannerEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
     const ref = db.collection("nfcPinPairSessions").doc(pin);
     const issuerUid = await db.runTransaction(async (tx) => {
         const fresh = await tx.get(ref);
@@ -1261,19 +868,21 @@ exports.confirmRedeemerNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
         }
         tx.set(ref, {
             redeemerConfirmed: true,
+            scannerProximityEvidence: scannerEvidence,
             redeemerConfirmedAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         }, { merge: true });
         return d.issuerUid;
     });
-    return { ok: true, accepted: true, friendUid: issuerUid, pin };
+    return { ok: true, accepted: true, pin };
 });
 /** Issuer dual-confirm (phase 2b): creates friendship only after scanner confirmed + redeemer confirmed. */
 exports.finalizeNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
+    const issuerEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
     const ref = db.collection("nfcPinPairSessions").doc(pin);
     // Non-transactional pre-read to discover the redeemer so we can resolve
     // `participantAuthUids` before entering the transaction. The redeemer field
@@ -1285,7 +894,7 @@ exports.finalizeNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
     const preData = (preSnap.data() ?? {});
     const tentativeRedeemer = (preData.redeemerUid ?? "").trim();
     const preResolvedAuthUids = tentativeRedeemer && tentativeRedeemer !== uid
-        ? await resolveParticipantAuthUids([uid, tentativeRedeemer])
+        ? await (0, authUidMirror_1.resolveParticipantAuthUids)([uid, tentativeRedeemer])
         : [];
     const redeemerUid = await db.runTransaction(async (tx) => {
         const fresh = await tx.get(ref);
@@ -1317,6 +926,8 @@ exports.finalizeNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
         else if (d.consumed) {
             throw new https_1.HttpsError("failed-precondition", "Offer already used.");
         }
+        const scannerEvidence = normalizePairingProximityEvidence(d.scannerProximityEvidence);
+        (0, pairingProximity_1.assertPairingProximity)(issuerEvidence, scannerEvidence, nowMs());
         // If the redeemer changed between pre-read and tx (shouldn't happen
         // because the field is write-once on the offer, but defensive), the
         // mirror would be stale — fall back to a fresh resolve. `db.getAll`
@@ -1325,7 +936,7 @@ exports.finalizeNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
         // serialisable reads.
         const participantAuthUids = redeemer === tentativeRedeemer
             ? preResolvedAuthUids
-            : await resolveParticipantAuthUids([uid, redeemer]);
+            : await (0, authUidMirror_1.resolveParticipantAuthUids)([uid, redeemer]);
         tx.set(edgeRef, {
             participants: [uid, redeemer].sort(),
             participantAuthUids,
@@ -1344,198 +955,15 @@ exports.finalizeNfcPinPairOffer = (0, https_1.onCall)(async (req) => {
     void (0, socialExtensions_1.refreshPresenceAfterFriendshipPair)(uid, redeemerUid).catch(() => undefined);
     return { ok: true, accepted: true, friendUid: redeemerUid, pin };
 });
-// -----------------------------------------------------------------------------
-// LEGACY — HS2 multi-tap NFC (no longer used by the mobile app; kept for rollback).
-// Callables: beginNfcHandshakeSession, respondNfcHandshakeSession,
-// getNfcHandshakeSessionStatus, finalizeNfcHandshakeSession
-// -----------------------------------------------------------------------------
 /**
- * New protocol: begins NFC handshake session with initiator nonce.
- */
-exports.beginNfcHandshakeSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = `HS2_${randomNonceHex(10)}`;
-    const initiatorNonce = randomNonceHex(16);
-    const expiresAt = nowMs() + HANDSHAKE_SESSION_TTL_MS;
-    await db.collection("handshakeSessions").doc(sessionId).set({
-        sessionId,
-        initiatorUid: uid,
-        initiatorDeviceId: deviceId,
-        initiatorNonce,
-        responderUid: null,
-        responderDeviceId: null,
-        responderNonce: null,
-        status: "pending",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        expiresAt,
-    });
-    return { ok: true, sessionId, initiatorNonce, expiresAt };
-});
-/**
- * New protocol: responder confirms initiator nonce and gets responder nonce.
- */
-exports.respondNfcHandshakeSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = String(req.data?.sessionId ?? "").trim();
-    const initiatorNonce = String(req.data?.initiatorNonce ?? "").trim();
-    if (!sessionId || !initiatorNonce) {
-        throw new https_1.HttpsError("invalid-argument", "sessionId and initiatorNonce are required.");
-    }
-    const ref = db.collection("handshakeSessions").doc(sessionId);
-    const snap = await ref.get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Handshake session not found.");
-    const data = snap.data();
-    if (data.expiresAt < nowMs())
-        throw new https_1.HttpsError("deadline-exceeded", "Handshake session expired.");
-    if (data.initiatorUid === uid)
-        throw new https_1.HttpsError("failed-precondition", "Cannot respond to your own session.");
-    if (data.initiatorNonce !== initiatorNonce)
-        throw new https_1.HttpsError("permission-denied", "Handshake nonce mismatch.");
-    if (data.responderUid && data.responderUid !== uid) {
-        throw new https_1.HttpsError("failed-precondition", "Handshake already has a different responder.");
-    }
-    const responderNonce = data.responderNonce?.trim() || randomNonceHex(16);
-    await ref.set({
-        responderUid: uid,
-        responderDeviceId: deviceId,
-        responderNonce,
-        status: "responded",
-        respondedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    return { ok: true, sessionId, responderNonce, initiatorUid: data.initiatorUid };
-});
-/**
- * New protocol helper: initiator/responder can poll session status for fallback finalize.
- */
-exports.getNfcHandshakeSessionStatus = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = String(req.data?.sessionId ?? "").trim();
-    if (!sessionId) {
-        throw new https_1.HttpsError("invalid-argument", "sessionId is required.");
-    }
-    const snap = await db.collection("handshakeSessions").doc(sessionId).get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Handshake session not found.");
-    const data = snap.data();
-    if (uid !== data.initiatorUid && uid !== data.responderUid) {
-        throw new https_1.HttpsError("permission-denied", "Caller must be session participant.");
-    }
-    return {
-        ok: true,
-        sessionId,
-        status: data.status ?? "pending",
-        responderUid: data.responderUid ?? null,
-        responderNonce: data.responderNonce ?? null,
-        expiresAt: data.expiresAt,
-    };
-});
-/**
- * New protocol: finalizes handshake when peer nonce is confirmed.
- * Initiator passes responderNonce; responder passes initiatorNonce.
- */
-exports.finalizeNfcHandshakeSession = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const deviceId = String(req.data?.deviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const sessionId = String(req.data?.sessionId ?? "").trim();
-    const peerNonce = String(req.data?.peerNonce ?? "").trim();
-    if (!sessionId || !peerNonce) {
-        throw new https_1.HttpsError("invalid-argument", "sessionId and peerNonce are required.");
-    }
-    const ref = db.collection("handshakeSessions").doc(sessionId);
-    const snap = await ref.get();
-    if (!snap.exists)
-        throw new https_1.HttpsError("not-found", "Handshake session not found.");
-    const data = snap.data();
-    if (data.expiresAt < nowMs())
-        throw new https_1.HttpsError("deadline-exceeded", "Handshake session expired.");
-    const responderUid = data.responderUid?.trim();
-    if (!responderUid)
-        throw new https_1.HttpsError("failed-precondition", "Responder not registered yet.");
-    if (uid !== data.initiatorUid && uid !== responderUid) {
-        throw new https_1.HttpsError("permission-denied", "Caller must be initiator or responder.");
-    }
-    const expectedPeerNonce = uid === data.initiatorUid ? data.responderNonce ?? "" : data.initiatorNonce;
-    if (!expectedPeerNonce || expectedPeerNonce !== peerNonce) {
-        throw new https_1.HttpsError("permission-denied", "Peer nonce mismatch.");
-    }
-    const edgeId = friendshipId(data.initiatorUid, responderUid);
-    const participantAuthUids = await resolveParticipantAuthUids([data.initiatorUid, responderUid]);
-    await db.runTransaction(async (tx) => {
-        const edgeRef = db.collection("friendships").doc(edgeId);
-        tx.set(edgeRef, {
-            participants: [data.initiatorUid, responderUid].sort(),
-            participantAuthUids,
-            status: "accepted",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            establishedByHandshakeSession: sessionId,
-        }, { merge: true });
-        tx.set(ref, {
-            status: "finalized",
-            finalizedByUid: uid,
-            finalizedAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-    });
-    const friendUid = uid === data.initiatorUid ? responderUid : data.initiatorUid;
-    return { ok: true, accepted: true, friendUid, sessionId };
-});
-/**
- * Consumes NFC handshake and creates accepted friendship edge.
- */
-exports.consumeHandshake = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
-    const receiverDeviceId = String(req.data?.receiverDeviceId ?? "").trim();
-    await (0, deviceSession_1.assertActiveDeviceSession)(uid, receiverDeviceId);
-    const rawCode = String(req.data?.handshakeCode ?? "");
-    const handshakeCode = normalizeHandshakeCode(rawCode);
-    if (!/^H_[A-Za-z0-9]{8,}$/.test(handshakeCode)) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid handshake code.");
-    }
-    const hsRef = db.collection("handshakes").doc(handshakeCode);
-    const hsSnap = await hsRef.get();
-    if (!hsSnap.exists) {
-        throw new https_1.HttpsError("not-found", "Handshake not found.");
-    }
-    const hs = hsSnap.data();
-    if (hs.ownerUid === uid) {
-        throw new https_1.HttpsError("failed-precondition", "Cannot consume your own handshake.");
-    }
-    if (hs.consumed) {
-        throw new https_1.HttpsError("failed-precondition", "Handshake already consumed.");
-    }
-    if (hs.expiresAt < nowMs()) {
-        throw new https_1.HttpsError("deadline-exceeded", "Handshake expired.");
-    }
-    const edgeId = friendshipId(uid, hs.ownerUid);
-    const participantAuthUids = await resolveParticipantAuthUids([uid, hs.ownerUid]);
-    await db.runTransaction(async (tx) => {
-        const edgeRef = db.collection("friendships").doc(edgeId);
-        tx.set(edgeRef, {
-            participants: [uid, hs.ownerUid].sort(),
-            participantAuthUids,
-            status: "accepted",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            establishedByHandshake: handshakeCode,
-        }, { merge: true });
-        tx.set(hsRef, { consumed: true, consumedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-    });
-    return { ok: true, accepted: true, friendUid: hs.ownerUid };
-});
-/**
- * Emulator helper: create accepted friendship edges between caller and known friend UIDs.
- * Keep this for local testing only; remove before production rollout.
+ * Emulator-only helper. Production rejects the call so friendships cannot be
+ * created without the other person's pairing confirm.
  */
 exports.seedDemoFriendships = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    if (process.env.FUNCTIONS_EMULATOR !== "true") {
+        throw new https_1.HttpsError("permission-denied", "Not available.");
+    }
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const friendUids = Array.isArray(req.data?.friendUids)
@@ -1545,7 +973,7 @@ exports.seedDemoFriendships = (0, https_1.onCall)(async (req) => {
     for (const friendUid of friendUids) {
         if (!friendUid || friendUid === uid)
             continue;
-        const participantAuthUids = await resolveParticipantAuthUids([uid, friendUid]);
+        const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)([uid, friendUid]);
         const edgeRef = db.collection("friendships").doc(friendshipId(uid, friendUid));
         batch.set(edgeRef, {
             participants: [uid, friendUid].sort(),
@@ -1562,7 +990,7 @@ exports.seedDemoFriendships = (0, https_1.onCall)(async (req) => {
  * Ensures a conversation document exists with expected participants.
  */
 exports.upsertConversation = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const conversationId = String(req.data?.conversationId ?? "").trim();
@@ -1578,7 +1006,14 @@ exports.upsertConversation = (0, https_1.onCall)(async (req) => {
         await assertAcceptedFriendship(uid, otherUid);
     }
     const uniqueParticipants = [...new Set(participantUids)].sort();
-    const participantAuthUids = await resolveParticipantAuthUids(uniqueParticipants);
+    if (uniqueParticipants.length > 2) {
+        for (let i = 0; i < uniqueParticipants.length; i += 1) {
+            for (let j = i + 1; j < uniqueParticipants.length; j += 1) {
+                await assertAcceptedFriendship(uniqueParticipants[i], uniqueParticipants[j]);
+            }
+        }
+    }
+    const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(uniqueParticipants);
     const existing = await db.collection("conversations").doc(conversationId).get();
     const existingData = existing.data();
     const createdBy = existingData?.createdBy ?? uid;
@@ -1605,109 +1040,76 @@ exports.upsertConversation = (0, https_1.onCall)(async (req) => {
  * Publishes the user's asymmetric encryption public key bundle.
  */
 exports.publishUserKeyBundle = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const keyVersion = Number(req.data?.keyVersion);
     const encryptionPublicKey = String(req.data?.encryptionPublicKey ?? "").trim();
     const identitySigningPublicKey = String(req.data?.identitySigningPublicKey ?? "").trim();
+    const bundleSignature = String(req.data?.bundleSignature ?? "").trim();
     if (!Number.isInteger(keyVersion) || keyVersion < 1) {
         throw new https_1.HttpsError("invalid-argument", "keyVersion must be an integer >= 1.");
     }
     if (!encryptionPublicKey || !identitySigningPublicKey) {
         throw new https_1.HttpsError("invalid-argument", "Public keys are required.");
     }
+    if (!bundleSignature ||
+        !(0, keyBundleSignature_1.verifyKeyBundleSignature)({ keyVersion, encryptionPublicKey, identitySigningPublicKey }, bundleSignature)) {
+        throw new https_1.HttpsError("invalid-argument", "A valid key bundle signature is required.");
+    }
     await db.collection("users").doc(uid).set({
         keyBundle: {
             keyVersion,
             encryptionPublicKey,
             identitySigningPublicKey,
+            bundleSignature,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
     }, { merge: true });
     return { ok: true };
 });
 /**
- * Stores caller's E2EE private key bundle ciphertext (client-encrypted).
- * Enables silent key restore after reinstall when Firebase Auth is unchanged.
+ * Deletes any server-held key backup. The previous wrapping key was derived from
+ * public ids, so those blobs were readable by the backend. New clients do not upload one.
  */
 exports.putUserKeyBackup = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const ciphertext = String(req.data?.ciphertext ?? "").trim();
-    const nonce = String(req.data?.nonce ?? "").trim();
-    if (!ciphertext || !nonce) {
-        throw new https_1.HttpsError("invalid-argument", "ciphertext and nonce are required.");
-    }
-    if (ciphertext.length > 16_000 || nonce.length > 128) {
-        throw new https_1.HttpsError("invalid-argument", "backup payload too large.");
-    }
-    await db.collection("users").doc(uid).set({
-        keyBackup: {
-            v: 1,
-            ciphertext,
-            nonce,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-    }, { merge: true });
-    return { ok: true };
+    await db.collection("users").doc(uid).set({ keyBackup: admin.firestore.FieldValue.delete() }, { merge: true });
+    return { ok: true, purged: true };
 });
-/**
- * Returns encrypted key backup for the authenticated user (if any).
- */
+/** Always empty. Also deletes a leftover backup so it cannot be decrypted later. */
 exports.getUserKeyBackup = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const snap = await db.collection("users").doc(uid).get();
-    const backup = (snap.data()?.keyBackup ?? null);
-    if (!backup?.ciphertext || !backup?.nonce) {
-        return { ciphertext: null, nonce: null };
-    }
-    return { ciphertext: backup.ciphertext, nonce: backup.nonce };
+    await db.collection("users").doc(uid).set({ keyBackup: admin.firestore.FieldValue.delete() }, { merge: true });
+    return { ciphertext: null, nonce: null };
 });
 /**
- * Encrypted snapshot of decrypted chats/messages/posts for fast reinstall UI.
+ * Deletes any server-held social snapshot. Those blobs used the same public-id
+ * wrapping key as key backup, so they held recoverable plaintext history.
  */
 exports.putUserSocialSnapshot = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const ciphertext = String(req.data?.ciphertext ?? "").trim();
-    const nonce = String(req.data?.nonce ?? "").trim();
-    if (!ciphertext || !nonce) {
-        throw new https_1.HttpsError("invalid-argument", "ciphertext and nonce are required.");
-    }
-    if (ciphertext.length > 900_000 || nonce.length > 128) {
-        throw new https_1.HttpsError("invalid-argument", "snapshot payload too large.");
-    }
-    await db.collection("users").doc(uid).set({
-        socialSnapshot: {
-            v: 1,
-            ciphertext,
-            nonce,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-    }, { merge: true });
-    return { ok: true };
+    await db.collection("users").doc(uid).set({ socialSnapshot: admin.firestore.FieldValue.delete() }, { merge: true });
+    return { ok: true, purged: true };
 });
 exports.getUserSocialSnapshot = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
-    const snap = await db.collection("users").doc(uid).get();
-    const row = (snap.data()?.socialSnapshot ?? null);
-    if (!row?.ciphertext || !row?.nonce) {
-        return { ciphertext: null, nonce: null };
-    }
-    return { ciphertext: row.ciphertext, nonce: row.nonce };
+    await db.collection("users").doc(uid).set({ socialSnapshot: admin.firestore.FieldValue.delete() }, { merge: true });
+    return { ciphertext: null, nonce: null };
 });
 /**
  * Stores fully encrypted profile blob. Only friend recipients should be present in envelopes.
  */
 exports.putEncryptedProfile = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const ciphertext = String(req.data?.ciphertext ?? "");
@@ -1726,7 +1128,7 @@ exports.putEncryptedProfile = (0, https_1.onCall)(async (req) => {
      * profile updates (including their own writes from another device) in real
      * time. The legacy `envelopes` keyed by app uid stays unchanged.
      */
-    const recipientAuthUids = await resolveParticipantAuthUids(Object.keys(envelopes));
+    const recipientAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(Object.keys(envelopes));
     await db.collection("encryptedProfiles").doc(uid).set({
         ownerUid: uid,
         ciphertext,
@@ -1741,7 +1143,7 @@ exports.putEncryptedProfile = (0, https_1.onCall)(async (req) => {
  * Stores encrypted post visible only to friend recipients in envelope map.
  */
 exports.createEncryptedPost = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const ciphertext = String(req.data?.ciphertext ?? "");
@@ -1803,7 +1205,7 @@ exports.createEncryptedPost = (0, https_1.onCall)(async (req) => {
      * (app-uid) array remains for the `listEncryptedPosts` callable path and
      * the server-side `assertAcceptedFriendship` helper.
      */
-    const recipientAuthUids = await resolveParticipantAuthUids(recipientUids);
+    const recipientAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(recipientUids);
     const postRef = db.collection("encryptedPosts").doc();
     await postRef.set({
         postId: postRef.id,
@@ -1818,9 +1220,7 @@ exports.createEncryptedPost = (0, https_1.onCall)(async (req) => {
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     const authorSnap = await db.collection("users").doc(uid).get();
-    const authorName = String(authorSnap.data()?.username ?? "").trim() ||
-        String(req.data?.notificationAuthorName ?? "").trim() ||
-        `User ${uid.slice(0, 6)}`;
+    const authorName = String(authorSnap.data()?.username ?? "").trim() || "Someone";
     try {
         await (0, socialExtensions_1.notifyPostRecipientsPush)({
             authorUid: uid,
@@ -1838,7 +1238,7 @@ exports.createEncryptedPost = (0, https_1.onCall)(async (req) => {
  * Permanently removes an encrypted post doc so it disappears for all recipients.
  */
 exports.deleteEncryptedPost = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const postId = String(req.data?.postId ?? "").trim();
@@ -1871,7 +1271,7 @@ exports.deleteEncryptedPost = (0, https_1.onCall)(async (req) => {
  * Sends encrypted message in existing friend conversation.
  */
 exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const conversationId = String(req.data?.conversationId ?? "");
@@ -1896,7 +1296,7 @@ exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
             if (otherUid !== uid)
                 await assertAcceptedFriendship(uid, otherUid);
         }
-        const participantAuthUidsBootstrap = await resolveParticipantAuthUids(requestedParticipants);
+        const participantAuthUidsBootstrap = await (0, authUidMirror_1.resolveParticipantAuthUids)(requestedParticipants);
         const nowBootstrap = nowMs();
         const memberJoinedAtBootstrap = { [uid]: nowBootstrap };
         await convRef.set({
@@ -1935,9 +1335,9 @@ exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
         memberJoinedAt[uid] = nowSend;
     }
     const joinCutoff = Number(memberJoinedAt[uid] ?? 0);
-    let participantAuthUids = await resolveParticipantAuthUids(participants);
+    let participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(participants);
     if (participantAuthUids.length < participants.length) {
-        participantAuthUids = await resolveParticipantAuthUids(participants);
+        participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(participants);
     }
     await convRef.set({ participantUids: participants, participantAuthUids, memberJoinedAt }, { merge: true });
     const requestedMessageId = String(req.data?.messageId ?? "").trim();
@@ -1967,7 +1367,7 @@ exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
         envelopes,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    const authUidsAfterWrite = await resolveParticipantAuthUids(participants);
+    const authUidsAfterWrite = await (0, authUidMirror_1.resolveParticipantAuthUids)(participants);
     if (authUidsAfterWrite.length > 0) {
         await msgRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
         await convRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
@@ -1977,7 +1377,7 @@ exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
         conversationId,
         participantUids: participants,
         title: String(req.data?.notificationTitle ?? "").trim() || undefined,
-        body: String(req.data?.notificationBody ?? "").trim() || undefined,
+        body: "New message",
     });
     return { ok: true, messageId: msgRef.id, joinCutoffMs: joinCutoff };
 });
@@ -1985,7 +1385,7 @@ exports.sendEncryptedMessage = (0, https_1.onCall)(async (req) => {
  * Returns public key bundles for friends only.
  */
 exports.getFriendKeyBundles = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const friendUids = Array.isArray(req.data?.friendUids)
         ? req.data.friendUids.map((x) => String(x))
         : [];
@@ -2009,7 +1409,7 @@ exports.getFriendKeyBundles = (0, https_1.onCall)(async (req) => {
  * Reads encrypted profile blob for self or accepted friend.
  */
 exports.getEncryptedProfile = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const targetUid = String(req.data?.targetUid ?? uid).trim() || uid;
@@ -2038,7 +1438,7 @@ exports.getEncryptedProfile = (0, https_1.onCall)(async (req) => {
  * Reads encrypted posts addressed to caller.
  */
 exports.listEncryptedPosts = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const limit = Math.max(1, Math.min(500, Number(req.data?.limit ?? 200)));
@@ -2061,9 +1461,16 @@ exports.listEncryptedPosts = (0, https_1.onCall)(async (req) => {
         query = query.orderBy("createdAt", "desc");
     }
     const snap = await query.limit(limit + 1).get();
+    const reactionMirrorByPostId = new Map();
     let items = snap.docs
         .map((doc) => {
         const data = doc.data();
+        const postIdForMirror = String(data.postId || doc.id);
+        const mirror = Array.isArray(data.recipientAuthUids)
+            ? data.recipientAuthUids.map((x) => String(x ?? "").trim()).filter(Boolean)
+            : [];
+        if (mirror.length > 0)
+            reactionMirrorByPostId.set(postIdForMirror, mirror);
         const envelope = data.envelopes?.[uid];
         if (!envelope)
             return null;
@@ -2082,21 +1489,31 @@ exports.listEncryptedPosts = (0, https_1.onCall)(async (req) => {
     const page = items.slice(0, limit);
     const reactionSnaps = await Promise.all(page.slice(0, 100).map((item) => db.collection("encryptedPostReactions").doc(item.postId).get()));
     const reactionsByPostId = {};
-    reactionSnaps.forEach((snap, idx) => {
-        if (!snap.exists)
+    const reactionMirrorWrites = [];
+    reactionSnaps.forEach((reactionSnap, idx) => {
+        if (!reactionSnap.exists)
             return;
         const postId = page[idx]?.postId;
         if (!postId)
             return;
-        reactionsByPostId[postId] = (snap.data()?.reactions ?? {});
+        const data = reactionSnap.data() ?? {};
+        reactionsByPostId[postId] = (data.reactions ?? {});
+        const existingMirror = data.recipientAuthUids;
+        const mirror = reactionMirrorByPostId.get(postId) ?? [];
+        if (mirror.length > 0 && (!Array.isArray(existingMirror) || existingMirror.length === 0)) {
+            reactionMirrorWrites.push(reactionSnap.ref.set({ recipientAuthUids: mirror }, { merge: true }));
+        }
     });
+    if (reactionMirrorWrites.length > 0) {
+        await Promise.all(reactionMirrorWrites);
+    }
     return { items: page, reactionsByPostId, incremental: sinceMs != null, hasMore };
 });
 /**
  * Lists encrypted posts owned by the caller (for sharing historical posts with a new friend).
  */
 exports.listMyOwnedEncryptedPosts = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const limit = Math.max(1, Math.min(500, Number(req.data?.limit ?? 80)));
@@ -2152,7 +1569,7 @@ async function hiddenConversationIdsForUser(uid) {
  * Tombstones a conversation for this user so sync skips it after delete/reinstall.
  */
 exports.hideConversationForUser = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const conversationId = String(req.data?.conversationId ?? "").trim();
@@ -2170,7 +1587,7 @@ exports.hideConversationForUser = (0, https_1.onCall)(async (req) => {
  * the user re-opens or continues a 1:1 thread with the same friend.
  */
 exports.unhideConversationForUser = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const single = String(req.data?.conversationId ?? "").trim();
@@ -2191,7 +1608,7 @@ exports.unhideConversationForUser = (0, https_1.onCall)(async (req) => {
  * Returns conversation ids the caller has tombstoned (server-side hide list).
  */
 exports.getHiddenConversationIds = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const hidden = await hiddenConversationIdsForUser(uid);
@@ -2201,7 +1618,7 @@ exports.getHiddenConversationIds = (0, https_1.onCall)(async (req) => {
  * Reads encrypted messages for conversations where caller is a participant.
  */
 exports.listEncryptedMessages = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const limit = Math.max(1, Math.min(1000, Number(req.data?.limit ?? 400)));
@@ -2415,7 +1832,7 @@ exports.removeFriendship = (0, https_1.onCall)(async (req) => {
  * Updates caller presence heartbeat. Caller is online only while actively using the app.
  */
 exports.setMyPresence = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const state = String(req.data?.state ?? "background").trim().toLowerCase();
@@ -2431,7 +1848,7 @@ exports.setMyPresence = (0, https_1.onCall)(async (req) => {
  * Returns presence for accepted friends only.
  */
 exports.getFriendPresence = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const friendUids = Array.isArray(req.data?.friendUids)
@@ -2501,10 +1918,10 @@ exports.getUserProfiles = (0, https_1.onCall)(async (req) => {
             return [
                 targetUid,
                 {
-                    uid: targetUid,
-                    username: storedUsername || `User ${targetUid.slice(0, 6)}`,
+                    uid: pairingPreviewOnly ? undefined : targetUid,
+                    username: storedUsername || "Friend",
                     bio: pairingPreviewOnly ? "" : data.bio ?? "",
-                    profilePictureUrl: data.profilePictureUrl ?? null,
+                    profilePictureUrl: await presentStoredProfilePicture(targetUid, data),
                 },
             ];
         }
@@ -2518,7 +1935,7 @@ exports.getUserProfiles = (0, https_1.onCall)(async (req) => {
  * Writes a private comment/thread message for a post between owner and one friend.
  */
 exports.createPrivatePostThreadMessage = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const postId = String(req.data?.postId ?? "").trim();
@@ -2542,7 +1959,7 @@ exports.createPrivatePostThreadMessage = (0, https_1.onCall)(async (req) => {
      * `participantAuthUids`). The legacy `participants` (app-uid) array stays
      * for the `listPrivatePostThreadMessages` callable path.
      */
-    const participantAuthUids = await resolveParticipantAuthUids([postOwnerUid, friendUid]);
+    const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)([postOwnerUid, friendUid]);
     const threadRef = db.collection("privatePostThreads").doc(privateThreadId(postId, postOwnerUid, friendUid));
     const msgRef = threadRef.collection("messages").doc();
     await msgRef.set({
@@ -2570,7 +1987,7 @@ exports.createPrivatePostThreadMessage = (0, https_1.onCall)(async (req) => {
  * Toggles caller reaction on one private thread message.
  */
 exports.togglePrivatePostThreadMessageReaction = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const postId = String(req.data?.postId ?? "").trim();
@@ -2614,7 +2031,7 @@ exports.togglePrivatePostThreadMessageReaction = (0, https_1.onCall)(async (req)
  * Lists private thread messages for one post pair.
  */
 exports.listPrivatePostThreadMessages = (0, https_1.onCall)(async (req) => {
-    const uid = (0, deviceSession_1.resolveAppUidFromRequest)(req);
+    const uid = await (0, deviceSession_1.resolveAppUidFromRequest)(req);
     const deviceId = String(req.data?.deviceId ?? "").trim();
     await (0, deviceSession_1.assertActiveDeviceSession)(uid, deviceId);
     const postId = String(req.data?.postId ?? "").trim();

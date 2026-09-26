@@ -45,3 +45,23 @@ test("falls back to visible roster u_* friends when accepted set is empty", () =
   });
   assert.deepEqual(uids.sort(), ["u_a", "u_me"].sort());
 });
+
+test("an accepted set that is only the publisher falls back to the visible roster", () => {
+  const uids = postPublishRecipientUids({
+    sessionUid: "u_me",
+    visibleFriendIds: ["local-a"],
+    allFriends: [friend("u_a", "local-a"), friend("u_stale", "local-stale")],
+    acceptedFriendBackendUids: new Set(["u_me"]),
+  });
+  assert.deepEqual(uids.sort(), ["u_a", "u_me"].sort());
+});
+
+test("non-account ids in the accepted set are ignored", () => {
+  const uids = postPublishRecipientUids({
+    sessionUid: "u_me",
+    visibleFriendIds: ["local-gone"],
+    allFriends: [friend("u_gone", "local-gone")],
+    acceptedFriendBackendUids: new Set(["u_a", "not_u"]),
+  });
+  assert.deepEqual(uids.sort(), ["u_a", "u_me"].sort());
+});

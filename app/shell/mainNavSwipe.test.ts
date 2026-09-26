@@ -12,4 +12,6 @@ test("main nav neighbors follow top-bar order", () => {
   assert.equal(neighborMainNav("settings", 1), null);
   assert.equal(neighborMainNav("chats", -1), "friendsList");
   assert.equal(neighborMainNav("myProfile", -1), null);
+  assert.equal(neighborMainNav("publishPost" as "feed", 1), null);
+  assert.equal(neighborMainNav("publishPost" as "feed", -1), null);
 });

@@ -1,5 +1,3 @@
-import { storageGetItem, storageSetItem } from "./encryptedLocalStorage";
-
 import type { Post } from "../domain/types";
 
 const FEED_REACTION_SEEN_STORAGE_PREFIX = "mvpplus.feedReactionSeen.v1";
@@ -70,6 +68,7 @@ export function parseFeedReactionSeenPayload(raw: unknown): Record<string, strin
 
 export async function readFeedReactionSeenForEmail(email: string): Promise<Record<string, string>> {
   if (!email.trim()) return {};
+  const { storageGetItem } = await import("./encryptedLocalStorage");
   const raw = await storageGetItem(feedReactionSeenStorageKeyForEmail(email));
   if (!raw) return {};
   try {
@@ -85,5 +84,6 @@ export async function writeFeedReactionSeenForEmail(
 ): Promise<void> {
   const key = feedReactionSeenStorageKeyForEmail(email);
   if (!email.trim()) return;
+  const { storageSetItem } = await import("./encryptedLocalStorage");
   await storageSetItem(key, JSON.stringify(seenByPostId));
 }

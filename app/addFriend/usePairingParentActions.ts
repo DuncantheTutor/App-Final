@@ -1,9 +1,8 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
-import { backendUidForFriendId, callEmulatorFunction } from "../../backendBridge";
+import { callEmulatorFunction } from "../../backendBridge";
 import { publishActivePresence } from "../presence/heartbeat";
 import type { Friend, PairingProximityEvidence } from "../domain/types";
-import { friendDisplayNameFromProfile } from "../lib/friendDisplayName";
 import { ensureCameraForPairing } from "../lib/pairingCamera";
 import {
   collectPrecisePairingProximityEvidence,
@@ -132,7 +131,11 @@ export function usePairingParentActions(params: {
       const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
       while (Date.now() < deadline) {
         try {
-          const res = await callEmulatorFunction<{ status?: string; redeemerUid?: string | null }>(
+          const res = await callEmulatorFunction<{
+            status?: string;
+            username?: string | null;
+            profilePictureUrl?: string | null;
+          }>(
             "getNfcPinPairOfferStatus",
             {
               uid: session.uid,
@@ -141,19 +144,18 @@ export function usePairingParentActions(params: {
             }
           );
           if (
-            (res.status === "awaiting_redeemer_confirm" || res.status === "awaiting_issuer_confirm") &&
-            res.redeemerUid?.trim()
+            res.status === "awaiting_redeemer_confirm" ||
+            res.status === "awaiting_issuer_confirm"
           ) {
-            const redeemerUid = res.redeemerUid.trim();
-            try {
-              const hydrated = await hydrateFriendByUid(session, redeemerUid, {
-                pairingPin: pin,
-                previewOnly: true,
-              });
-              if (hydrated) return hydrated;
-            } catch {
-              /* keep polling while session is active; hydration may lag behind status update */
-            }
+            return {
+              id: "pairing-preview",
+              backendUid: "",
+              displayName: res.username?.trim() || "Friend",
+              online: false,
+              profilePictureUrl: res.profilePictureUrl || "",
+              bio: "",
+              messageCount: 0,
+            };
           }
         } catch {
           /* Keep polling: undeployed function, network blips, cold start, or not-found race. */
@@ -167,7 +169,6 @@ export function usePairingParentActions(params: {
       demoOfflineMode,
       demoPendingAddableQueue,
       getBackendSession,
-      hydrateFriendByUid,
       setDemoPendingAddableQueue,
       waitForBackendSession,
     ]
@@ -205,24 +206,10 @@ export function usePairingParentActions(params: {
         throw new Error(preciseLocationGateMessage(locGate.reason));
       }
       const trimmedPin = pin.trim();
-      const buildIssuerPreviewFriend = (
-        issuerUid: string,
-        username?: string,
-        profilePictureUrl?: string | null
-      ): Friend => ({
-        id: backendUidForFriendId(issuerUid),
-        backendUid: issuerUid,
-        displayName: friendDisplayNameFromProfile(username, issuerUid),
-        online: false,
-        profilePictureUrl: profilePictureUrl || "",
-        bio: "",
-        messageCount: 0,
-      });
-
-      let previewFriend: Friend | null = null;
+      let previewName = "";
+      let previewPhoto: string | null = null;
       try {
         const preview = await callEmulatorFunction<{
-          issuerUid?: string;
           username?: string;
           profilePictureUrl?: string | null;
         }>("previewNfcPinPairOffer", {
@@ -230,20 +217,14 @@ export function usePairingParentActions(params: {
           deviceId: session.deviceId,
           pin: trimmedPin,
         });
-        const previewUid = preview.issuerUid?.trim() ?? "";
-        if (previewUid) {
-          previewFriend = buildIssuerPreviewFriend(
-            previewUid,
-            preview.username,
-            preview.profilePictureUrl
-          );
-        }
+        previewName = preview.username?.trim() ?? "";
+        previewPhoto = preview.profilePictureUrl ?? null;
       } catch {
         /* preview optional before phase-1 confirm */
       }
 
       const proximityEvidence = await collectPairingProximityEvidence();
-      const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>(
+      const res = await callEmulatorFunction<{ accepted?: boolean }>(
         "confirmNfcPinPairOffer",
         {
           uid: session.uid,
@@ -252,24 +233,16 @@ export function usePairingParentActions(params: {
           proximityEvidence,
         }
       );
-      const friendUid = res.friendUid?.trim() ?? previewFriend?.backendUid ?? "";
-      if (!res.accepted || !friendUid) return null;
-
-      const quickFriend =
-        previewFriend?.backendUid === friendUid
-          ? previewFriend
-          : buildIssuerPreviewFriend(
-              friendUid,
-              previewFriend?.displayName,
-              previewFriend?.profilePictureUrl
-            );
-
-      void hydrateFriendByUid(session, friendUid, {
-        pairingPin: trimmedPin,
-        previewOnly: true,
-      }).catch(() => undefined);
-
-      return quickFriend;
+      if (!res.accepted) return null;
+      return {
+        id: "pairing-preview",
+        backendUid: "",
+        displayName: previewName || "Friend",
+        online: false,
+        profilePictureUrl: previewPhoto || "",
+        bio: "",
+        messageCount: 0,
+      };
     },
     [
       acceptFriend,
@@ -277,7 +250,6 @@ export function usePairingParentActions(params: {
       demoOfflineMode,
       demoPendingAddableQueue,
       getBackendSession,
-      hydrateFriendByUid,
       setDemoPendingAddableQueue,
       waitForBackendSession,
     ]
@@ -288,14 +260,16 @@ export function usePairingParentActions(params: {
       if (demoOfflineMode) return true;
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return false;
+      const proximityEvidence = await collectPairingProximityEvidence();
       const res = await callEmulatorFunction<{ accepted?: boolean }>("confirmRedeemerNfcPinPairOffer", {
         uid: session.uid,
         deviceId: session.deviceId,
         pin: pin.trim(),
+        proximityEvidence,
       });
       return Boolean(res.accepted);
     },
-    [demoOfflineMode, getBackendSession, waitForBackendSession]
+    [collectPairingProximityEvidence, demoOfflineMode, getBackendSession, waitForBackendSession]
   );
 
   const pairingAwaitIssuerFinalConfirmParent = useCallback(
@@ -371,6 +345,7 @@ export function usePairingParentActions(params: {
       }
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return null;
+      const proximityEvidence = await collectPairingProximityEvidence();
       const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
       let friendUid = "";
       while (Date.now() < deadline) {
@@ -381,6 +356,7 @@ export function usePairingParentActions(params: {
               uid: session.uid,
               deviceId: session.deviceId,
               pin: pin.trim(),
+              proximityEvidence,
             }
           );
           friendUid = res.friendUid?.trim() ?? "";
@@ -416,6 +392,7 @@ export function usePairingParentActions(params: {
     [
       acceptFriend,
       acceptedFriendBackendUidsRef,
+      collectPairingProximityEvidence,
       demoOfflineMode,
       demoPendingAddableQueue,
       getBackendSession,

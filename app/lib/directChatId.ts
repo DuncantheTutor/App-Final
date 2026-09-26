@@ -1,10 +1,10 @@
-import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt";
-import { isConversationHiddenForViewer } from "./hiddenConversations";
+import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt.ts";
+import { isConversationHiddenForViewer } from "./hiddenConversations.ts";
 import {
   findActiveDirectChatForFriend,
   isAppBackendUid,
   resolveChatMemberToBackendUid,
-} from "./resolveChatMemberBackendUid";
+} from "./resolveChatMemberBackendUid.ts";
 import type { Chat, Friend } from "../domain/types";
 
 /** Stable local + server thread id for a 1:1 DM between two app accounts. */

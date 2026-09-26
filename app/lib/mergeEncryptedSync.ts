@@ -1,10 +1,9 @@
 import type { Message, Post } from "../domain/types";
-import { mergeMessageReactions } from "../messaging/messageMetadata";
-import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt";
-import { CURRENT_USER_ID } from "../theme/preludeConstants";
+import { mergeMessageReactions } from "../messaging/messageMetadata.ts";
+import { CURRENT_USER_LOCAL_ID } from "./chatMemberJoinedAt.ts";
 
 function isOwnOutgoingMessage(message: Message): boolean {
-  return message.senderId === CURRENT_USER_ID || message.senderId === CURRENT_USER_LOCAL_ID;
+  return message.senderId === CURRENT_USER_LOCAL_ID;
 }
 
 /** Server echo confirms delivery — clear stuck `sending` on optimistic rows. */
@@ -29,10 +28,7 @@ export function mergeSyncedMessages(
       currentById[message.id] = existing
         ? {
             ...message,
-            createdAt:
-              existing.deliveryStatus === "sending" && isOwnOutgoingMessage(message)
-                ? existing.createdAt
-                : message.createdAt,
+            createdAt: message.createdAt || existing.createdAt,
             reactions: mergeMessageReactions(existing.reactions, message.reactions),
             editedAt: message.editedAt ?? existing.editedAt,
             unsentAt: message.unsentAt ?? existing.unsentAt,
@@ -56,10 +52,7 @@ export function mergeSyncedMessages(
     currentById[message.id] = existing
       ? {
           ...message,
-          createdAt:
-            existing.deliveryStatus === "sending" && isOwnOutgoingMessage(message)
-              ? existing.createdAt
-              : message.createdAt,
+          createdAt: message.createdAt || existing.createdAt,
           reactions: mergeMessageReactions(existing.reactions, message.reactions),
           editedAt: message.editedAt ?? existing.editedAt,
           unsentAt: message.unsentAt ?? existing.unsentAt,
@@ -126,7 +119,7 @@ export function mergeSyncedPosts(
       }
       if (
         !decodedIds.has(post.id) &&
-        post.authorId === CURRENT_USER_ID &&
+        post.authorId === CURRENT_USER_LOCAL_ID &&
         now - post.createdAt < options.optimisticWindowMs
       ) {
         currentById[post.id] = post;
@@ -153,7 +146,7 @@ export function mergeSyncedPosts(
     (post) =>
       !decodedIds.has(post.id) &&
       !post.deletedAt &&
-      post.authorId === CURRENT_USER_ID &&
+      post.authorId === CURRENT_USER_LOCAL_ID &&
       now - post.createdAt < options.optimisticWindowMs
   );
   // Full catalog replace: drop friend posts removed on server (deleteEncryptedPost).

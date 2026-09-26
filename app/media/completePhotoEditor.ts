@@ -111,6 +111,7 @@ export function completePhotoEditorSession(result: PhotoEditorResult, deps: Comp
               ...(usernameForUpsert ? { username: usernameForUpsert } : {}),
               bio: myBio,
               profilePictureUrl: uploaded.downloadUrl,
+              profilePicturePath: uploaded.objectPath,
             });
           }
         } catch (err) {

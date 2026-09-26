@@ -27,6 +27,7 @@ export function useFriendRosterSync(params: {
     b: string
   ) => Record<string, string[]>;
   stickyUnfriendedFriendIdsRef?: { current: Set<string> };
+  onFriendsRemoved?: (backendUids: string[]) => void;
 }): void {
   const {
     demoOfflineMode,
@@ -41,6 +42,7 @@ export function useFriendRosterSync(params: {
     addUndirectedEdge,
     removeUndirectedEdge,
     stickyUnfriendedFriendIdsRef,
+    onFriendsRemoved,
   } = params;
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export function useFriendRosterSync(params: {
       addUndirectedEdge,
       removeUndirectedEdge,
       stickyUnfriendedFriendIdsRef,
+      onFriendsRemoved,
     });
   }, [
     demoOfflineMode,
@@ -69,5 +72,6 @@ export function useFriendRosterSync(params: {
     addUndirectedEdge,
     removeUndirectedEdge,
     addedFriendsFromRitualRef,
+    onFriendsRemoved,
   ]);
 }

@@ -1,8 +1,10 @@
 import * as Random from "expo-random";
 
-import { getBytes, ref, uploadBytes, type UploadMetadata } from "firebase/storage";
+import { ref, uploadBytes, type UploadMetadata } from "firebase/storage";
 
+import { callEmulatorFunction } from "../../../backendBridge";
 import { firebaseAuth, getFirebaseStorage } from "../../../firebaseAuthClient";
+import { readActiveBackendSession } from "../../session/activeBackendSession";
 import { mediaUriNeedsFirebaseUpload } from "../../../mediaStorageUpload";
 import {
   hasEncryptedMediaCache,
@@ -185,9 +187,24 @@ async function resolveTierBMediaToFileUriInner(mediaRef: EncryptedMediaRef): Pro
     return sessionUri;
   }
 
-  const storage = getFirebaseStorage();
-  const storageRef = ref(storage, mediaRef.objectPath);
-  const bytes = await getBytes(storageRef);
+  const session = readActiveBackendSession();
+  if (!session) {
+    throw new Error("Sign in before opening this media.");
+  }
+  const signed = await callEmulatorFunction<{ url?: string }>("getEncryptedMediaReadUrl", {
+    uid: session.uid,
+    deviceId: session.deviceId,
+    objectPath: mediaRef.objectPath,
+  });
+  const url = signed.url?.trim();
+  if (!url) {
+    throw new Error("Could not open this media.");
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error("Could not download this media.");
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
   await yieldToUi();
   const plain = decryptBytesWithTierBKey(new Uint8Array(bytes), mediaRef);
   await yieldToUi();

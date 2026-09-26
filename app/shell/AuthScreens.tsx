@@ -178,11 +178,6 @@ import {
 import { readAvatarsByMessageId, type ReadByMap } from "../lib/readReceipts";
 import { useInitialServerSync } from "../boot/useInitialServerSync";
 import { clearLocalSocialCacheForEmail } from "../lib/localSocialCache";
-import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "../lib/e2eeKeyBackup";
-import {
-  restoreSocialSnapshotFromCloud,
-  uploadSocialSnapshotToCloud,
-} from "../lib/socialSnapshotBackup";
 import { availableStartChatFriends } from "../chat/availableStartChatFriends";
 import { useActiveChatMessages } from "../chat/useActiveChatMessages";
 import { useStartChatComposer } from "../chat/useStartChatComposer";

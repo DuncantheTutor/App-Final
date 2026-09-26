@@ -3,13 +3,10 @@ export const LEGACY_PLACEHOLDER_FRIEND_NAME = "Friend";
 
 export function friendDisplayNameFromProfile(
   username: string | undefined | null,
-  backendUid: string
+  _backendUid: string
 ): string {
   const raw = String(username ?? "").trim();
-  if (!raw || raw === LEGACY_PLACEHOLDER_FRIEND_NAME) {
-    const uid = backendUid.trim();
-    return uid.startsWith("u_") ? `User ${uid.slice(0, 6)}` : "User";
-  }
+  if (!raw || raw === LEGACY_PLACEHOLDER_FRIEND_NAME) return LEGACY_PLACEHOLDER_FRIEND_NAME;
   return raw;
 }
 

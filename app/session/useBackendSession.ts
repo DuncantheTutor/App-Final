@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, type MutableRefObject } from "react";
 
+import { setActiveBackendSession } from "./activeBackendSession";
 import type { BackendSession } from "../messaging/types";
 
 export type BackendSessionController = {
@@ -36,6 +37,7 @@ export function useBackendSession(): BackendSessionController {
     backendAuthUidRef.current = session.uid;
     backendDeviceIdRef.current = session.deviceId;
     backendSessionReadyRef.current = true;
+    setActiveBackendSession(session);
     setBackendSessionReady(true);
   }, []);
 
@@ -43,6 +45,7 @@ export function useBackendSession(): BackendSessionController {
     backendAuthUidRef.current = null;
     backendDeviceIdRef.current = null;
     backendSessionReadyRef.current = false;
+    setActiveBackendSession(null);
     setBackendSessionReady(false);
   }, []);
 

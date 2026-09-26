@@ -1,4 +1,4 @@
-import { CURRENT_USER_LOCAL_ID } from "../friends/roster";
+import { CURRENT_USER_LOCAL_ID } from "../lib/chatMemberJoinedAt.ts";
 import type { Message } from "../domain/types";
 
 export type MessageDocMetadata = {

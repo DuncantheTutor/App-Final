@@ -5,6 +5,7 @@ import { debugSessionLog, firebaseAuth } from "../../firebaseAuthClient";
 import { setTelemetryContext } from "../../telemetry";
 import type { Chat, Friend, Message, MockAuthAccount, Post, ViewState } from "../domain/types";
 import { storageGetItem } from "../lib/encryptedLocalStorage";
+import { writeDeviceSignedInEmail } from "./deviceSignedInEmail";
 import { normalizeMessagesForUi } from "../lib/messageDisplayText";
 import { retainedMessageChatIds } from "../lib/messageRetentionChatIds";
 import { trimInMemoryMessages } from "../lib/trimInMemoryMessages";
@@ -119,6 +120,7 @@ export async function restoreSignedInAccount(
   } = deps;
   const emailKey = account.email.trim().toLowerCase();
   sessionEmailRef.current = emailKey;
+  void writeDeviceSignedInEmail(emailKey).catch(() => undefined);
   const allSeedIds = FRIENDS.map((f) => f.id);
   const hasSeedGraph = !!(account.seedFriendIds && account.seedFriendIds.length > 0);
   const demoGraph = DEMO_OFFLINE_MODE && hasSeedGraph ? buildDemoChatsAndMessages(account.seedFriendIds ?? []) : null;

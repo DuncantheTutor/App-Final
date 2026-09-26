@@ -11,6 +11,8 @@ import { lastHomeTabStorageKey, lastViewStorageKey } from "../lib/viewPersistenc
 import type { ViewState } from "../domain/types";
 import type { HomeTab } from "../shell/types";
 import { DEMO_OFFLINE_MODE, POSTS_STORAGE_KEY } from "../theme/preludeConstants";
+import { clearDeviceSignedInEmail } from "./deviceSignedInEmail";
+import { beginIntentionalSignOut, endIntentionalSignOut } from "./firebaseAuthPersistence";
 import type { AuthMode } from "./useSignedInSession";
 
 export type ClearSignedOutSocialStateDeps = {
@@ -131,6 +133,8 @@ export function logoutSignedInAccount(deps: LogoutSignedInAccountDeps): void {
     hasEmail: Boolean(sessionEmailRef.current),
     hasFirebaseUser: Boolean(firebaseAuth.currentUser),
   });
+  beginIntentionalSignOut();
+  void clearDeviceSignedInEmail().catch(() => undefined);
   // #endregion
   const email = sessionEmailRef.current;
   if (email) {
@@ -171,8 +175,14 @@ export function logoutSignedInAccount(deps: LogoutSignedInAccountDeps): void {
   setSignupOtp("");
   setLoginOtp("");
   if (!DEMO_OFFLINE_MODE) {
-    void signOut(firebaseAuth).catch(() => {
-      // Ignore sign-out errors in prototype mode.
-    });
+    void signOut(firebaseAuth)
+      .catch(() => {
+        // Ignore sign-out errors in prototype mode.
+      })
+      .finally(() => {
+        endIntentionalSignOut();
+      });
+  } else {
+    endIntentionalSignOut();
   }
 }

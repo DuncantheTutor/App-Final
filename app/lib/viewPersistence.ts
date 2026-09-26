@@ -1,33 +1,8 @@
 import { backendUidForFriendId } from "../../backendBridge";
-import type { Chat, Friend, FriendsListRestore, Message, PendingDraft, ViewState } from "../domain/types";
+import type { Friend, FriendsListRestore, PendingDraft, ViewState } from "../domain/types";
 import { dedupeFriendsByBackendUid } from "./mergeFriendsCatalog";
 
-/**
- * Drops chats that have no visible messages **and** no saved draft text owned by the viewer.
- *
- * Product rule (see `Planning/MASTER_PRODUCT_PLAN.md` and `FEATURE_TEST_SCENARIOS.md`):
- * a chat row is only allowed to exist with zero messages when it carries an explicit saved
- * draft for *this* user. Anything else (ghosts from cold-kills, abandoned composer entries,
- * tombstone leftovers without any history) must be hidden and pruned at restore time so it
- * does not surface the friend's identity in an otherwise empty thread.
- */
-export function pruneGhostEmptyChats(
-  chats: Chat[],
-  messages: Message[],
-  currentUserId: string
-): Chat[] {
-  const chatIdsWithMessages = new Set<string>();
-  for (const message of messages) {
-    if (message.hiddenFromOwner) continue;
-    chatIdsWithMessages.add(message.chatId);
-  }
-  return chats.filter((chat) => {
-    if (chatIdsWithMessages.has(chat.id)) return true;
-    const ownedByMe = (chat.createdBy ?? currentUserId) === currentUserId;
-    const hasSavedDraftText = (chat.draftComposerText ?? "").trim().length > 0;
-    return chat.isDraft && ownedByMe && hasSavedDraftText;
-  });
-}
+export { pruneGhostEmptyChats } from "./pruneGhostEmptyChats";
 
 /** Restores ritual/backend friends from persisted social JSON (best-effort). */
 export function sanitizePersistedFriendsFromStorage(value: unknown): Friend[] {
@@ -47,7 +22,7 @@ export function sanitizePersistedFriendsFromStorage(value: unknown): Friend[] {
       displayName:
         typeof o.displayName === "string" && o.displayName.trim()
           ? o.displayName.trim()
-          : `User ${backendUid.slice(0, 6)}`,
+          : "Friend",
       online: false,
       profilePictureUrl: typeof o.profilePictureUrl === "string" ? o.profilePictureUrl : "",
       bio: typeof o.bio === "string" ? o.bio : "",

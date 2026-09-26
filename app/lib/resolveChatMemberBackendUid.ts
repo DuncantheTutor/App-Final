@@ -1,9 +1,9 @@
-import { backendUidForFriendId } from "../../backendBridge";
+import { backendUidForFriendId } from "./accountIdentity.ts";
 
 import {
   canonicalDirectChatLocalId,
   isCanonicalDmHiddenForViewer,
-} from "./directChatId";
+} from "./directChatId.ts";
 import type { Chat, Friend } from "../domain/types";
 
 export const CURRENT_USER_LOCAL_ID = "me";

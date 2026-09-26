@@ -42,29 +42,42 @@ export function createMessageActions(deps: MessageActionDeps) {
     if (!messageActionTarget) return;
     const unsentAt = Date.now();
     const target = messageActionTarget;
-    patchMessage(target.id, (message) => ({
-      ...message,
-      text: "",
-      kind: "text",
-      mediaUri: undefined,
-      durationSec: undefined,
-      videoTextOverlays: undefined,
-      unsentAt,
-      editedAt: undefined,
-    }));
-    if (!DEMO_OFFLINE_MODE) {
-      const session = getBackendSession();
-      const chat = chats.find((c) => c.id === target.chatId);
-      if (session && chat) {
-        void callEmulatorFunction("updateMessageMetadata", {
-          uid: session.uid,
-          deviceId: session.deviceId,
-          conversationId: resolveConversationId(chat),
-          messageId: target.id,
-          unsentAt,
-        }).catch((err) => logAppError("messages.unsend_metadata", err, { messageId: target.id }));
-      }
+    const applyLocalUnsend = () => {
+      patchMessage(target.id, (message) => ({
+        ...message,
+        text: "",
+        kind: "text",
+        mediaUri: undefined,
+        durationSec: undefined,
+        videoTextOverlays: undefined,
+        unsentAt,
+        editedAt: undefined,
+      }));
+    };
+    if (DEMO_OFFLINE_MODE) {
+      applyLocalUnsend();
+      return;
     }
+    const session = getBackendSession();
+    const chat = chats.find((c) => c.id === target.chatId);
+    if (!session || !chat) {
+      Alert.alert("Couldn't unsend", "The message is still there. Try again.");
+      return;
+    }
+    void callEmulatorFunction("updateMessageMetadata", {
+      uid: session.uid,
+      deviceId: session.deviceId,
+      conversationId: resolveConversationId(chat),
+      messageId: target.id,
+      unsentAt,
+    })
+      .then(() => {
+        applyLocalUnsend();
+      })
+      .catch((err) => {
+        logAppError("messages.unsend_metadata", err, { messageId: target.id });
+        Alert.alert("Couldn't unsend", "The message is still there. Try again.");
+      });
   };
 
   const startEditMessage = () => {

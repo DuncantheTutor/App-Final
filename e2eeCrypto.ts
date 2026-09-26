@@ -3,6 +3,14 @@ import * as SecureStore from "expo-secure-store";
 import nacl from "tweetnacl";
 import { decodeUTF8, encodeUTF8, encodeBase64, decodeBase64 } from "tweetnacl-util";
 
+import {
+  publicBundleSigningMessage,
+  safetyNumberForIdentityKey,
+  verifyPublicBundleSignature,
+} from "./app/lib/e2eePublicBundle";
+
+export { publicBundleSigningMessage, safetyNumberForIdentityKey, verifyPublicBundleSignature };
+
 const KEY_BUNDLE_PREFIX = "app.e2ee.bundle.v1.";
 
 type PersistedKeyBundle = {
@@ -81,9 +89,27 @@ export async function ensureLocalKeyBundle(uid: string): Promise<E2eePublicBundl
   };
 }
 
+export async function signLocalPublicBundle(
+  uid: string
+): Promise<{ bundle: E2eePublicBundle; signature: string }> {
+  const persisted = await getOrCreatePersistedBundle(uid);
+  const bundle: E2eePublicBundle = {
+    keyVersion: 1,
+    encryptionPublicKey: persisted.encryptionPublicKey,
+    identitySigningPublicKey: persisted.identitySigningPublicKey,
+  };
+  const signature = nacl.sign.detached(
+    publicBundleSigningMessage(bundle),
+    decodeBase64(persisted.identitySigningSecretKey)
+  );
+  return { bundle, signature: encodeBase64(signature) };
+}
+
 /**
- * Encrypts payload with per-object symmetric key, then wraps that key per recipient.
- * Envelope format is v1 JSON string with ephemeral pubkey + nonce + boxed content key.
+ * Encrypts a payload with a fresh symmetric key, then wraps that key for each
+ * recipient using the sender's long-term encryption key (nacl.box).
+ * This is not forward secret: a later copy of that secret key can unwrap old
+ * content keys. The envelope field `epk` is the long-term public key.
  */
 export async function encryptPayloadForRecipients(
   senderUid: string,
@@ -131,10 +157,10 @@ export async function decryptPayloadForRecipient<T>(
   if (!envelope || envelope.v !== 1 || !envelope.epk || !envelope.n || !envelope.c) {
     throw new Error("Invalid envelope format");
   }
-  const senderEphemeralPub = decodeBase64(envelope.epk);
+  const senderLongTermPublicKey = decodeBase64(envelope.epk);
   const wrapNonce = decodeBase64(envelope.n);
   const wrappedKey = decodeBase64(envelope.c);
-  const contentKey = nacl.box.open(wrappedKey, wrapNonce, senderEphemeralPub, recipientSecretKey);
+  const contentKey = nacl.box.open(wrappedKey, wrapNonce, senderLongTermPublicKey, recipientSecretKey);
   if (!contentKey) {
     throw new Error("Could not unwrap content key");
   }

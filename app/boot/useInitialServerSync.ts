@@ -46,6 +46,7 @@ export function useInitialServerSync(params: {
   addedFriendsFromRitualRef: { current: Friend[] };
   acceptedFriendBackendUidsRef: { current: Set<string> };
   onServerFriendBackendUidsChanged?: (uids: Set<string>) => void;
+  onFriendsRemoved?: (backendUids: string[]) => void;
   addUndirectedEdge: (
     links: Record<string, string[]>,
     a: string,
@@ -77,6 +78,7 @@ export function useInitialServerSync(params: {
     addedFriendsFromRitualRef,
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged,
+    onFriendsRemoved,
     addUndirectedEdge,
     currentUserLocalId,
     currentUserId,
@@ -152,6 +154,9 @@ export function useInitialServerSync(params: {
             return next;
           });
           onServerFriendBackendUidsChanged?.(allowedUids);
+          const serverFriendUids = new Set(bootUids);
+          const removedLocalUids = localUids.filter((uid) => !serverFriendUids.has(uid));
+          if (removedLocalUids.length > 0) onFriendsRemoved?.(removedLocalUids);
           friendMap = {};
           for (const f of mapped) {
             friendMap[f.id] = f;
@@ -252,6 +257,7 @@ export function useInitialServerSync(params: {
     postsRef,
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged,
+    onFriendsRemoved,
     currentUserLocalId,
     currentUserId,
     unfriendedIdsRef,

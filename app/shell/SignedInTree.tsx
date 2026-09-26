@@ -178,11 +178,7 @@ import {
 import { readAvatarsByMessageId, type ReadByMap } from "../lib/readReceipts";
 import { useInitialServerSync } from "../boot/useInitialServerSync";
 import { clearLocalSocialCacheForEmail } from "../lib/localSocialCache";
-import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "../lib/e2eeKeyBackup";
-import {
-  restoreSocialSnapshotFromCloud,
-  uploadSocialSnapshotToCloud,
-} from "../lib/socialSnapshotBackup";
+import { FriendSafetyNumber } from "../components/FriendSafetyNumber";
 import { availableStartChatFriends } from "../chat/availableStartChatFriends";
 import { useActiveChatMessages } from "../chat/useActiveChatMessages";
 import { useStartChatComposer } from "../chat/useStartChatComposer";
@@ -1667,6 +1663,10 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               <Text style={styles.friendHeroName}>
                 {resolveFriendProfileCard(view.friendId)?.displayName}
               </Text>
+              <FriendSafetyNumber
+                friendUid={String(friendMap[view.friendId]?.backendUid ?? "")}
+                style={styles.friendHeroStatus}
+              />
               {(resolveFriendProfileCard(view.friendId)?.bio ?? "").trim().length > 0 ? (
                 <Text style={styles.friendHeroBio}>
                   {resolveFriendProfileCard(view.friendId)?.bio}
@@ -2141,7 +2141,8 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               </PressAckButton>
               ) : null}
 
-              <View style={{ flexDirection: "row", gap: 10, marginTop: 10, justifyContent: "center" }}>
+              <View style={{ flexGrow: 1, justifyContent: "center", paddingVertical: 24 }}>
+              <View style={{ flexDirection: "row", gap: 10, justifyContent: "center" }}>
                 <PressAckButton
                   style={[styles.iconActionPill, { borderColor: theme.divider }]}
                   onPress={() => void capturePostPhoto()}
@@ -2181,13 +2182,17 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
                   {
                     flex: 0,
                     flexGrow: 0,
+                    alignSelf: "stretch",
                     minHeight: 120,
-                    marginTop: 10,
+                    marginTop: 16,
                     color: theme.text,
                     borderColor: theme.divider,
+                    textAlign: "center",
+                    textAlignVertical: "center",
                   },
                 ]}
               />
+              </View>
             </ScrollViewUntilScroll>
           </View>
         </KeyboardAvoidingView>
@@ -2532,9 +2537,9 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
 
               const senderProfileTapAllowed = Boolean(peerPd?.canOpenProfile);
 
-              const messageAvatar = (
+              const messageAvatar = isMine ? null : (
                 <PressAckButton
-                  style={isMine ? styles.messageAvatarMine : styles.messageAvatarOther}
+                  style={styles.messageAvatarOther}
                   onPress={() => {
                     if (item.senderId === CURRENT_USER_ID) {
                       openMyProfile();

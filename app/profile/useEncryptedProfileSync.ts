@@ -5,7 +5,7 @@ import { callEmulatorFunction } from "../../backendBridge";
 import { decryptPayloadForRecipient } from "../../e2eeCrypto";
 import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
 import { storageSetItem } from "../lib/encryptedLocalStorage";
-import { mergeProfilePictureUrl } from "../lib/profilePictureUrl";
+import { mergeProfilePictureUrl, storageObjectPathFromDownloadUrl } from "../lib/profilePictureUrl";
 import { refreshFriendProfilesFromServer } from "../friends/refreshFriendProfiles";
 import type { Friend } from "../domain/types";
 import type { BackendSession, EncryptedSyncStateBundle } from "../messaging/types";
@@ -75,10 +75,12 @@ export function useEncryptedProfileSync(params: {
           try {
             const plain = await decryptPayloadForRecipient<{
               profilePictureUrl?: string | null;
+              profilePicturePath?: string | null;
             }>(session.uid, data.ciphertext, data.nonce, envelope);
             const rawPic = plain.profilePictureUrl;
+            const tokenized = storageObjectPathFromDownloadUrl(rawPic);
             const safePic =
-              typeof rawPic === "string" && /^https?:\/\//i.test(rawPic) ? rawPic : null;
+              !tokenized && typeof rawPic === "string" && /^https?:\/\//i.test(rawPic) ? rawPic : null;
             if (data.ownerUid === session.uid) {
               if (safePic) {
                 setMyProfilePictureUrl(safePic);

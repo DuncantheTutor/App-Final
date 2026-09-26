@@ -4,6 +4,8 @@ import { Platform } from "react-native";
 import { storageGetItem, storageSetItem } from "./app/lib/encryptedLocalStorage";
 import { firebaseAuth } from "./firebaseAuthClient";
 
+export { canonicalizeEmail, backendUidForEmail, backendUidForFriendId } from "./app/lib/accountIdentity";
+
 const BACKEND_DEVICE_ID_KEY = "app.backend.deviceId.v1";
 const PROJECT_ID =
   ((Constants.expoConfig?.extra as { firebase?: { projectId?: string } } | undefined)?.firebase?.projectId ??
@@ -29,44 +31,6 @@ function randomToken(len: number): string {
   return out;
 }
 
-function hashInput(input: string): string {
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i += 1) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `h${(h >>> 0).toString(16)}`;
-}
-
-/**
- * Collapses mailbox aliases to a single canonical address so the same inbox
- * cannot register multiple accounts. For Gmail/Googlemail dots in the local
- * part are insignificant; across all providers a `+tag` suffix is an alias.
- * Keep this in sync with the server-side `canonicalizeEmail` in
- * `backend/functions/src/index.ts`.
- */
-export function canonicalizeEmail(email: string): string {
-  const trimmed = String(email ?? "").trim().toLowerCase();
-  const at = trimmed.lastIndexOf("@");
-  if (at <= 0) return trimmed;
-  let local = trimmed.slice(0, at);
-  const domain = trimmed.slice(at + 1);
-  const plus = local.indexOf("+");
-  if (plus >= 0) local = local.slice(0, plus);
-  if (domain === "gmail.com" || domain === "googlemail.com") {
-    local = local.replace(/\./g, "");
-  }
-  return `${local}@${domain}`;
-}
-
-export function backendUidForEmail(email: string): string {
-  return `u_${hashInput(canonicalizeEmail(email))}`;
-}
-
-export function backendUidForFriendId(friendId: string): string {
-  return `f_${hashInput(friendId)}`;
-}
-
 export async function getOrCreateBackendDeviceId(): Promise<string> {
   const existing = await storageGetItem(BACKEND_DEVICE_ID_KEY);
   if (existing?.trim()) return existing;
@@ -80,14 +44,9 @@ export async function callEmulatorFunction<T>(name: string, data: Record<string,
     ? `http://${emulatorHost()}:5001/${PROJECT_ID}/${REGION}/${name}`
     : `https://${REGION}-${PROJECT_ID}.cloudfunctions.net/${name}`;
   /**
-   * Wire-protocol back-compat for the `demoUid → uid` rename (May 2026).
-   *
-   * The backend resolves identity as `req.auth?.uid ?? req.data?.uid ?? req.data?.demoUid`,
-   * so it already accepts the new name. We mirror the value back to the old
-   * key here so an *old* deployed backend (one that only reads `req.data?.demoUid`)
-   * still recognises the caller, eliminating the client-deploy / backend-deploy
-   * ordering hazard. Inert against any backend version. Once all backends in
-   * the wild are on the new code, drop this block and the mirror.
+   * The server decides the account from the Firebase ID token. `uid` in the
+   * body is only a hint and must match that account. `demoUid` is mirrored for
+   * an older deployed backend that still reads that field name.
    */
   const wirePayload =
     typeof data.uid === "string" && data.uid && data.demoUid === undefined
@@ -101,7 +60,7 @@ export async function callEmulatorFunction<T>(name: string, data: Record<string,
       if (idToken) headers.Authorization = `Bearer ${idToken}`;
     }
   } catch {
-    /* Auth token optional for emulator / legacy; server still checks device session. */
+    /* Call still goes out. Account callables reject it when the token is missing. */
   }
   const res = await fetch(url, {
     method: "POST",

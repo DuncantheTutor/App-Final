@@ -62,3 +62,48 @@ test("search filters only the unselected pool", () => {
     ["a", "c"]
   );
 });
+
+test("unfriended people are excluded even when selected", () => {
+  const rows = availableStartChatFriends({
+    allFriends: roster,
+    unfriendedIds: ["b"],
+    selectedComposerIds: ["b"],
+    composerSearch: "",
+    composerMode: "broadcast",
+    friendLinksState: {},
+  });
+  assert.deepEqual(
+    rows.map((f) => f.id),
+    ["a", "c"]
+  );
+});
+
+test("search is case-insensitive", () => {
+  const rows = availableStartChatFriends({
+    allFriends: roster,
+    unfriendedIds: [],
+    selectedComposerIds: [],
+    composerSearch: "AMY",
+    composerMode: "broadcast",
+    friendLinksState: {},
+  });
+  assert.deepEqual(
+    rows.map((f) => f.id),
+    ["a"]
+  );
+});
+
+test("standard mode excludes a friend linked to only one of the people already selected", () => {
+  const rows = availableStartChatFriends({
+    allFriends: roster,
+    unfriendedIds: [],
+    selectedComposerIds: ["a", "b"],
+    composerSearch: "",
+    composerMode: "standard",
+    friendLinksState: { a: ["b", "c"], b: ["a"] },
+  });
+  assert.deepEqual(
+    rows.map((f) => f.id),
+    ["a", "b"]
+  );
+});

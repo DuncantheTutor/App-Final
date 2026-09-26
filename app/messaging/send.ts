@@ -7,7 +7,7 @@ import { buildChatMessagePushCopy } from "../lib/pushPreview";
 import { yieldToUi } from "../lib/yieldToUi";
 import { prepareMessageMediaForEncrypt } from "../lib/tierBMedia/messageMedia";
 import { tierBRefFromPayloadFields } from "../lib/tierBMedia/types";
-import { ensureLocalKeyBundle, encryptPayloadForRecipients } from "../../e2eeCrypto";
+import { encryptPayloadForRecipients, signLocalPublicBundle } from "../../e2eeCrypto";
 import {
   CURRENT_USER_LOCAL_ID,
   resolveChatParticipantBackendUids,
@@ -113,13 +113,14 @@ export async function deliverOutgoingMessages(
     throw new Error("Firebase Auth is not ready. Please wait a moment and try again.");
   }
 
-  const ownBundle = await ensureLocalKeyBundle(session.uid);
+  const signedBundle = await signLocalPublicBundle(session.uid);
   await callEmulatorFunction("publishUserKeyBundle", {
     uid: session.uid,
     deviceId: session.deviceId,
-    keyVersion: ownBundle.keyVersion,
-    encryptionPublicKey: ownBundle.encryptionPublicKey,
-    identitySigningPublicKey: ownBundle.identitySigningPublicKey,
+    keyVersion: signedBundle.bundle.keyVersion,
+    encryptionPublicKey: signedBundle.bundle.encryptionPublicKey,
+    identitySigningPublicKey: signedBundle.bundle.identitySigningPublicKey,
+    bundleSignature: signedBundle.signature,
   });
 
   const conversationId = resolveConversationId(chatForSend);
@@ -239,7 +240,7 @@ export async function deliverOutgoingMessages(
         participantUids: uniqueParticipantUids,
         messageId: message.id,
         notificationTitle: pushCopy.title,
-        notificationBody: pushCopy.body,
+        notificationBody: "New message",
         ...encrypted,
       });
       deliveredIds.push(message.id);

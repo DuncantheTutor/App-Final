@@ -15,6 +15,7 @@ export {
 } from "./signedOutReset";
 export { useBackendSession, type BackendSessionController } from "./useBackendSession";
 export { usePersistFriendKeyCache } from "./usePersistFriendKeyCache";
+export { useSocialSnapshotCloudBackup } from "./useSocialSnapshotCloudBackup";
 export { usePersistSyncWatermarks } from "./usePersistSyncWatermarks";
 export {
   useSignedInSession,

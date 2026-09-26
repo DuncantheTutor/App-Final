@@ -34,6 +34,8 @@ export function attachFriendRosterListener(params: {
   ) => Record<string, string[]>;
   /** Local unfriend intent — roster must not re-accept until server drops the edge. */
   stickyUnfriendedFriendIdsRef?: { current: Set<string> };
+  /** Fired when the server roster drops a friend, including on the other person's phone. */
+  onFriendsRemoved?: (backendUids: string[]) => void;
 }): () => void {
   const {
     session,
@@ -46,6 +48,7 @@ export function attachFriendRosterListener(params: {
     addUndirectedEdge,
     removeUndirectedEdge,
     stickyUnfriendedFriendIdsRef,
+    onFriendsRemoved,
   } = params;
 
   const firebaseAuthUid = firebaseAuth.currentUser?.uid;
@@ -145,6 +148,7 @@ export function attachFriendRosterListener(params: {
           }
           return changed ? [...next] : cur;
         });
+        onFriendsRemoved?.(removedBackendUids);
       }
 
       const knownByBackendUid = new Map<string, Friend>();

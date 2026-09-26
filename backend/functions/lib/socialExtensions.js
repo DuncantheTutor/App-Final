@@ -54,6 +54,7 @@ exports.presenceDocOnlineFromData = presenceDocOnlineFromData;
  */
 const admin = __importStar(require("firebase-admin"));
 const https_1 = require("firebase-functions/v2/https");
+const authUidMirror_1 = require("./authUidMirror");
 const deviceSession_1 = require("./deviceSession");
 const firebaseAdmin_1 = require("./firebaseAdmin");
 function firestoreDb() {
@@ -119,21 +120,6 @@ async function assertAcceptedFriendship(uid, otherUid) {
         }
     }
     throw new https_1.HttpsError("permission-denied", "Friendship required.");
-}
-async function resolveParticipantAuthUids(uids) {
-    const unique = [...new Set(uids.filter((x) => !!x))];
-    if (unique.length === 0)
-        return [];
-    const refs = unique.map((uid) => firestoreDb().collection("userFirebaseAuthMap").doc(uid));
-    const snaps = await firestoreDb().getAll(...refs);
-    const out = [];
-    for (const snap of snaps) {
-        const data = snap.data();
-        const authUid = (data?.firebaseAuthUid ?? "").trim();
-        if (authUid)
-            out.push(authUid);
-    }
-    return [...new Set(out)].sort();
 }
 function isAppBackendUid(id) {
     return id.startsWith("u_");
@@ -209,8 +195,7 @@ async function resolveChatMessagePushTitle(args) {
     const clientTitle = String(args.clientTitle ?? "").trim();
     if (participants.length === 2) {
         const senderSnap = await firestoreDb().collection("users").doc(args.senderUid).get();
-        const username = String(senderSnap.data()?.username ?? "").trim() ||
-            `User ${args.senderUid.slice(0, 6)}`;
+        const username = String(senderSnap.data()?.username ?? "").trim() || "Someone";
         return `New message from ${username}`;
     }
     return clientTitle || "New message";
@@ -351,7 +336,7 @@ async function notifyConversationParticipantsPush(args) {
         participantUids: args.participantUids,
         clientTitle: args.title,
     });
-    const pushBody = String(args.body ?? "").trim() || "Sent a message";
+    const pushBody = "New message";
     const convSnap = await firestoreDb().collection("conversations").doc(args.conversationId).get();
     const mutedBy = (convSnap.data()?.mutedBy ?? {});
     const tokenRows = dedupePushTokens(await loadPushTokensForUids(recipients, (uid) => Boolean(mutedBy[uid])));
@@ -555,7 +540,7 @@ exports.manageConversationMembership = (0, https_1.onCall)(async (req) => {
         }
         const nextParticipants = [...participants, targetUid].sort();
         const memberJoinedAt = { ...(conv.memberJoinedAt ?? {}), [targetUid]: now };
-        const participantAuthUids = await resolveParticipantAuthUids(nextParticipants);
+        const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(nextParticipants);
         const adminIds = conv.adminIds?.length
             ? conv.adminIds
             : conv.createdBy
@@ -576,7 +561,7 @@ exports.manageConversationMembership = (0, https_1.onCall)(async (req) => {
             await ref.delete();
             return { ok: true, participantUids: [] };
         }
-        const participantAuthUids = await resolveParticipantAuthUids(nextParticipants);
+        const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(nextParticipants);
         await ref.set({
             participantUids: nextParticipants,
             participantAuthUids,
@@ -594,7 +579,7 @@ exports.manageConversationMembership = (0, https_1.onCall)(async (req) => {
             throw new https_1.HttpsError("invalid-argument", "Use leave to exit the group.");
         }
         const nextParticipants = participants.filter((id) => id !== targetUid);
-        const participantAuthUids = await resolveParticipantAuthUids(nextParticipants);
+        const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(nextParticipants);
         await ref.set({
             participantUids: nextParticipants,
             participantAuthUids,
@@ -622,6 +607,9 @@ exports.setEncryptedPostReaction = (0, https_1.onCall)(async (req) => {
     if (post.ownerUid && post.ownerUid !== uid) {
         await assertAcceptedFriendship(uid, post.ownerUid);
     }
+    const recipientAuthUids = Array.isArray(post.recipientAuthUids)
+        ? post.recipientAuthUids.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : await (0, authUidMirror_1.resolveParticipantAuthUids)(recipients);
     const reactionRef = firestoreDb().collection("encryptedPostReactions").doc(postId);
     await firestoreDb().runTransaction(async (tx) => {
         const snap = await tx.get(reactionRef);
@@ -630,7 +618,12 @@ exports.setEncryptedPostReaction = (0, https_1.onCall)(async (req) => {
             delete reactions[uid];
         else
             reactions[uid] = emoji;
-        tx.set(reactionRef, { postId, reactions, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        tx.set(reactionRef, {
+            postId,
+            reactions,
+            ...(recipientAuthUids.length > 0 ? { recipientAuthUids } : {}),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
     });
     const ownerUid = String(post.ownerUid ?? "").trim();
     if (emoji && ownerUid && ownerUid !== uid) {
@@ -698,7 +691,7 @@ exports.updateEncryptedPost = (0, https_1.onCall)(async (req) => {
         if (envelope)
             filteredEnvelopes[recipientUid] = envelope;
     }
-    const recipientAuthUids = await resolveParticipantAuthUids(recipientUids);
+    const recipientAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(recipientUids);
     await postRef.set({
         ciphertext,
         nonce,
@@ -810,7 +803,7 @@ async function kickPairFromSharedGroups(uidA, uidB) {
         const next = participants.filter((id) => id !== uidA && id !== uidB);
         if (next.length === participants.length)
             continue;
-        const participantAuthUids = await resolveParticipantAuthUids(next);
+        const participantAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(next);
         if (next.length === 0) {
             batch.delete(doc.ref);
         }
@@ -836,7 +829,7 @@ async function filterPostItemsByFriendship(uid, items) {
 /** Refresh `viewerAuthUids` only — does not mark the user online (auth map repair). */
 async function refreshPresenceViewerAuthUids(uid, deviceId) {
     const friendUids = await getAcceptedFriendUids(uid);
-    const viewerAuthUids = await resolveParticipantAuthUids([uid, ...friendUids]);
+    const viewerAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)([uid, ...friendUids]);
     const patch = {
         viewerAuthUids,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -909,7 +902,7 @@ async function backfillMessageParticipantAuthUid(appUid, firebaseAuthUid) {
  */
 async function mergeFriendAuthOntoRegistrantPresence(registrantAppUid) {
     const friendUids = await getAcceptedFriendUids(registrantAppUid);
-    const friendAuthUids = await resolveParticipantAuthUids(friendUids);
+    const friendAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)(friendUids);
     const mapSnap = await firestoreDb().collection("userFirebaseAuthMap").doc(registrantAppUid).get();
     const selfAuth = String(mapSnap.data()?.firebaseAuthUid ?? "").trim();
     const toUnion = [...new Set([selfAuth, ...friendAuthUids].filter(Boolean))];
@@ -934,7 +927,7 @@ async function refreshPresenceAfterFriendshipPair(uidA, uidB) {
 /** Presence heartbeat with viewerAuthUids for client onSnapshot. */
 async function writePresenceWithViewers(uid, deviceId, state, heartbeatAtMs) {
     const friendUids = await getAcceptedFriendUids(uid);
-    const viewerAuthUids = await resolveParticipantAuthUids([uid, ...friendUids]);
+    const viewerAuthUids = await (0, authUidMirror_1.resolveParticipantAuthUids)([uid, ...friendUids]);
     const clientHb = Number(heartbeatAtMs ?? 0);
     const safeHeartbeatAtMs = Number.isFinite(clientHb) &&
         clientHb > 0 &&

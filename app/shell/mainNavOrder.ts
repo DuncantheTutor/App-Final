@@ -32,6 +32,7 @@ export function mainNavSurfaceFromView(view: ViewState, homeTab: HomeTab): MainN
 
 export function neighborMainNav(current: MainNavSurface, direction: -1 | 1): MainNavSurface | null {
   const index = MAIN_NAV_ORDER.indexOf(current);
+  if (index < 0) return null;
   const next = index + direction;
   if (next < 0 || next >= MAIN_NAV_ORDER.length) return null;
   return MAIN_NAV_ORDER[next];

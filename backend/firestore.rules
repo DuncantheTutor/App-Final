@@ -9,34 +9,15 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
-    function friendshipDocId(a, b) {
-      return a < b ? a + "_" + b : b + "_" + a;
-    }
-
-    function isFriend(otherUid) {
-      return isSignedIn()
-        && exists(
-          /databases/$(database)/documents/friendships/$(friendshipDocId(request.auth.uid, otherUid))
-        )
-        && get(
-          /databases/$(database)/documents/friendships/$(friendshipDocId(request.auth.uid, otherUid))
-        ).data.status == "accepted";
-    }
-
-    // Sensitive user document is never directly readable except by owner.
+    // Profile and session fields are written by Cloud Functions (admin SDK).
+    // Clients may read a document only when its id is their own Auth uid.
     match /users/{uid} {
       allow read: if isSelf(uid);
-      allow create, update: if isSelf(uid);
-      allow delete: if false;
+      allow write: if false;
     }
 
-    // Fully encrypted profile data. Clients subscribe via the
-    // `recipientAuthUids` mirror (Firebase Auth UID array of the owner +
-    // every friend the owner sent an envelope for) so the snapshot
-    // listener delivers profile updates without a callable round-trip.
-    // The legacy `isSelf/isFriend` rule is kept as a fallback for the
-    // `getEncryptedProfile` callable read path (server runs as admin and
-    // bypasses rules anyway, but this preserves manual emulator scripts).
+    // Fully encrypted profile data. The only client read path is the
+    // `recipientAuthUids` mirror (Firebase Auth UIDs of the owner and friends).
     match /encryptedProfiles/{uid} {
       allow read: if isSignedIn()
         && resource.data.recipientAuthUids is list
@@ -52,7 +33,7 @@ service cloud.firestore {
     // listener and receive friend adds/removes pushed in real time without
     // the 60 s `listMyFriends` callable poll. The legacy `participants`
     // (app-uid) array stays on the doc for the backwards-compatible callable
-    // path and for the server-side `isFriend()` helper used by other rules.
+    // path. Client reads are authorised only by `participantAuthUids`.
     match /friendships/{edgeId} {
       allow read: if isSignedIn()
         && resource.data.participantAuthUids is list
@@ -96,7 +77,9 @@ service cloud.firestore {
     }
 
     match /encryptedPostReactions/{postId} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn()
+        && resource.data.recipientAuthUids is list
+        && request.auth.uid in resource.data.recipientAuthUids;
       allow write: if false;
     }
 

@@ -10,6 +10,78 @@
 
 ---
 
+## 2026-09-26 12:59 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 12:59 +01:00 | Security | Production friendships are QR-only, unsigned encryption keys are refused, email OTP stays off until mail exists, and Firestore reads of posts, profiles, messages, and presence require the Auth-uid mirror. |
+
+---
+
+## 2026-09-26 12:26 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 12:26 +01:00 | Auth | Callables now require the Firebase session, new accounts get random ids, pairing confirm omits the account id until friendship exists, and phone numbers plus long-lived profile photo tokens are no longer stored. |
+
+---
+
+## 2026-09-26 12:03 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 12:03 +01:00 | Tests | Added unit tests for message sync, chat routing, broadcast privacy, pairing, email aliases, and key verification, and made `npm test` pick up every test file. |
+
+---
+
+## 2026-09-25 23:04 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 23:04 +01:00 | Privacy, Pairing, Chat | Stopped server-readable key and history backups, generic push text, 45s pairing confirm with a fresh proximity check, friend-only media and reaction reads, signed key pinning, pairwise group create, server message time, and unsend only after the server accepts. |
+
+---
+
+## 2026-09-25 21:07 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 21:07 +01:00 | Chat, Session | Hid your own chat avatars, kept the device signed in until Logout or uninstall, and moved home navigation out of MainApp. The post composer screen actions still stay in MainApp. |
+
+---
+
+## 2026-09-25 19:48 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:48 +01:00 | App structure | Moved auth restore, session boot, share-posts queue, feed cards, chat send, and push registration out of MainApp. The home navigation wrappers still stay in MainApp. |
+
+---
+
+## 2026-09-25 19:32 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:32 +01:00 | Posts | Moved the post composer buttons and caption into the middle of the screen, with the caption text centered. |
+
+---
+
+## 2026-09-25 19:30 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:30 +01:00 | App structure | Moved appearance prefs, friend maps, feed lists, chat inbox, logout, fullscreen media, and the composer primary action out of MainApp. The Firebase auth restore listener still stays in MainApp. |
+
+---
+
+## 2026-09-25 19:15 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 19:15 +01:00 | Session | Moved the encrypted social-snapshot cloud backup out of MainApp. Appearance preference load and save still stays in MainApp. |
+
+---
+
 ## 2026-09-25 19:13 +01:00
 
 | Time | Area | Change |

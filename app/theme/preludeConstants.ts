@@ -17,9 +17,9 @@ import { resolveParticipantDisplay } from "../lib/participantDisplay";
 export const CURRENT_USER_ID = "me";
 export const DEMO_OFFLINE_MODE = false;
 /**
- * Temporary: email/password login and signup skip the 6-digit OTP step.
- * OTP screens, SMS assist, and `requestEmailOtp` / `verifyEmailOtp` stay in the tree.
- * Flip to `true` to restore OTP-after-sign-in (product rule R21).
+ * Email/password login still skips the OTP screen. Production `requestEmailOtp`
+ * and `verifyEmailOtp` refuse the call until a mail sender exists. The emulator
+ * still returns `debugCode`. Do not flip this flag on its own.
  */
 export const EMAIL_OTP_ENABLED: boolean = false;
 /** Demo pairing offer token (32 hex) — encodes as AFQR2 in QR. */

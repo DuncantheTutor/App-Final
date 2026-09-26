@@ -11,7 +11,8 @@
     "start:tunnel": "expo start --tunnel --clear",
     "android:device": "expo start --android --tunnel",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test app/posts/postPublishRecipientUids.test.ts app/shell/mainNavSwipe.test.ts app/chat/availableStartChatFriends.test.ts app/session/firebaseAuthPersistence.test.ts",
+    "test": "node --experimental-strip-types --test app/**/*.test.ts backend/functions/src/**/*.test.ts",
+    "test:rules": "firebase emulators:exec --only firestore \"node --experimental-strip-types --test backend/functions/src/firestoreRules.test.ts\"",
     "apk:debug": "node scripts/gradle-apk.mjs debug",
     "apk:debug:demo": "node scripts/gradle-apk.mjs debug demo",
     "apk:release": "node scripts/gradle-apk.mjs release",
@@ -65,6 +66,7 @@
     "tweetnacl-util": "^0.15.1"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
     "@types/react": "~19.1.0",
     "typescript": "~5.9.2"
   },

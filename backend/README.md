@@ -3,7 +3,7 @@
 This backend enforces four core principles:
 
 1. One-device-only active session per account.
-2. NFC handshake flow for friend creation.
+2. NFC handshake flow for friend creation in the emulator. Production friendships use the QR offer only; voucher, BLE, HS2, and one-shot handshake callables are refused.
 3. Friends-only visibility.
 4. Encrypted-at-application-layer data for profiles, posts, chat, and media.
 5. On-device **AsyncStorage** social cache is **plaintext** (`app/lib/encryptedLocalStorage.ts` wrapper). **Tier B** downloaded media is cached as **plain files** under app document storage (`app/lib/encryptedMediaCache.ts` — legacy module name).
@@ -19,7 +19,7 @@ This backend enforces four core principles:
 - `claimDeviceSession(deviceId)`
 - `createHandshake(deviceId)`
 - `consumeHandshake(handshakeCode, receiverDeviceId)`
-- `publishUserKeyBundle(deviceId, keyVersion, encryptionPublicKey, identitySigningPublicKey)`
+- `publishUserKeyBundle(deviceId, keyVersion, encryptionPublicKey, identitySigningPublicKey, bundleSignature)` — signature required
 - `putEncryptedProfile(deviceId, ciphertext, nonce, envelopes)`
 - `createEncryptedPost(deviceId, ciphertext, nonce, envelopes, storageObjectPaths?)` — optional `encrypted-media/{firebaseAuthUid}/…` paths for server-side Storage cleanup on delete
 - `deleteEncryptedPost(deviceId, postId)` — removes Firestore post + referenced Storage objects

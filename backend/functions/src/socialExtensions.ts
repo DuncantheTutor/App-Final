@@ -4,6 +4,7 @@
  */
 import * as admin from "firebase-admin";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { resolveParticipantAuthUids } from "./authUidMirror";
 import { assertVerifiedCallableCaller } from "./deviceSession";
 import { getFirestore } from "./firebaseAdmin";
 
@@ -73,20 +74,6 @@ async function assertAcceptedFriendship(uid: string, otherUid: string): Promise<
     }
   }
   throw new HttpsError("permission-denied", "Friendship required.");
-}
-
-async function resolveParticipantAuthUids(uids: string[]): Promise<string[]> {
-  const unique = [...new Set(uids.filter((x) => !!x))];
-  if (unique.length === 0) return [];
-  const refs = unique.map((uid) => firestoreDb().collection("userFirebaseAuthMap").doc(uid));
-  const snaps = await firestoreDb().getAll(...refs);
-  const out: string[] = [];
-  for (const snap of snaps) {
-    const data = snap.data() as { firebaseAuthUid?: string } | undefined;
-    const authUid = (data?.firebaseAuthUid ?? "").trim();
-    if (authUid) out.push(authUid);
-  }
-  return [...new Set(out)].sort();
 }
 
 function isAppBackendUid(id: string): boolean {
@@ -182,9 +169,7 @@ async function resolveChatMessagePushTitle(args: {
 
   if (participants.length === 2) {
     const senderSnap = await firestoreDb().collection("users").doc(args.senderUid).get();
-    const username =
-      String(senderSnap.data()?.username ?? "").trim() ||
-      `User ${args.senderUid.slice(0, 6)}`;
+    const username = String(senderSnap.data()?.username ?? "").trim() || "Someone";
     return `New message from ${username}`;
   }
 
@@ -360,7 +345,7 @@ export async function notifyConversationParticipantsPush(args: {
     participantUids: args.participantUids,
     clientTitle: args.title,
   });
-  const pushBody = String(args.body ?? "").trim() || "Sent a message";
+  const pushBody = "New message";
 
   const convSnap = await firestoreDb().collection("conversations").doc(args.conversationId).get();
   const mutedBy = (convSnap.data()?.mutedBy ?? {}) as Record<string, boolean>;
@@ -674,7 +659,11 @@ export const setEncryptedPostReaction = onCall(async (req) => {
   const postRef = firestoreDb().collection("encryptedPosts").doc(postId);
   const postSnap = await postRef.get();
   if (!postSnap.exists) throw new HttpsError("not-found", "Post not found.");
-  const post = postSnap.data() as { ownerUid?: string; recipientUids?: string[] };
+  const post = postSnap.data() as {
+    ownerUid?: string;
+    recipientUids?: string[];
+    recipientAuthUids?: string[];
+  };
   const recipients = post.recipientUids ?? [];
   if (!recipients.includes(uid)) {
     throw new HttpsError("permission-denied", "Not a recipient of this post.");
@@ -682,6 +671,9 @@ export const setEncryptedPostReaction = onCall(async (req) => {
   if (post.ownerUid && post.ownerUid !== uid) {
     await assertAcceptedFriendship(uid, post.ownerUid);
   }
+  const recipientAuthUids = Array.isArray(post.recipientAuthUids)
+    ? post.recipientAuthUids.map((x) => String(x ?? "").trim()).filter(Boolean)
+    : await resolveParticipantAuthUids(recipients);
 
   const reactionRef = firestoreDb().collection("encryptedPostReactions").doc(postId);
   await firestoreDb().runTransaction(async (tx) => {
@@ -691,7 +683,12 @@ export const setEncryptedPostReaction = onCall(async (req) => {
     else reactions[uid] = emoji;
     tx.set(
       reactionRef,
-      { postId, reactions, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      {
+        postId,
+        reactions,
+        ...(recipientAuthUids.length > 0 ? { recipientAuthUids } : {}),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
       { merge: true }
     );
   });

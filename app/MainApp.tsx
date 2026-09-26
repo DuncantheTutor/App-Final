@@ -1,27 +1,23 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import {
-  storageGetItem,
-  storageRemoveItem,
-  storageSetItem,
-} from "./lib/encryptedLocalStorage";
-import { setUserHapticsEnabled, useHapticSettings } from "./lib/haptics";
+import { storageSetItem } from "./lib/encryptedLocalStorage";
+import { useAuthFormDrafts } from "./session/useAuthFormDrafts";
+import { useAppearancePrefs } from "./theme/useAppearancePrefs";
+import { useFriendIdentityMaps } from "./friends/useFriendIdentityMaps";
+import { usePersistLastView } from "./shell/usePersistLastView";
 import { clearEncryptedMediaCaches } from "./lib/encryptedMediaCache";
 import * as NavigationBar from "expo-navigation-bar";
 import { Audio, ResizeMode, Video } from "expo-av";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as ExpoNetwork from "expo-network";
 import Constants from "expo-constants";
-import { onAuthStateChanged } from "firebase/auth";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   AppState,
   BackHandler,
-  Image,
   InputAccessoryView,
   Keyboard,
   KeyboardAvoidingView,
@@ -56,7 +52,7 @@ import {
   callEmulatorFunction,
   getOrCreateBackendDeviceId,
 } from "../backendBridge";
-import { logAppError, logAppEvent, setTelemetryContext } from "../telemetry";
+import { logAppError } from "../telemetry";
 import {
   ChatMessageMediaResolver,
   messageHasResolvableMedia,
@@ -67,27 +63,13 @@ import { ChatVideoMessageBubble } from "./components/ChatVideoMessageBubble";
 import { ChatReplyTargetPreview } from "./components/ChatReplyTargetPreview";
 import { ChatVoiceNoteBubble } from "./components/ChatVoiceNoteBubble";
 import { resolveTierBMediaToFileUri } from "./lib/tierBMedia/storage";
-import { startAndroidOtpAssist } from "../otpSmsAssist";
-import {
-  debugSessionLog,
-  firebaseAuth,
-  firebaseSessionSurvivesNullEvent,
-  warmFirebaseIdToken,
-} from "../firebaseAuthClient";
-import { joinCutoffMsForViewer } from "./lib/chatMemberJoinedAt";
+import { debugSessionLog, firebaseAuth, warmFirebaseIdToken } from "../firebaseAuthClient";
 import {
   broadcastCreatorFriendId,
   isBroadcastCreator,
 } from "./lib/broadcastMessaging";
-import {
-  buildLastMessageByChatId,
-  buildVisibleThreadMessagesByChatId,
-  chatListSortTimestampMs,
-  filterChatsVisibleInInbox,
-} from "./lib/chatListLastMessage";
 import { retainedMessageChatIds } from "./lib/messageRetentionChatIds";
 import { trimInMemoryMessages } from "./lib/trimInMemoryMessages";
-import { isIncomingChatUnread } from "./lib/chatUnreadState";
 import {
   friendBackendUidFromDirectChatLocalId,
   isCanonicalDirectChatId,
@@ -104,22 +86,11 @@ import {
 } from "./lib/hiddenConversations";
 import {
   CURRENT_USER_LOCAL_ID,
-  normalizeChatMemberIds,
   resolveChatMemberToBackendUid,
   resolveChatParticipantBackendUids,
   resolveIncomingSenderFriendId,
 } from "./lib/resolveChatMemberBackendUid";
-import {
-  applyPresenceToFriends,
-  dedupeFriendsByBackendUid,
-  friendsForFriendsList,
-  mergeFriendsCatalog,
-} from "./lib/mergeFriendsCatalog";
-import {
-  registerPushTokenWithBackend,
-  getOsNotificationPermissionStatus,
-  isOsNotificationPermissionGranted,
-} from "./lib/pushNotifications";
+import { friendsForFriendsList } from "./lib/mergeFriendsCatalog";
 import { chatCaptionedMediaLayout, chatMediaBubbleInsetStyle, chatMediaInnerClipStyle } from "./lib/chatMediaLayout";
 import { messageDisplayText, normalizeMessagesForUi } from "./lib/messageDisplayText";
 import {
@@ -132,11 +103,9 @@ import {
   stickyFooterPadding,
 } from "./lib/safeAreaInsets";
 import { keyboardScrollPadding } from "./lib/keyboardInputScroll";
-import { postCarouselImageCount } from "./lib/feedPostLayout";
 import { useScrollPinnedInput } from "./lib/useScrollPinnedInput";
 import { FeedPostCard } from "./components/FeedPostCard";
 import { NotificationPrePromptScreen } from "./components/NotificationPrePromptScreen";
-import { PostGridCell } from "./components/PostGridCell";
 import { ImageCropModal } from "./components/ImageCropModal";
 import { HomeTopNavBar } from "./components/HomeTopNavBar";
 import { PressAckButton } from "./components/PressAckButton";
@@ -147,13 +116,15 @@ import { ReactionBubbleHost } from "./components/ReactionBubbleHost";
 import { aggregateReactionCounts } from "./lib/reactionHelpers";
 import { readAvatarsByMessageId, type ReadByMap } from "./lib/readReceipts";
 import { useInitialServerSync } from "./boot/useInitialServerSync";
-import { restoreKeyBundleFromCloudIfMissing, uploadKeyBundleToCloudBackup } from "./lib/e2eeKeyBackup";
 import {
-  restoreSocialSnapshotFromCloud,
-  uploadSocialSnapshotToCloud,
-} from "./lib/socialSnapshotBackup";
+  collectDirectChatIdsToLockForFriend,
+  mergeIdentityLockedChatIds,
+} from "./lib/identityLockedChats";
 import { availableStartChatFriends } from "./chat/availableStartChatFriends";
-import { useActiveChatMessages } from "./chat/useActiveChatMessages";
+import { useAccountExit } from "./session/useAccountExit";
+import { useChatInboxModel } from "./chat/useChatInboxModel";
+import { useChatMediaFrame } from "./chat/useChatMediaFrame";
+import { useComposerPrimaryAction } from "./chat/useComposerPrimaryAction";
 import { useChatReadPosition } from "./chat/useChatReadPosition";
 import { useOpenChatSnapshot } from "./chat/useOpenChatSnapshot";
 import { useOlderChatMessages } from "./chat/useOlderChatMessages";
@@ -168,7 +139,6 @@ import {
   buildDefaultChatName as chatNameFromFriendIds,
   createOpenOrCreateChatActions,
 } from "./chat/openOrCreateChat";
-import { scheduleDemoAutoReplies } from "./chat/demoAutoReplies";
 import { createLeaveChatActions } from "./chat/leaveChat";
 import { useInThreadComposer } from "./chat/useInThreadComposer";
 import { toggleVoiceMessagePlayback as toggleVoiceMessagePlaybackImpl } from "./chat/voicePlayback";
@@ -180,56 +150,48 @@ import { useFriendsController } from "./friends/useFriendsController";
 import { createOpenFriendProfileActions, useEncryptedProfileSync, useProfileController } from "./profile";
 import { migrateLegacyDraftChats } from "./messaging/legacyChatMigration";
 import { isLegacyDraftChatId } from "./messaging/localChatId";
-import { promotePendingChatToRow } from "./messaging/promotePendingChat";
 import { useMessagingController } from "./messaging/useMessagingController";
 import { usePersistSocialMessaging } from "./messaging/usePersistSocialMessaging";
 import { useMessagingSync } from "./messaging/useMessagingSync";
 import {
   activeChatIdFromView,
-  createMainNavSwipePan,
-  mainNavSurfaceFromView,
-  pendingDraftFromView,
   useAppNavigation,
-  useMainNavSlide,
-  viewAfterLeavingFriendProfile,
-  type MainNavSurface,
 } from "./shell";
+import { useHomeNavigation } from "./shell/useHomeNavigation";
 import { AuthScreens } from "./shell/AuthScreens";
 import { SignedInTree } from "./shell/SignedInTree";
 import { handleAndroidHardwareBack as handleAndroidHardwareBackImpl } from "./shell/androidHardwareBack";
-import { createAccountAuthActions, restoreSignedInAccount, useBackendSession, usePersistFriendKeyCache, usePersistSyncWatermarks, useSignedInSession } from "./session";
+import { useSharePostsWithNewFriend } from "./posts/useSharePostsWithNewFriend";
+import { useFeedCardPresentation } from "./feed/useFeedCardPresentation";
+import { useChatSend } from "./chat/useChatSend";
+import { usePushRegistration } from "./notifications/usePushRegistration";
+import { useSignedInAccountBoot } from "./session/useSignedInAccountBoot";
 import {
-  initializeBackendSessionForAccount as initializeBackendSessionForAccountImpl,
-  retryInitializeBackendSession,
-} from "./session/initializeBackendSession";
-import {
-  clearSignedOutSocialState,
-  logoutSignedInAccount,
-  resetCurrentUserLocalState,
-} from "./session/signedOutReset";
-import { sendChatPayload, sendComposerDraft, sendComposerVoiceNote } from "./messaging/sendChatPayload";
-import {
-  FIREBASE_ID_TOKEN_WARM_MS,
-  NULL_AUTH_GRACE_MS,
-} from "./session/firebaseAuthPersistence";
+  createAccountAuthActions,
+  useBackendSession,
+  usePersistFriendKeyCache,
+  usePersistSyncWatermarks,
+  useSignedInSession,
+  useSocialSnapshotCloudBackup,
+} from "./session";
+import { sendComposerVoiceNote } from "./messaging/sendChatPayload";
+import { FIREBASE_ID_TOKEN_WARM_MS } from "./session/firebaseAuthPersistence";
+import { useFeedLists } from "./feed/useFeedLists";
 import { useFeedController, useFeedReactionListeners, useFeedSync, useFullscreenPostThread, usePostThreadActions, useReactionPicker } from "./feed";
 import { completePhotoEditorSession } from "./media/completePhotoEditor";
 import {
   capturePostPhotoDraft,
   choosePostVideo,
-  pickChatCameraMedia,
-  pickChatGalleryPhoto,
-  pickChatGalleryVideo,
   pickGroupPicture,
   pickPostPhotoDraft,
   pickProfilePhoto,
   promptPostPhotoDraft,
 } from "./media/pickMedia";
+import { useFullscreenMedia } from "./media/useFullscreenMedia";
 import { usePhotoEditorSession } from "./media/usePhotoEditorSession";
 import { useNotificationPermissionGate, usePushNotificationRouting } from "./notifications";
 import { useAddFriendPairing } from "./addFriend/useAddFriendPairing";
 import { updateOutgoingMessageContent } from "./messaging/send";
-import { useOutgoingMessages } from "./messaging/useOutgoingMessages";
 import { refreshFriendProfilesFromServer } from "./friends/refreshFriendProfiles";
 import {
   confirmDeleteOwnedPost,
@@ -248,6 +210,7 @@ import { usePresenceHeartbeat } from "./presence/usePresenceHeartbeat";
 import {
   mergeProfilePictureUrl,
   normalizeHttpsProfilePictureUrl,
+  storageObjectPathFromDownloadUrl,
 } from "./lib/profilePictureUrl";
 import {
   ensureLocalKeyBundle,
@@ -256,40 +219,17 @@ import {
 
 import type {
   Chat,
-  ColorThemeId,
   Friend,
   FriendsListRestore,
   Message,
-  MockAuthAccount,
   PendingDraft,
   Post,
   PostComment,
-  ThemePalette,
 } from "./domain/types";
 import {
   PLACEHOLDER_APP_PRODUCT_NAME,
-  lastHomeTabStorageKey,
-  lastViewStorageKey,
-  parseFriendsListRestorePayload,
-  parsePendingDraftPayload,
-  pruneGhostEmptyChats,
-  sanitizePersistedFriendsFromStorage,
 } from "./lib/viewPersistence";
-import { warmPostGridMediaCache } from "./lib/warmPostMediaCache";
-import {
-  isChatIdentityLocked,
-} from "./lib/identityLockedChats";
-import { friendDisplayNameFromProfile } from "./lib/friendDisplayName";
-import {
-  resolveParticipantDisplay,
-  TOMBSTONE_DISPLAY_NAME,
-} from "./lib/participantDisplay";
 import { readFeedMutesForEmail } from "./lib/feedMutePersistence";
-import {
-  countUnreadFeedReactionPosts,
-  markOwnedPostReactionsSeen,
-  readFeedReactionSeenForEmail,
-} from "./lib/feedReactionUnread";
 import { mergeSyncedPosts } from "./lib/mergeEncryptedSync";
 import { yieldToUi } from "./lib/yieldToUi";
 import { makeStyles } from "./styles/makeAppStyles";
@@ -307,7 +247,6 @@ import {
   ADD_FRIEND_PROTOCOL_RETRY_BASE_MS,
   ADD_FRIEND_QR_VISIBLE_MS,
   ALL_INITIAL_MESSAGES,
-  APPEARANCE_PREFS_STORAGE_KEY,
   AUTO_REPLY_LINES,
   AUTO_REPLY_MAX_DELAY_MS,
   AUTO_REPLY_MIN_DELAY_MS,
@@ -318,11 +257,7 @@ import {
   CHAT_XH,
   CHAT_XH_HALF,
   CURRENT_USER_ID,
-  DARK_THEME_GREEN,
-  DARK_THEME_ORANGE,
-  DARK_THEME_PINK,
   DEMO_OFFLINE_MODE,
-  EMAIL_OTP_ENABLED,
   DEMO_SHARED_FRIEND_IDS,
   DEMO_USER_A_FRIEND_IDS,
   DEMO_USER_A_ONLY_FRIEND_IDS,
@@ -334,27 +269,17 @@ import {
   INITIAL_CHATS,
   INITIAL_MESSAGES,
   INITIAL_POSTS,
-  LIGHT_THEME_GREEN,
-  LIGHT_THEME_ORANGE,
-  LIGHT_THEME_PINK,
-  MOCK_SESSION_POLL_MS,
-  MOCK_SESSION_RTDB_SEGMENT,
   NOW,
   ONLINE_GREEN,
   POSTS_STORAGE_KEY,
   PRESENCE_HEARTBEAT_MS,
   PRESENCE_ONLINE_WINDOW_MS,
   INITIAL_SERVER_SYNC_TIMEOUT_MS,
-  ENCRYPTED_POSTS_HOME_FEED_LIMIT,
   ENCRYPTED_POSTS_PROFILE_SYNC_LIMIT,
-  FEED_UI_INITIAL_COUNT,
-  FEED_UI_DISPLAY_PAGE_SIZE,
   ENCRYPTED_MESSAGES_SYNC_LIMIT,
   CHAT_INITIAL_MESSAGE_LIMIT,
   CHAT_UI_INITIAL_DISPLAY_COUNT,
   CHAT_UI_DISPLAY_PAGE_SIZE,
-  PROFILE_FEED_POSTS_INITIAL,
-  PROFILE_FEED_POSTS_PAGE_SIZE,
   FRIEND_PROFILE_REFRESH_MS,
   REACTION_EMOJIS,
   SCROLL_TEST_MESSAGES,
@@ -385,19 +310,11 @@ import {
   homeBottomActionClearance,
   isLikelyChatProfileImageUri,
   isMockSessionSyncConfigured,
-  isPostAlive,
   mockSessionRtdbPathKey,
   multiplyHexColor,
   normalizeSet,
   profileBioStorageKey,
   profilePictureStorageKey,
-  profileUsernameStorageKey,
-  readLedgerSessionToken,
-  readStoredSessionLockToken,
-  revokeMockSessionLedger,
-  sessionLockStorageKeyForEmail,
-  shouldPollMockSession,
-  writeStoredSessionLockToken
 } from "./theme/preludeConstants";
 import {
   readFriendKeyBundleCache,
@@ -409,52 +326,16 @@ import {
 function MainAppInner() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  const [colorThemeId, setColorThemeId] = useState<ColorThemeId>("green");
-  const [prefsHydrated, setPrefsHydrated] = useState(false);
-  const hapticSettings = useHapticSettings();
-  useEffect(() => {
-    let cancelled = false;
-    void storageGetItem(APPEARANCE_PREFS_STORAGE_KEY)
-      .then((raw) => {
-        if (cancelled) return;
-        if (raw) {
-          try {
-            const o = JSON.parse(raw) as {
-              isDarkMode?: unknown;
-              colorThemeId?: unknown;
-              hapticsEnabled?: unknown;
-            };
-            if (typeof o.isDarkMode === "boolean") setIsDarkMode(o.isDarkMode);
-            if (o.colorThemeId === "green" || o.colorThemeId === "pink" || o.colorThemeId === "orange") {
-              setColorThemeId(o.colorThemeId);
-            }
-            if (typeof o.hapticsEnabled === "boolean") setUserHapticsEnabled(o.hapticsEnabled);
-          } catch {
-            /* ignore */
-          }
-        }
-        setPrefsHydrated(true);
-      })
-      .catch(() => {
-        if (!cancelled) setPrefsHydrated(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  useEffect(() => {
-    if (!prefsHydrated) return;
-    void storageSetItem(
-      APPEARANCE_PREFS_STORAGE_KEY,
-      JSON.stringify({
-        isDarkMode,
-        colorThemeId,
-        hapticsEnabled: hapticSettings.userEnabled,
-      })
-    ).catch(() => {});
-  }, [isDarkMode, colorThemeId, hapticSettings.userEnabled, prefsHydrated]);
-  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const {
+    isDarkMode,
+    setIsDarkMode,
+    colorThemeId,
+    setColorThemeId,
+    themePickerOpen,
+    setThemePickerOpen,
+    hapticSettings,
+    theme,
+  } = useAppearancePrefs();
   const {
     signedIn,
     setSignedIn,
@@ -492,24 +373,36 @@ function MainAppInner() {
   const sessionConflictNoticeAtRef = useRef(0);
   /** Latest `logout` so session-retry alerts can offer Logout before `logout` is defined in source order. */
   const logoutRef = useRef<() => void>(() => {});
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginPasswordVisible, setLoginPasswordVisible] = useState(false);
-  const [signupEmail, setSignupEmail] = useState("");
-  const [signupPassword, setSignupPassword] = useState("");
-  const [signupPasswordConfirm, setSignupPasswordConfirm] = useState("");
-  const [signupPasswordVisible, setSignupPasswordVisible] = useState(false);
-  const [signupPasswordConfirmVisible, setSignupPasswordConfirmVisible] = useState(false);
-  const [signupUsername, setSignupUsername] = useState("");
-  const [signupPhoneNumber, setSignupPhoneNumber] = useState("");
-  const [signupOtp, setSignupOtp] = useState("");
-  const [loginOtp, setLoginOtp] = useState("");
-  const loginOtpRef = useRef("");
-  const signupOtpRef = useRef("");
-  loginOtpRef.current = loginOtp;
-  signupOtpRef.current = signupOtp;
-  const [issuedOtpCode, setIssuedOtpCode] = useState<string | null>(null);
-  const [issuedOtpForEmail, setIssuedOtpForEmail] = useState<string | null>(null);
+  const {
+    loginEmail,
+    setLoginEmail,
+    loginPassword,
+    setLoginPassword,
+    loginPasswordVisible,
+    setLoginPasswordVisible,
+    signupEmail,
+    setSignupEmail,
+    signupPassword,
+    setSignupPassword,
+    signupPasswordConfirm,
+    setSignupPasswordConfirm,
+    signupPasswordVisible,
+    setSignupPasswordVisible,
+    signupPasswordConfirmVisible,
+    setSignupPasswordConfirmVisible,
+    signupUsername,
+    setSignupUsername,
+    signupPhoneNumber,
+    setSignupPhoneNumber,
+    signupOtp,
+    setSignupOtp,
+    loginOtp,
+    setLoginOtp,
+    issuedOtpCode,
+    setIssuedOtpCode,
+    issuedOtpForEmail,
+    setIssuedOtpForEmail,
+  } = useAuthFormDrafts(authMode, authModeRef);
   const {
     view,
     setView,
@@ -743,7 +636,6 @@ function MainAppInner() {
   /** Caps how many loaded chat rows FlatList mounts (scroll-up expands before server fetch). */
   const [chatListDisplayLimit, setChatListDisplayLimit] = useState(CHAT_UI_INITIAL_DISPLAY_COUNT);
   /** Full feed cards below profile media grid (grid always shows all media tiles). */
-  const [profileFeedPostLimit, setProfileFeedPostLimit] = useState(PROFILE_FEED_POSTS_INITIAL);
   const [editChatMetaOpen, setEditChatMetaOpen] = useState(false);
   const [editChatPictureOpen, setEditChatPictureOpen] = useState(false);
   const [chatTitleDraft, setChatTitleDraft] = useState("");
@@ -863,16 +755,6 @@ function MainAppInner() {
   });
   const messageSoundRef = useRef<Audio.Sound | null>(null);
 
-  const theme = useMemo(() => {
-    if (colorThemeId === "pink") {
-      return isDarkMode ? DARK_THEME_PINK : LIGHT_THEME_PINK;
-    }
-    if (colorThemeId === "orange") {
-      return isDarkMode ? DARK_THEME_ORANGE : LIGHT_THEME_ORANGE;
-    }
-    return isDarkMode ? DARK_THEME_GREEN : LIGHT_THEME_GREEN;
-  }, [isDarkMode, colorThemeId]);
-
   const [appLifecycleState, setAppLifecycleState] = useState(AppState.currentState);
 
   /**
@@ -982,80 +864,13 @@ function MainAppInner() {
 
   const styles = useMemo(() => makeStyles(theme), [theme]);
 
-  const setPostMediaGalleryIndex = useCallback((postId: string, index: number) => {
-    setPostMediaGalleryIndexByPostId((current) => ({ ...current, [postId]: index }));
-  }, []);
-
-  const openFullscreenMedia = useCallback(
-    (
-      uri: string,
-      kind: "photo" | "gif" | "video",
-      options?: {
-        galleryUris?: string[];
-        galleryIndex?: number;
-        postId?: string;
-        mediaWidth?: number;
-        mediaHeight?: number;
-      }
-    ) => {
-      Keyboard.dismiss();
-      chatInputRef.current?.blur();
-      // Post detail is a native Modal — close it before the full-screen media layer so
-      // video does not open underneath and appear only after dismissing post view.
-      setFullScreenPost(null);
-      setPostFullscreenThreadReplyKey(null);
-      const postId = options?.postId;
-      const uris = options?.galleryUris ?? [];
-      const maxIndex = Math.max(0, uris.length - 1);
-      const galleryIndex = Math.max(0, Math.min(options?.galleryIndex ?? 0, maxIndex));
-      const activeUri = uris[galleryIndex] ?? uri;
-      if (postId) {
-        setPostMediaGalleryIndex(postId, galleryIndex);
-      }
-      setFullscreenMedia({
-        uri: activeUri,
-        kind,
-        mediaWidth: options?.mediaWidth,
-        mediaHeight: options?.mediaHeight,
-        galleryUris: uris.length > 0 ? uris : undefined,
-        galleryIndex,
-        postId,
-      });
-    },
-    [setPostMediaGalleryIndex]
-  );
-
-  useEffect(() => {
-    if (!EMAIL_OTP_ENABLED) return;
-    if (Platform.OS !== "android") return;
-    if (authMode !== "loginOtp" && authMode !== "signupOtp") return;
-
-    const emailLocalHint =
-      authMode === "loginOtp"
-        ? loginEmail.trim().toLowerCase().split("@")[0] ?? ""
-        : signupEmail.trim().toLowerCase().split("@")[0] ?? "";
-
-    const stop = startAndroidOtpAssist(
-      (code) => {
-        const clipped = code.replace(/\D/g, "").slice(0, 6);
-        if (clipped.length !== 6) return;
-        if (authModeRef.current === "loginOtp") setLoginOtp(clipped);
-        else if (authModeRef.current === "signupOtp") setSignupOtp(clipped);
-      },
-      {
-        emailLocalPartHint: emailLocalHint,
-        shouldApplyCode: () => {
-          if (authModeRef.current === "loginOtp") return loginOtpRef.current.trim().length < 6;
-          if (authModeRef.current === "signupOtp") return signupOtpRef.current.trim().length < 6;
-          return false;
-        },
-      }
-    );
-
-    return () => {
-      stop();
-    };
-  }, [authMode, loginEmail, signupEmail]);
+  const { setPostMediaGalleryIndex, openFullscreenMedia } = useFullscreenMedia({
+    chatInputRef,
+    setFullScreenPost,
+    setPostFullscreenThreadReplyKey,
+    setPostMediaGalleryIndexByPostId,
+    setFullscreenMedia,
+  });
 
   const persistSocialMessagingNow = usePersistSocialMessaging({
     signedIn,
@@ -1119,285 +934,77 @@ function MainAppInner() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!signedIn) return;
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    void storageSetItem(lastViewStorageKey(email), JSON.stringify(view)).catch(() => {
-      /* ignore */
-    });
-    if (view.screen === "home") {
-      void storageSetItem(lastHomeTabStorageKey(email), homeTab).catch(() => {
-        /* ignore */
-      });
-    }
-  }, [view, signedIn, homeTab]);
+  usePersistLastView({ signedIn, sessionEmailRef, view, homeTab });
 
-  useEffect(() => {
-    if (!signedIn) return;
-    setAddedFriendsFromRitual((prev) => {
-      const next = dedupeFriendsByBackendUid(prev);
-      if (next.length === prev.length && next.every((f, i) => f === prev[i])) return prev;
-      return next;
-    });
-  }, [signedIn]);
+  const {
+    allFriends,
+    friendMap,
+    friendMapRef,
+    resolveFriendProfileCard,
+    serverFriendUidsForDisplay,
+    identityLockedChatIdsSet,
+    localAcceptedFriendIds,
+    visibleFriends,
+    visibleFriendIds,
+    demoActiveInboundFriendIds,
+    friendIdToBackendUid,
+    friendIdToBackendUidRef,
+    resolveChatMemberFriendId,
+    resolvePd,
+    backendUidToFriendId,
+  } = useFriendIdentityMaps({
+    signedIn,
+    sessionEmailRef,
+    addedFriendsFromRitual,
+    setAddedFriendsFromRitual,
+    serverAcceptedFriendBackendUids,
+    presenceOnlineByBackendUid,
+    initialServerSyncDone,
+    identityLockedChatIds,
+    friendLinksState,
+    unfriendedIds,
+    view,
+    setView,
+    applyChats,
+    mergeRosterIntoCache,
+    resolveFriendProfileCardFromMaps,
+  });
 
-  const presenceFriendUidMap = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const friend of addedFriendsFromRitual) {
-      const bu = friend.backendUid?.trim();
-      if (bu?.startsWith("u_")) out[friend.id] = bu;
-    }
-    for (const uid of serverAcceptedFriendBackendUids) {
-      if (!uid.startsWith("u_")) continue;
-      out[backendUidForFriendId(uid)] = uid;
-    }
-    return out;
-  }, [addedFriendsFromRitual, serverAcceptedFriendBackendUids]);
+  const { queueSharePostsWithNewFriend, syncServerAcceptedFriendBackendUids } = useSharePostsWithNewFriend({
+    readBackendSessionFromRefs,
+    postsSharedWithFriendsRef,
+    sharePostsBackfillStartedRef,
+    pendingPostsShareFriendUidsRef,
+    sharePostsWithNewFriendHandlerRef,
+    setServerAcceptedFriendUids,
+    demoOfflineMode: DEMO_OFFLINE_MODE,
+  });
+  usePushRegistration({
+    signedIn,
+    demoOfflineMode: DEMO_OFFLINE_MODE,
+    osNotificationGranted,
+    getBackendSession,
+    backendSessionReady,
+    appLifecycleState,
+    setOsNotificationGranted,
+  });
 
-  const allFriends = useMemo(
-    () =>
-      applyPresenceToFriends(
-        mergeFriendsCatalog(DEMO_OFFLINE_MODE ? FRIENDS : [], addedFriendsFromRitual),
-        presenceOnlineByBackendUid,
-        presenceFriendUidMap
-      ),
-    [addedFriendsFromRitual, presenceOnlineByBackendUid, presenceFriendUidMap]
-  );
-
-  const friendMap = useMemo(() => {
-    const acc: Record<string, Friend> = {};
-    for (const f of allFriends) {
-      acc[f.id] = f;
-      const bu = f.backendUid?.trim();
-      if (bu?.startsWith("u_")) acc[bu] = f;
-    }
-    return acc;
-  }, [allFriends]);
-
-  const friendMapRef = useRef(friendMap);
-  friendMapRef.current = friendMap;
-
-  const resolveFriendProfileCard = useCallback(
-    (friendId: string) => resolveFriendProfileCardFromMaps(friendId, friendMap),
-    [friendMap, resolveFriendProfileCardFromMaps]
-  );
-
-  // Keep the persisted profile-card cache in step with the live roster so a
-  // previously-seen friend's name/bio/avatar survive cold starts and offline.
-  useEffect(() => {
-    if (!signedIn) return;
-    const email = sessionEmailRef.current?.trim().toLowerCase();
-    if (!email) return;
-    mergeRosterIntoCache(allFriends, email);
-  }, [allFriends, signedIn, mergeRosterIntoCache]);
-
-  const serverFriendUidsForDisplay = useMemo(() => {
-    if (DEMO_OFFLINE_MODE) return null;
-    if (!initialServerSyncDone) {
-      return null;
-    }
-    return serverAcceptedFriendBackendUids;
-  }, [initialServerSyncDone, serverAcceptedFriendBackendUids]);
-  const identityLockedChatIdsSet = useMemo(
-    () => new Set(identityLockedChatIds),
-    [identityLockedChatIds]
-  );
-  const localAcceptedFriendIds = useMemo(
-    () => new Set(friendLinksState[CURRENT_USER_ID] ?? []),
-    [friendLinksState]
-  );
-
-  const visibleFriends = useMemo(
-    () => friendsForFriendsList(allFriends, unfriendedIds),
-    [allFriends, unfriendedIds]
-  );
-  const visibleFriendIds = useMemo(() => visibleFriends.map((f) => f.id), [visibleFriends]);
-  const demoActiveInboundFriendIds = useMemo(
-    () => (DEMO_OFFLINE_MODE ? visibleFriendIds.slice(0, 5) : []),
-    [visibleFriendIds]
-  );
-
-  const friendIdToBackendUid = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const friend of allFriends) {
-      const bu = friend.backendUid?.trim();
-      if (bu?.startsWith("u_")) out[friend.id] = bu;
-    }
-    return out;
-  }, [allFriends]);
-
-  const resolveChatMemberFriendId = useCallback(
-    (memberId: string) => {
-      if (friendMap[memberId]) return memberId;
-      const trimmed = memberId.trim();
-      if (trimmed.startsWith("u_")) {
-        return friendIdToBackendUid[trimmed] ?? (friendMap[trimmed] ? trimmed : memberId);
-      }
-      return memberId;
-    },
-    [friendMap, friendIdToBackendUid]
-  );
-  const resolvePd = useCallback(
-    (friendId: string, chatId?: string) =>
-      resolveParticipantDisplay(
-        resolveChatMemberFriendId(friendId),
-        friendMap,
-        unfriendedIds,
-        serverFriendUidsForDisplay,
-        {
-          chatId,
-          identityLockedChatIds: identityLockedChatIdsSet,
-          localAcceptedFriendIds,
-        }
-      ),
-    [
-      friendMap,
-      unfriendedIds,
-      serverFriendUidsForDisplay,
-      identityLockedChatIdsSet,
-      localAcceptedFriendIds,
-      resolveChatMemberFriendId,
-    ]
-  );
-
-  useEffect(() => {
-    if (view.screen !== "friendProfile") return;
-    if (resolvePd(view.friendId).canOpenProfile) return;
-    setView(viewAfterLeavingFriendProfile(view));
-  }, [view, resolvePd]);
-
-  const backendUidToFriendId = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const friend of allFriends) {
-      const bu = friend.backendUid?.trim();
-      if (bu?.startsWith("u_")) out[bu] = friend.id;
-    }
-    return out;
-  }, [allFriends]);
-
-  const friendIdToBackendUidRef = useRef(friendIdToBackendUid);
-  friendIdToBackendUidRef.current = friendIdToBackendUid;
-
-  useEffect(() => {
-    if (!signedIn) return;
-    applyChats((current) => {
-      let changed = false;
-      const next = current.map((chat) => {
-        const memberIds = normalizeChatMemberIds(chat.memberIds, friendMap, backendUidToFriendId);
-        if (memberIds.length === chat.memberIds.length && memberIds.every((id, i) => id === chat.memberIds[i])) {
-          return chat;
-        }
-        changed = true;
-        return { ...chat, memberIds };
-      });
-      return changed ? next : current;
-    });
-  }, [signedIn, friendMap, backendUidToFriendId]);
-
-  const queueSharePostsWithNewFriend = useCallback((newFriendUid: string) => {
-    if (DEMO_OFFLINE_MODE) return;
-    if (!newFriendUid.startsWith("u_")) return;
-    if (postsSharedWithFriendsRef.current.has(newFriendUid)) return;
-    if (sharePostsBackfillStartedRef.current.has(newFriendUid)) return;
-    const session = readBackendSessionFromRefs();
-    if (!session) {
-      pendingPostsShareFriendUidsRef.current.add(newFriendUid);
-      return;
-    }
-    sharePostsBackfillStartedRef.current.add(newFriendUid);
-    sharePostsWithNewFriendHandlerRef.current(newFriendUid);
-  }, [readBackendSessionFromRefs]);
-
-  const syncServerAcceptedFriendBackendUids = useCallback(
-    (uids: Set<string>) => {
-      setServerAcceptedFriendUids(uids);
-      for (const uid of uids) {
-        queueSharePostsWithNewFriend(uid);
-      }
-    },
-    [queueSharePostsWithNewFriend, setServerAcceptedFriendUids]
-  );
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE || !osNotificationGranted) return;
-    const session = getBackendSession();
-    if (!session) return;
-    void registerPushTokenWithBackend(session).catch((err) => {
-      logAppError("push.register", err, {});
-    });
-  }, [signedIn, osNotificationGranted, getBackendSession, backendSessionReady]);
-
-  /**
-   * OS permission can change while the app is backgrounded (Settings). Re-check on
-   * foreground so push tokens stay registered for chat/post alerts.
-   */
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE) return;
-    if (appLifecycleState !== "active") return;
-    const session = getBackendSession();
-    if (!session) return;
-    void (async () => {
-      const osStatus = await getOsNotificationPermissionStatus();
-      const granted = isOsNotificationPermissionGranted(osStatus);
-      setOsNotificationGranted(granted);
-      if (!granted) return;
-      const authUid = firebaseAuth.currentUser?.uid;
-      if (authUid) {
-        try {
-          await callEmulatorFunction("registerFirebaseAuthUid", {
-            uid: session.uid,
-            deviceId: session.deviceId,
-            firebaseAuthUid: authUid,
-          });
-        } catch (err) {
-          logAppError("push.foreground.auth_map", err, { uid: session.uid });
-        }
-      }
-      await registerPushTokenWithBackend(session);
-    })().catch((err) => {
-      logAppError("push.foreground.register", err, {});
-    });
-  }, [signedIn, appLifecycleState, getBackendSession, backendSessionReady]);
-
-  const socialSnapshotUploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleSocialSnapshotCloudBackup = useCallback(() => {
-    if (DEMO_OFFLINE_MODE || !initialServerSyncDone) return;
-    const session = getBackendSession();
-    if (!session) return;
-    if (socialSnapshotUploadTimerRef.current) {
-      clearTimeout(socialSnapshotUploadTimerRef.current);
-    }
-    socialSnapshotUploadTimerRef.current = setTimeout(() => {
-      socialSnapshotUploadTimerRef.current = null;
-      void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
-        chats: chatsRef.current,
-        messages: messagesRef.current,
-        posts: postsVisibleForCache(postsRef.current),
-        messagesWatermarkMs: messagesWatermarkMsRef.current,
-        postsWatermarkMs: postsWatermarkMsRef.current,
-      }).catch(() => undefined);
-    }, 8_000);
-  }, [DEMO_OFFLINE_MODE, getBackendSession, postsVisibleForCache, initialServerSyncDone]);
-
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE || !backendSessionReady || !initialServerSyncDone) return;
-    scheduleSocialSnapshotCloudBackup();
-  }, [chats, messages, posts, signedIn, backendSessionReady, initialServerSyncDone, scheduleSocialSnapshotCloudBackup]);
-
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE || !initialServerSyncDone) return;
-    if (appLifecycleState !== "background" && appLifecycleState !== "inactive") return;
-    const session = getBackendSession();
-    if (!session) return;
-    void uploadSocialSnapshotToCloud(session.uid, session.deviceId, {
-      chats: chatsRef.current,
-      messages: messagesRef.current,
-      posts: postsVisibleForCache(postsRef.current),
-      messagesWatermarkMs: messagesWatermarkMsRef.current,
-      postsWatermarkMs: postsWatermarkMsRef.current,
-    }).catch(() => undefined);
-  }, [appLifecycleState, signedIn, initialServerSyncDone, getBackendSession, postsVisibleForCache]);
+  useSocialSnapshotCloudBackup({
+    signedIn,
+    backendSessionReady,
+    initialServerSyncDone,
+    appLifecycleState,
+    chats,
+    messages,
+    posts,
+    getBackendSession,
+    postsVisibleForCache,
+    chatsRef,
+    messagesRef,
+    postsRef,
+    messagesWatermarkMsRef,
+    postsWatermarkMsRef,
+  });
 
   useEffect(() => {
     backendUidToFriendIdRef.current = backendUidToFriendId;
@@ -1581,16 +1188,16 @@ function MainAppInner() {
     // Local `file://` previews must not ship through encrypted sync — they normalize
     // to "" and would wipe friends' cached avatars before Storage upload finishes.
     if (!httpsPicture) return;
+    const picturePath = storageObjectPathFromDownloadUrl(httpsPicture);
     const recipientUids = [
       session.uid,
       ...visibleFriendIds
         .map((id) => friendMap[id]?.backendUid?.trim())
         .filter((uid): uid is string => !!uid && uid.startsWith("u_")),
     ];
-    const payload = {
-      profilePictureUrl: httpsPicture,
-      updatedAt: Date.now(),
-    };
+    const payload = picturePath
+      ? { profilePicturePath: picturePath, updatedAt: Date.now() }
+      : { profilePictureUrl: httpsPicture, updatedAt: Date.now() };
     const timer = setTimeout(() => {
       void (async () => {
         try {
@@ -1628,12 +1235,39 @@ function MainAppInner() {
     setEncryptedSyncState,
   });
 
+  const lockChatsForRemovedFriends = useCallback(
+    (backendUids: string[]) => {
+      const session = getBackendSession();
+      if (!session || backendUids.length === 0) return;
+      const additions: string[] = [];
+      for (const uid of backendUids) {
+        additions.push(
+          ...collectDirectChatIdsToLockForFriend(
+            chatsRef.current ?? [],
+            backendUidForFriendId(uid),
+            {
+              friendBackendUid: uid,
+              sessionAppUid: session.uid,
+              friendMap: friendMapRef.current,
+              friendIdToBackendUid: friendIdToBackendUidRef.current,
+            }
+          )
+        );
+      }
+      if (additions.length > 0) {
+        setIdentityLockedChatIds((cur) => mergeIdentityLockedChatIds(cur, additions));
+      }
+    },
+    [getBackendSession]
+  );
+
   useFriendRosterSync({
     demoOfflineMode: DEMO_OFFLINE_MODE,
     signedIn,
     getBackendSession,
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged: syncServerAcceptedFriendBackendUids,
+    onFriendsRemoved: lockChatsForRemovedFriends,
     addedFriendsFromRitualRef,
     setAddedFriendsFromRitual,
     setUnfriendedIds,
@@ -1665,6 +1299,7 @@ function MainAppInner() {
     addedFriendsFromRitualRef,
     acceptedFriendBackendUidsRef,
     onServerFriendBackendUidsChanged: syncServerAcceptedFriendBackendUids,
+    onFriendsRemoved: lockChatsForRemovedFriends,
     addUndirectedEdge,
     currentUserLocalId: CURRENT_USER_ID,
     currentUserId: CURRENT_USER_ID,
@@ -1780,44 +1415,44 @@ function MainAppInner() {
     };
   }, [signedIn, initialServerSyncDone, friendBackendUidsKey, getBackendSession, replaceFriendsIfChanged]);
 
-  const isFriendFeedMuted = useCallback(
-    (friendId: string) => {
-      const until = feedMutedUntilByFriendId[friendId];
-      if (until === undefined) return false;
-      if (until === null) return true;
-      return until > Date.now();
-    },
-    [feedMutedUntilByFriendId]
-  );
+  const onHomeFeedTab = view.screen === "home" && homeTab === "feed";
 
-  const sortedVisiblePosts = useMemo(
-    () =>
-      [...posts]
-        .filter(isPostAlive)
-        .sort((a, b) => b.createdAt - a.createdAt),
-    [posts]
-  );
-
-  const feedPosts = useMemo(
-    () =>
-      sortedVisiblePosts.filter(
-        (post) =>
-          post.authorId === CURRENT_USER_ID ||
-          (visibleFriendIds.includes(post.authorId) && !isFriendFeedMuted(post.authorId))
-      ),
-    [sortedVisiblePosts, visibleFriendIds, isFriendFeedMuted]
-  );
-
-  const displayedFeedPosts = useMemo(
-    () => feedPosts.slice(0, feedDisplayLimit),
-    [feedPosts, feedDisplayLimit]
-  );
-
-  const feedReactionListenPostIds = useMemo(() => {
-    const ids = new Set(displayedFeedPosts.map((p) => p.id));
-    if (fullScreenPost?.id) ids.add(fullScreenPost.id);
-    return [...ids].slice(0, ENCRYPTED_POSTS_HOME_FEED_LIMIT);
-  }, [displayedFeedPosts, fullScreenPost?.id]);
+  const {
+    isFriendFeedMuted,
+    feedPosts,
+    displayedFeedPosts,
+    feedReactionListenPostIds,
+    onFeedEndReached,
+    myProfilePosts,
+    myProfileMediaPosts,
+    friendProfilePosts,
+    friendProfileMediaPosts,
+    visibleMyProfileFeedPosts,
+    visibleFriendProfileFeedPosts,
+    myProfileFeedHasMore,
+    friendProfileFeedHasMore,
+    postGridLayout,
+    loadMoreProfileFeedPosts,
+    unreadFeedReactionCount,
+    markFeedPostsForMediaResolve,
+  } = useFeedLists({
+    posts,
+    visibleFriendIds,
+    feedMutedUntilByFriendId,
+    feedDisplayLimit,
+    setFeedDisplayLimit,
+    fullScreenPost,
+    view,
+    signedIn,
+    initialServerSyncDone,
+    windowWidth,
+    onHomeFeedTab,
+    seenFeedReactionSigByPostId,
+    setSeenFeedReactionSigByPostId,
+    getBackendSession,
+    loadMoreOlderPosts,
+    setFeedMediaResolveIds,
+  });
 
   useFeedReactionListeners({
     demoOfflineMode: DEMO_OFFLINE_MODE,
@@ -1830,185 +1465,82 @@ function MainAppInner() {
     listenPostIds: feedReactionListenPostIds,
     setPosts,
   });
+  const {
+    joinCutoffForViewer,
+    lastMessageByChatId,
+    visibleThreadMessagesByChatId,
+    sortedChats,
+    visibleSortedChats,
+    unreadChatIdSet,
+    unreadChatCount,
+    pendingDraft,
+    resolvedChat,
+    messageById,
+    activeChatKind,
+    activeCounterpartIds,
+    activeChatId,
+    activeDirectCounterpartPd,
+    activeChatIdentityLocked,
+    chatScreenTitle,
+    isDirectTombstoneChat,
+    chatScreenTitleWithCount,
+    canEditActiveGroupMeta,
+    activeHeaderPicture,
+    eligibleFriendsToAdd,
+    filteredFriendsToAdd,
+    activeChatMessages,
+    invertedChatMessages,
+    invertedChatMessagesForList,
+    chatListCanExpandLocally,
+    activeChatIdForPagination,
+    activeChatListRenderKey,
+    activeChatForRead,
+    readAvatarsForActiveChat,
+  } = useChatInboxModel({
+    chats,
+    messages,
+    hiddenChatIds,
+    unfriendedIds,
+    friendMap,
+    friendIdToBackendUid,
+    backendUidToFriendId,
+    identityLockedChatIds,
+    identityLockedChatIdsSet,
+    serverFriendUidsForDisplay,
+    allFriends,
+    friendLinksState,
+    view,
+    chatSearch,
+    chatListDisplayLimit,
+    addMemberSearch,
+    backendSessionReady,
+    getBackendSession,
+    resolvePd,
+    resolveChatMemberFriendId,
+  });
 
-  const markFeedPostsForMediaResolve = useCallback((postIds: string[]) => {
-    if (postIds.length === 0) return;
-    setFeedMediaResolveIds((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const id of postIds) {
-        if (!next.has(id)) {
-          next.add(id);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, []);
-
-  useEffect(() => {
-    markFeedPostsForMediaResolve(
-      feedPosts.slice(0, FEED_UI_INITIAL_COUNT).map((post) => post.id)
-    );
-  }, [feedPosts, markFeedPostsForMediaResolve]);
-
-  const loadMoreFeedPosts = useCallback(() => {
-    const oldest = feedPosts[feedPosts.length - 1];
-    if (!oldest) return;
-    loadMoreOlderPosts(oldest.createdAt);
-  }, [feedPosts, loadMoreOlderPosts]);
-
-  const onFeedEndReached = useCallback(() => {
-    if (feedDisplayLimit < feedPosts.length) {
-      setFeedDisplayLimit((cur) =>
-        Math.min(cur + FEED_UI_DISPLAY_PAGE_SIZE, feedPosts.length)
-      );
-      return;
+  const messageActionTarget = messageActionTargetId ? messageById[messageActionTargetId] : undefined;
+  const replyTargetMessage = replyTargetMessageId ? messageById[replyTargetMessageId] : undefined;
+  const isActiveBroadcastCreator =
+    activeChatKind === "broadcast" && !!resolvedChat && isBroadcastCreator(resolvedChat, CURRENT_USER_ID);
+  const isActiveBroadcastRecipient =
+    activeChatKind === "broadcast" && !!resolvedChat && !isBroadcastCreator(resolvedChat, CURRENT_USER_ID);
+  const broadcastRecipientComposerLocked = isActiveBroadcastRecipient && !replyTargetMessage;
+  const editingMessage = editingMessageId ? messageById[editingMessageId] : undefined;
+  const chatPaginationEnabled = Boolean(
+    activeChatIdForPagination &&
+      (chatListCanExpandLocally || chatHasMoreOlder[activeChatIdForPagination] !== false)
+  );
+  const buildComposerHeaderTitle = () => {
+    if (composerMode === "broadcast") {
+      return composerCustomTitle.trim() || "Broadcast";
     }
-    loadMoreFeedPosts();
-  }, [feedDisplayLimit, feedPosts.length, loadMoreFeedPosts]);
-
-  const myProfilePosts = useMemo(
-    () => sortedVisiblePosts.filter((post) => post.authorId === CURRENT_USER_ID),
-    [sortedVisiblePosts]
-  );
-
-  const myProfileMediaPosts = useMemo(
-    () =>
-      myProfilePosts.filter(
-        (post) =>
-          (post.imageUris?.length ?? 0) > 0 ||
-          (post.imageEncryptedMedia?.length ?? 0) > 0 ||
-          !!post.videoUri ||
-          !!post.videoEncryptedMedia
-      ),
-    [myProfilePosts]
-  );
-
-  const friendProfilePosts = useMemo(() => {
-    if (view.screen !== "friendProfile") return [];
-    return sortedVisiblePosts.filter((post) => post.authorId === view.friendId);
-  }, [sortedVisiblePosts, view]);
-
-  const friendProfileMediaPosts = useMemo(
-    () =>
-      friendProfilePosts.filter(
-        (post) =>
-          (post.imageUris?.length ?? 0) > 0 ||
-          (post.imageEncryptedMedia?.length ?? 0) > 0 ||
-          !!post.videoUri ||
-          !!post.videoEncryptedMedia
-      ),
-    [friendProfilePosts]
-  );
-
-  const visibleMyProfileFeedPosts = useMemo(
-    () => myProfilePosts.slice(0, profileFeedPostLimit),
-    [myProfilePosts, profileFeedPostLimit]
-  );
-
-  const visibleFriendProfileFeedPosts = useMemo(
-    () => friendProfilePosts.slice(0, profileFeedPostLimit),
-    [friendProfilePosts, profileFeedPostLimit]
-  );
-
-  const myProfileFeedHasMore = myProfilePosts.length > visibleMyProfileFeedPosts.length;
-  const friendProfileFeedHasMore =
-    friendProfilePosts.length > visibleFriendProfileFeedPosts.length;
-
-  const postGridLayout = useMemo(() => {
-    const cols = 3;
-    const gap = 2;
-    const inner = windowWidth - 28;
-    const cell = Math.floor((inner - gap * (cols - 1)) / cols);
-    return { cols, gap, cell };
-  }, [windowWidth]);
-
-  /** After cold start, pre-decrypt own profile grid thumbs from on-disk cache. */
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE || !initialServerSyncDone) return;
-    if (myProfileMediaPosts.length === 0) return;
-    void warmPostGridMediaCache(myProfileMediaPosts, { maxPosts: 36, priority: "normal" });
-  }, [signedIn, initialServerSyncDone, myProfileMediaPosts]);
-
-  /** Opening My Profile: jump thumbnail warm ahead of feed decrypt work. */
-  useEffect(() => {
-    if (!signedIn || DEMO_OFFLINE_MODE) return;
-    if (view.screen !== "myProfile") return;
-    if (myProfileMediaPosts.length === 0) return;
-    void warmPostGridMediaCache(myProfileMediaPosts, { maxPosts: 36, priority: "high" });
-  }, [signedIn, view.screen, myProfileMediaPosts]);
-
-  const joinCutoffForViewer = useCallback(
-    (chat: Chat | null | undefined) => {
-      const session = getBackendSession();
-      return joinCutoffMsForViewer(chat, session?.uid ?? null);
-    },
-    [getBackendSession]
-  );
-
-  const lastMessageByChatId = useMemo(() => {
-    const session = getBackendSession();
-    return buildLastMessageByChatId({
-      chats,
-      messages,
-      sessionAppUid: session?.uid ?? null,
-      friendMap,
-      friendIdToBackendUid,
-      currentUserId: CURRENT_USER_ID,
-      currentUserLocalId: CURRENT_USER_LOCAL_ID,
-    });
-  }, [messages, chats, friendMap, friendIdToBackendUid, getBackendSession]);
-
-  const visibleThreadMessagesByChatId = useMemo(() => {
-    const session = getBackendSession();
-    return buildVisibleThreadMessagesByChatId({
-      chats,
-      messages,
-      sessionAppUid: session?.uid ?? null,
-      friendMap,
-      friendIdToBackendUid,
-      currentUserId: CURRENT_USER_ID,
-      currentUserLocalId: CURRENT_USER_LOCAL_ID,
-    });
-  }, [messages, chats, friendMap, friendIdToBackendUid, getBackendSession]);
-
-  const sortedChats = useMemo(() => {
-    const hidden = new Set(hiddenChatIds);
-    const mine = chats.filter((c) => c.memberIds.includes(CURRENT_USER_ID) && !hidden.has(c.id));
-    return [...mine].sort((a, b) => {
-      const aTs = chatListSortTimestampMs(
-        a,
-        lastMessageByChatId[a.id],
-        visibleThreadMessagesByChatId[a.id] ?? []
-      );
-      const bTs = chatListSortTimestampMs(
-        b,
-        lastMessageByChatId[b.id],
-        visibleThreadMessagesByChatId[b.id] ?? []
-      );
-      return bTs - aTs;
-    });
-  }, [chats, lastMessageByChatId, visibleThreadMessagesByChatId, hiddenChatIds]);
-
-  /**
-   * Chat list visibility rule (see `Planning/MASTER_PRODUCT_PLAN.md`,
-   * `FEATURE_TEST_SCENARIOS.md` → “Chat list ghost rule”):
-   *
-   * 1. A chat row is shown only when it has at least one **visible** message
-   *    (after `joinCutoffForViewer` + `hiddenFromOwner` filtering), **OR** it is
-   *    *my own* draft (`isDraft && createdBy === me`) that carries non-empty
-   *    `draftComposerText`. No identity (username/avatar) leaks via a row that
-   *    is otherwise empty.
-   * 2. Drafts that are not yet `visibleToRecipients` stay private to the
-   *    creator until the first message is committed.
-   * 3. Chats with an unfriended counterpart stay visible when they already have
-   *    message history (tombstone-with-history); empty ex-friend threads stay hidden.
-   */
-  const visibleSortedChats = useMemo(
-    () => filterChatsVisibleInInbox(sortedChats, lastMessageByChatId, unfriendedIds, CURRENT_USER_ID),
-    [sortedChats, lastMessageByChatId, unfriendedIds]
-  );
+    if (composerCustomTitle.trim()) {
+      return composerCustomTitle.trim();
+    }
+    if (selectedComposerIds.length === 0) return "Start Chat";
+    return chatNameFromFriendIds(selectedComposerIds, (id) => resolvePd(id).displayName);
+  };
 
   useEffect(() => {
     if (!initialServerSyncDone || DEMO_OFFLINE_MODE || !signedIn) return;
@@ -2075,287 +1607,10 @@ function MainAppInner() {
    * someone else and arrived after my read watermark (`readBy[myUid]`). The
    * currently-open chat and muted chats never count.
    */
-  const unreadChatIdSet = useMemo(() => {
-    if (!backendSessionReady) return new Set<string>();
-    const session = getBackendSession();
-    const myUid = session?.uid ?? null;
-    if (!myUid) return new Set<string>();
-    const openChatId = activeChatIdFromView(view);
-    const unread = new Set<string>();
-    for (const chat of visibleSortedChats) {
-      if (chat.mutedForNotifications) continue;
-      if (chat.id === openChatId) continue;
-      const last = lastMessageByChatId[chat.id];
-      if (
-        isIncomingChatUnread({
-          chat,
-          lastMessage: last,
-          myUid,
-          currentUserId: CURRENT_USER_ID,
-          currentUserLocalId: CURRENT_USER_LOCAL_ID,
-        })
-      ) {
-        unread.add(chat.id);
-      }
-    }
-    return unread;
-  }, [visibleSortedChats, lastMessageByChatId, view, getBackendSession, backendSessionReady]);
-
-  const unreadChatCount = unreadChatIdSet.size;
-
-  const onHomeFeedTab = view.screen === "home" && homeTab === "feed";
-
-  const unreadFeedReactionCount = useMemo(() => {
-    if (onHomeFeedTab) return 0;
-    const session = getBackendSession();
-    return countUnreadFeedReactionPosts(
-      posts,
-      CURRENT_USER_ID,
-      session?.uid ?? null,
-      seenFeedReactionSigByPostId
-    );
-  }, [onHomeFeedTab, posts, seenFeedReactionSigByPostId, getBackendSession]);
-
   const homeNavBadges = useMemo(
     () => ({ chats: unreadChatCount, feed: unreadFeedReactionCount }),
     [unreadChatCount, unreadFeedReactionCount]
   );
-
-  useEffect(() => {
-    if (!onHomeFeedTab) return;
-    const session = getBackendSession();
-    setSeenFeedReactionSigByPostId((current) =>
-      markOwnedPostReactionsSeen(posts, CURRENT_USER_ID, session?.uid ?? null, current)
-    );
-  }, [onHomeFeedTab, posts, getBackendSession]);
-
-  const pendingDraft =
-    pendingDraftFromView(view);
-
-  const resolvedChat = useMemo(() => {
-    if (view.screen !== "chat" || !("chatId" in view)) return null;
-    const byViewId = chats.find((c) => c.id === view.chatId);
-    if (byViewId) return byViewId;
-    const session = getBackendSession();
-    if (session && !DEMO_OFFLINE_MODE) {
-      const threadIds = localChatIdsForDirectThread(
-        view.chatId,
-        chats,
-        session.uid,
-        friendMap,
-        friendIdToBackendUid
-      );
-      return chats.find((c) => threadIds.has(c.id)) ?? null;
-    }
-    return null;
-  }, [chats, view, friendMap, friendIdToBackendUid, getBackendSession]);
-
-  const messageById = useMemo(
-    () =>
-      messages.reduce<Record<string, Message>>((acc, message) => {
-        acc[message.id] = message;
-        return acc;
-      }, {}),
-    [messages]
-  );
-
-  const activeChatKind = (resolvedChat?.kind ?? pendingDraft?.kind ?? "standard") as
-    | "standard"
-    | "broadcast";
-  const activeCounterpartIds = (resolvedChat?.memberIds ?? pendingDraft?.memberIds ?? []).filter(
-    (id) => id !== CURRENT_USER_ID
-  );
-  const activeChatId =
-    activeChatIdFromView(view) ?? undefined;
-  const activeDirectCounterpartPd =
-    activeChatKind === "standard" && activeCounterpartIds.length === 1
-      ? resolvePd(activeCounterpartIds[0], activeChatId)
-      : null;
-  const activeChatIdentityLocked = isChatIdentityLocked(activeChatId, identityLockedChatIdsSet);
-  const chatScreenTitle = useMemo(() => {
-    if (activeChatKind !== "standard") {
-      return pendingDraft?.name ?? resolvedChat?.name ?? "Chat";
-    }
-    if (activeCounterpartIds.length === 1) {
-      if (activeChatIdentityLocked) return TOMBSTONE_DISPLAY_NAME;
-      const counterpartId = resolveChatMemberFriendId(activeCounterpartIds[0]);
-      const pd = resolvePd(counterpartId, activeChatId);
-      if (!pd.canOpenProfile) return TOMBSTONE_DISPLAY_NAME;
-      return pd.displayName;
-    }
-    if (activeCounterpartIds.length > 1) {
-      if (resolvedChat?.isCustomName) return resolvedChat.name;
-      if (pendingDraft?.standardGroupTitle === "custom") {
-        return (
-          pendingDraft.name?.trim() ||
-          chatNameFromFriendIds(activeCounterpartIds, (id) => resolvePd(id).displayName)
-        );
-      }
-      return chatNameFromFriendIds(activeCounterpartIds, (id) => resolvePd(id).displayName);
-    }
-    return pendingDraft?.name ?? resolvedChat?.name ?? "Chat";
-  }, [
-    activeChatKind,
-    activeCounterpartIds,
-    friendMap,
-    unfriendedIds,
-    pendingDraft?.name,
-    pendingDraft?.standardGroupTitle,
-    resolvedChat?.name,
-    resolvedChat?.isCustomName,
-    resolvedChat?.kind,
-    activeChatId,
-    activeChatIdentityLocked,
-    identityLockedChatIds,
-    serverFriendUidsForDisplay,
-    resolvePd,
-    resolveChatMemberFriendId,
-    unfriendedIds,
-  ]);
-  /** Direct DM: ex-friend, unknown participant, or identity-locked history after refriend. */
-  const isDirectTombstoneChat =
-    view.screen === "chat" &&
-    activeChatKind === "standard" &&
-    activeCounterpartIds.length === 1 &&
-    (activeChatIdentityLocked ||
-      (activeDirectCounterpartPd !== null && !activeDirectCounterpartPd.canOpenProfile));
-
-  const broadcastMemberCount =
-    resolvedChat?.kind === "broadcast"
-      ? resolvedChat.broadcastRecipientIds?.length ??
-        resolvedChat.memberIds.filter((id) => id !== CURRENT_USER_ID).length
-      : 0;
-  const chatScreenTitleWithCount =
-    resolvedChat?.kind === "broadcast" && (resolvedChat.createdBy ?? CURRENT_USER_ID) === CURRENT_USER_ID
-      ? `${chatScreenTitle} (${broadcastMemberCount})`
-      : chatScreenTitle;
-  const canEditActiveGroupMeta =
-    !!resolvedChat &&
-    (resolvedChat.createdBy ?? CURRENT_USER_ID) === CURRENT_USER_ID &&
-    (activeChatKind === "broadcast" || activeCounterpartIds.length > 1);
-  const activeHeaderPicture =
-    resolvedChat?.profilePicture ??
-    pendingDraft?.profilePicture ??
-    (activeChatKind === "broadcast" ? "📣" : activeCounterpartIds.length > 1 ? "^" : "");
-
-  const messageActionTarget = messageActionTargetId ? messageById[messageActionTargetId] : undefined;
-  const replyTargetMessage = replyTargetMessageId ? messageById[replyTargetMessageId] : undefined;
-  const isActiveBroadcastCreator =
-    activeChatKind === "broadcast" &&
-    !!resolvedChat &&
-    isBroadcastCreator(resolvedChat, CURRENT_USER_ID);
-  const isActiveBroadcastRecipient =
-    activeChatKind === "broadcast" &&
-    !!resolvedChat &&
-    !isBroadcastCreator(resolvedChat, CURRENT_USER_ID);
-  const broadcastRecipientComposerLocked =
-    isActiveBroadcastRecipient && !replyTargetMessage;
-  const editingMessage = editingMessageId ? messageById[editingMessageId] : undefined;
-
-  const buildComposerHeaderTitle = () => {
-    if (composerMode === "broadcast") {
-      return composerCustomTitle.trim() || "Broadcast";
-    }
-    if (composerCustomTitle.trim()) {
-      return composerCustomTitle.trim();
-    }
-    if (selectedComposerIds.length === 0) return "Start Chat";
-    return chatNameFromFriendIds(selectedComposerIds, (id) => resolvePd(id).displayName);
-  };
-
-  const eligibleFriendsToAdd = useMemo(() => {
-    if (!resolvedChat || resolvedChat.kind === "broadcast" || resolvedChat.isDraft) return [];
-    const chat = resolvedChat;
-    const memberSet = new Set(chat.memberIds);
-    const peers = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
-    return allFriends.filter((friend) => {
-      if (unfriendedIds.includes(friend.id)) return false;
-      if (memberSet.has(friend.id)) return false;
-      return peers.every((pid) => (friendLinksState[pid] ?? []).includes(friend.id));
-    });
-  }, [resolvedChat, unfriendedIds, allFriends, friendLinksState]);
-
-  const filteredFriendsToAdd = useMemo(() => {
-    const q = addMemberSearch.trim().toLowerCase();
-    if (!q) return eligibleFriendsToAdd;
-    return eligibleFriendsToAdd.filter((f) => f.displayName.toLowerCase().includes(q));
-  }, [eligibleFriendsToAdd, addMemberSearch]);
-
-  const activeChatMessages = useActiveChatMessages({
-    view,
-    chats,
-    messages,
-    chatSearch,
-    demoOfflineMode: DEMO_OFFLINE_MODE,
-    sessionUid: getBackendSession()?.uid ?? null,
-    friendMap,
-    friendIdToBackendUid,
-    currentUserId: CURRENT_USER_ID,
-  });
-
-  /** Newest first — required for `inverted` FlatList (latest sits at bottom, scroll up for older). */
-  const invertedChatMessages = useMemo(
-    () => [...activeChatMessages].reverse(),
-    [activeChatMessages]
-  );
-
-  /** Only mount a window of rows even when more messages are already in memory. */
-  const invertedChatMessagesForList = useMemo(
-    () => invertedChatMessages.slice(0, chatListDisplayLimit),
-    [invertedChatMessages, chatListDisplayLimit]
-  );
-
-  const chatListCanExpandLocally = invertedChatMessages.length > chatListDisplayLimit;
-
-  const activeChatIdForPagination =
-    activeChatIdFromView(view);
-
-  /** Enable scroll-up when more rows are in memory or the server may have older history. */
-  const chatPaginationEnabled = Boolean(
-    activeChatIdForPagination &&
-      (chatListCanExpandLocally ||
-        chatHasMoreOlder[activeChatIdForPagination] !== false)
-  );
-
-  /** FlatList extraData — avoid passing the global `messages` array (re-renders every row on any chat update). */
-  const activeChatListRenderKey = useMemo(() => {
-    const last = activeChatMessages[activeChatMessages.length - 1];
-    return `${activeChatMessages.length}:${last?.id ?? ""}:${last?.deliveryStatus ?? ""}:${last?.createdAt ?? 0}`;
-  }, [activeChatMessages]);
-
-  const activeChatForRead = useMemo(() => {
-    const onChatThread = view.screen === "chat" || view.screen === "chatSharedMedia";
-    if (!onChatThread || !("chatId" in view)) return null;
-    const byViewId = chats.find((c) => c.id === view.chatId);
-    if (byViewId) return byViewId;
-    const session = getBackendSession();
-    if (session && !DEMO_OFFLINE_MODE) {
-      const threadIds = localChatIdsForDirectThread(
-        view.chatId,
-        chats,
-        session.uid,
-        friendMap,
-        friendIdToBackendUid
-      );
-      return chats.find((c) => threadIds.has(c.id)) ?? null;
-    }
-    return null;
-  }, [chats, view, friendMap, friendIdToBackendUid, getBackendSession]);
-
-  const readAvatarsForActiveChat = useMemo(() => {
-    const readByBackend = activeChatForRead?.readBy as ReadByMap | undefined;
-    if (!readByBackend) return {};
-    const readByFriendIds: ReadByMap = {};
-    for (const [uid, cursor] of Object.entries(readByBackend)) {
-      const friendId =
-        uid === getBackendSession()?.uid
-          ? CURRENT_USER_ID
-          : backendUidToFriendId[uid] ?? uid;
-      readByFriendIds[friendId] = cursor;
-    }
-    return readAvatarsByMessageId(activeChatMessages, readByFriendIds, CURRENT_USER_ID);
-  }, [activeChatMessages, activeChatForRead?.readBy, backendUidToFriendId, getBackendSession]);
-
   const { handleChatListEndReached } = useOlderChatMessages({
     view,
     chats,
@@ -2380,15 +1635,6 @@ function MainAppInner() {
     resolveConversationId,
     applyMessages,
   });
-
-  useEffect(() => {
-    if (view.screen !== "myProfile" && view.screen !== "friendProfile") return;
-    setProfileFeedPostLimit(PROFILE_FEED_POSTS_INITIAL);
-  }, [view]);
-
-  const loadMoreProfileFeedPosts = useCallback(() => {
-    setProfileFeedPostLimit((current) => current + PROFILE_FEED_POSTS_PAGE_SIZE);
-  }, []);
 
   useOpenChatSnapshot({
     view,
@@ -2444,385 +1690,84 @@ function MainAppInner() {
     friendsListSearch,
   });
 
-  const resetLocalSocialStateForSignedOut = useCallback(() => {
-    clearSignedOutSocialState({
-      resetMessagingState,
-      resetPosts,
-      resetFriendsState,
-      resetMyProfile,
-      resetFeedPrefs,
-      deletedPostIdsRef,
-      recipientKeyCacheRef,
-      messagesWatermarkMsRef,
-      messagesLastFullSyncAtRef,
-      postsWatermarkMsRef,
-      postsLastFullSyncAtRef,
-      sharePostsBackfillStartedRef,
-      pendingPostsShareFriendUidsRef,
-      postsSharedWithFriendsRef,
-    });
-  }, [resetMessagingState, resetPosts, resetFriendsState, resetMyProfile, resetFeedPrefs]);
+  const {
+    resetLocalSocialStateForSignedOut,
+    resetLocalStateForCurrentUser,
+    applySignedInAccount,
+  } = useSignedInAccountBoot({
+    resetMessagingState,
+    resetPosts,
+    resetFriendsState,
+    resetMyProfile,
+    resetFeedPrefs,
+    deletedPostIdsRef,
+    recipientKeyCacheRef,
+    messagesWatermarkMsRef,
+    messagesLastFullSyncAtRef,
+    postsWatermarkMsRef,
+    postsLastFullSyncAtRef,
+    sharePostsBackfillStartedRef,
+    pendingPostsShareFriendUidsRef,
+    postsSharedWithFriendsRef,
+    markSessionReady,
+    setEncryptedSyncState,
+    localSocialCacheSavedAtMsRef,
+    applyChats,
+    applyMessages,
+    setPosts,
+    myDisplayNameRef,
+    hydrateMyProfile,
+    refreshHiddenConversationIdsFromServer,
+    sessionEmailRef,
+    setSeenFeedReactionSigByPostId,
+    setHiddenChatIds,
+    hiddenServerConversationIdsRef,
+    replaceInbox,
+    setIdentityLockedChatIds,
+    hydrateFriends,
+    setPresenceOnlineByBackendUid,
+    setFeedMutedUntilByFriendId,
+    setInitialServerSyncDone,
+    markSignedIn,
+    setAuthMode,
+    setView,
+    setHomeTab,
+    setDemoPendingAddableQueue,
+    backendInitGenerationRef,
+    clearSession,
+    logoutRef,
+    signedIn,
+    signedInRef,
+    isRestoringAuthRef,
+    appBootAuthResolvedRef,
+    sessionTokenRef,
+    markAppBootAuthResolved,
+    setSignedIn,
+    resetSyncChannelsIdle,
+    sessionConflictNoticeAtRef,
+  });
 
-  const resetLocalStateForCurrentUser = useCallback(() => {
-    resetCurrentUserLocalState({
-      sessionEmailRef,
-      resetLocalSocialStateForSignedOut,
-      setView,
-      setHomeTab,
-    });
-  }, [resetLocalSocialStateForSignedOut]);
-
-  const initializeBackendSessionForAccount = useCallback(
-    async (account: MockAuthAccount) => {
-      await initializeBackendSessionForAccountImpl(account, {
-        markSessionReady,
-        recipientKeyCacheRef,
-        setEncryptedSyncState,
-        localSocialCacheSavedAtMsRef,
-        deletedPostIdsRef,
-        applyChats,
-        applyMessages,
-        setPosts,
-        messagesWatermarkMsRef,
-        postsWatermarkMsRef,
-        messagesLastFullSyncAtRef,
-        postsLastFullSyncAtRef,
-        myDisplayNameRef,
-        hydrateMyProfile,
-        refreshHiddenConversationIdsFromServer,
-      });
-    },
-    [refreshHiddenConversationIdsFromServer, markSessionReady, hydrateMyProfile]
-  );
-
-  const retryInitializeBackendForAccount = useCallback(
-    (account: MockAuthAccount) =>
-      retryInitializeBackendSession(account, {
-        initializeBackendSessionForAccount,
-        setEncryptedSyncState,
-      }),
-    [initializeBackendSessionForAccount]
-  );
-
-  const applySignedInAccount = useCallback(
-    (account: MockAuthAccount) =>
-      restoreSignedInAccount(account, {
-        sessionEmailRef,
-        setSeenFeedReactionSigByPostId,
-        postsSharedWithFriendsRef,
-        sharePostsBackfillStartedRef,
-        messagesWatermarkMsRef,
-        messagesLastFullSyncAtRef,
-        postsWatermarkMsRef,
-        postsLastFullSyncAtRef,
-        deletedPostIdsRef,
-        recipientKeyCacheRef,
-        localSocialCacheSavedAtMsRef,
-        setHiddenChatIds,
-        hiddenServerConversationIdsRef,
-        replaceInbox,
-        setPosts,
-        setIdentityLockedChatIds,
-        hydrateFriends,
-        setPresenceOnlineByBackendUid,
-        setFeedMutedUntilByFriendId,
-        hydrateMyProfile,
-        setInitialServerSyncDone,
-        markSignedIn,
-        setAuthMode,
-        setView,
-        setHomeTab,
-        setDemoPendingAddableQueue,
-        markSessionReady,
-        setEncryptedSyncState,
-        backendInitGenerationRef,
-        initializeBackendSessionForAccount,
-        retryInitializeBackendForAccount,
-        clearSession,
-        logoutRef,
-      }),
-    [initializeBackendSessionForAccount, retryInitializeBackendForAccount, markSessionReady, clearSession, hydrateFriends, hydrateMyProfile, markSignedIn]
-  );
-
-  const applySignedInAccountRef = useRef(applySignedInAccount);
-  applySignedInAccountRef.current = applySignedInAccount;
-
-  useEffect(() => {
-    if (DEMO_OFFLINE_MODE) {
-      markAppBootAuthResolved();
-      return () => {};
-    }
-    let nullAuthTimer: ReturnType<typeof setTimeout> | null = null;
-    const cancelNullAuthDrop = () => {
-      if (nullAuthTimer) {
-        clearTimeout(nullAuthTimer);
-        nullAuthTimer = null;
-      }
-    };
-    const dropSignedInUi = () => {
-      if (!signedInRef.current) return;
-      const navEmail = sessionEmailRef.current;
-      if (navEmail) {
-        void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
-          /* ignore */
-        });
-        void storageRemoveItem(lastHomeTabStorageKey(navEmail)).catch(() => {
-          /* ignore */
-        });
-      }
-      sessionEmailRef.current = null;
-      sessionTokenRef.current = null;
-      resetLocalSocialStateForSignedOut();
-      signedInRef.current = false;
-      isRestoringAuthRef.current = false;
-      backendInitGenerationRef.current += 1;
-      clearSession();
-      setTelemetryContext({ uid: null, deviceId: null });
-      setSignedIn(false);
-      setView({ screen: "home" });
-      setAuthMode("login");
-      resetSyncChannelsIdle();
-      debugSessionLog(
-        "MainApp.tsx:onAuthStateChanged",
-        "cleared signed-in UI from null auth event",
-        "H1",
-        { hadSessionEmail: Boolean(navEmail) }
-      );
-    };
-    const unsub = onAuthStateChanged(firebaseAuth, (user) => {
-      // #region agent log
-      debugSessionLog("MainApp.tsx:onAuthStateChanged", "auth state event", "H1", {
-        hasEventUser: Boolean(user),
-        hasEventEmail: Boolean(user?.email?.trim()),
-        hasCurrentUser: Boolean(firebaseAuth.currentUser),
-        hasCurrentEmail: Boolean(firebaseAuth.currentUser?.email?.trim()),
-        signedInRef: signedInRef.current,
-        isRestoring: isRestoringAuthRef.current,
-        bootResolved: appBootAuthResolvedRef.current,
-      });
-      // #endregion
-      if (!user?.email) {
-        if (signedInRef.current) {
-          const stillSignedIn = firebaseAuth.currentUser?.email?.trim();
-          if (stillSignedIn) {
-            cancelNullAuthDrop();
-            // #region agent log
-            debugSessionLog(
-              "MainApp.tsx:onAuthStateChanged",
-              "ignored spurious null auth event",
-              "H5",
-              { signedInRef: true }
-            );
-            // #endregion
-            return;
-          }
-          // Token refresh emits a transient null. Wait, then drop only if the user and the persisted blob are both gone.
-          cancelNullAuthDrop();
-          nullAuthTimer = setTimeout(() => {
-            nullAuthTimer = null;
-            void (async () => {
-              if (!signedInRef.current) return;
-              if (firebaseAuth.currentUser?.email?.trim()) return;
-              const keep = await firebaseSessionSurvivesNullEvent();
-              if (!signedInRef.current) return;
-              if (keep || firebaseAuth.currentUser?.email?.trim()) {
-                debugSessionLog(
-                  "MainApp.tsx:onAuthStateChanged",
-                  "kept signed-in UI after null auth event",
-                  "H5",
-                  { keep }
-                );
-                return;
-              }
-              dropSignedInUi();
-            })();
-          }, NULL_AUTH_GRACE_MS);
-        }
-        markAppBootAuthResolved();
-        return;
-      }
-      cancelNullAuthDrop();
-      if (signedInRef.current || isRestoringAuthRef.current) {
-        // #region agent log
-        debugSessionLog(
-          "MainApp.tsx:onAuthStateChanged",
-          "skipped restore (already signed in or restoring)",
-          "H5",
-          {
-            signedInRef: signedInRef.current,
-            isRestoring: isRestoringAuthRef.current,
-          }
-        );
-        // #endregion
-        return;
-      }
-      isRestoringAuthRef.current = true;
-      const restoredEmail = user.email;
-      void (async () => {
-        try {
-          if (!restoredEmail) return;
-          const email = restoredEmail.trim().toLowerCase();
-          sessionEmailRef.current = email;
-          const persistedUsername =
-            (await storageGetItem(profileUsernameStorageKey(email)))?.trim() ?? "";
-          const account: MockAuthAccount = {
-            email,
-            password: "",
-            username: persistedUsername,
-            phoneNumber: "",
-            bio: "",
-            profilePictureUrl: null,
-          };
-          logAppEvent("auth.restore_session", { email });
-          await applySignedInAccountRef.current(account);
-        } catch {
-          Alert.alert("Session error", "Could not restore your signed-in session. Please try again.");
-        } finally {
-          isRestoringAuthRef.current = false;
-          markAppBootAuthResolved();
-        }
-      })();
-    });
-
-    const restoreFallbackTimer = setTimeout(() => {
-      if (signedInRef.current || isRestoringAuthRef.current) return;
-      const persistedEmail = firebaseAuth.currentUser?.email?.trim().toLowerCase();
-      if (!persistedEmail) return;
-      isRestoringAuthRef.current = true;
-      sessionEmailRef.current = persistedEmail;
-      void (async () => {
-        try {
-          const persistedUsername =
-            (await storageGetItem(profileUsernameStorageKey(persistedEmail)))?.trim() ?? "";
-          const account: MockAuthAccount = {
-            email: persistedEmail,
-            password: "",
-            username: persistedUsername,
-            phoneNumber: "",
-            bio: "",
-            profilePictureUrl: null,
-          };
-          logAppEvent("auth.restore_session_fallback", { email: persistedEmail });
-          await applySignedInAccountRef.current(account);
-        } catch {
-          /* ignore — user can sign in manually */
-        } finally {
-          isRestoringAuthRef.current = false;
-          markAppBootAuthResolved();
-        }
-      })();
-    }, 1200);
-
-    return () => {
-      cancelNullAuthDrop();
-      clearTimeout(restoreFallbackTimer);
-      unsub();
-    };
-  }, [resetLocalSocialStateForSignedOut, markAppBootAuthResolved, clearSession]);
-
-  const logout = () => {
-    logoutSignedInAccount({
-      sessionEmailRef,
-      backendInitGenerationRef,
-      sessionTokenRef,
-      resetLocalSocialStateForSignedOut,
-      signedInRef,
-      backendAuthUidRef,
-      backendDeviceIdRef,
-      clearSession,
-      resetSyncChannelsIdle,
-      setSignedIn,
-      setView,
-      setChatOverflowOpen,
-      setMembersModalOpen,
-      setAuthMode,
-      setIssuedOtpCode,
-      setIssuedOtpForEmail,
-      setSignupOtp,
-      setLoginOtp,
-    });
-  };
-  const confirmLogout = useCallback(() => {
-    Alert.alert("Logout?", "Are you sure you want to logout?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Logout", style: "destructive", onPress: logout },
-    ]);
-  }, [logout]);
-  const confirmDeleteAccount = useCallback(() => {
-    Alert.alert(
-      "Delete account?",
-      "This is permanent and cannot be undone.\n\nWhat will be deleted:\n- Your account access and profile.\n- Your posts across the app.\n\nWhat may remain for other people:\n- Messages you already sent in chats may remain visible to recipients as \"User\".\n- Your comments/reactions on other users' posts may remain but are attributed as \"User\".\n\nProceed?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete account",
-          style: "destructive",
-          onPress: () => {
-            Alert.alert(
-              "Delete account not enabled yet",
-              "This button now shows the final deletion policy. Backend deletion rollout is next so delete can run safely end-to-end."
-            );
-          },
-        },
-      ]
-    );
-  }, []);
-  logoutRef.current = logout;
-
-  /** Another device replaced this session — clear UI only; do not DELETE the shared ledger (other phone owns it). */
-  const logoutFromSessionReplaced = () => {
-    const navEmail = sessionEmailRef.current;
-    if (navEmail) {
-      void storageRemoveItem(lastViewStorageKey(navEmail)).catch(() => {
-        /* ignore */
-      });
-      void storageRemoveItem(lastHomeTabStorageKey(navEmail)).catch(() => {
-        /* ignore */
-      });
-    }
-    sessionTokenRef.current = null;
-    sessionEmailRef.current = null;
-    resetLocalSocialStateForSignedOut();
-    logAppEvent("auth.session_replaced", {});
-    clearSession();
-    setTelemetryContext({ uid: null, deviceId: null });
-    resetSyncChannelsIdle();
-    signedInRef.current = false;
-    setSignedIn(false);
-    setView({ screen: "home" });
-    setChatOverflowOpen(false);
-    setMembersModalOpen(false);
-    setAuthMode("login");
-    setIssuedOtpCode(null);
-    setIssuedOtpForEmail(null);
-    setSignupOtp("");
-    setLoginOtp("");
-  };
-
-  useEffect(() => {
-    if (!signedIn || !shouldPollMockSession()) return;
-    const tick = async () => {
-      const email = sessionEmailRef.current;
-      const mine = sessionTokenRef.current;
-      if (!email || !mine) return;
-      const remote = await readLedgerSessionToken(email, mine);
-      if (remote !== mine) {
-        // Product requirement: never sign users out automatically.
-        // Keep session alive and show an informational warning at most once per minute.
-        const now = Date.now();
-        if (now - sessionConflictNoticeAtRef.current > 60_000) {
-          sessionConflictNoticeAtRef.current = now;
-          Alert.alert(
-            "Session notice",
-            "Another device appears to have signed in, but you remain signed in on this phone until you press Logout."
-          );
-        }
-      }
-    };
-    const id = setInterval(() => void tick(), MOCK_SESSION_POLL_MS);
-    void tick();
-    return () => clearInterval(id);
-  }, [signedIn]);
+  const { confirmLogout, confirmDeleteAccount, logoutFromSessionReplaced } = useAccountExit({
+    sessionEmailRef,
+    backendInitGenerationRef,
+    sessionTokenRef,
+    resetLocalSocialStateForSignedOut,
+    signedInRef,
+    backendAuthUidRef,
+    backendDeviceIdRef,
+    clearSession,
+    resetSyncChannelsIdle,
+    setSignedIn,
+    setView,
+    setChatOverflowOpen,
+    setMembersModalOpen,
+    setAuthMode,
+    setIssuedOtpCode,
+    setIssuedOtpForEmail,
+    setSignupOtp,
+    setLoginOtp,
+    logoutRef,
+  });
 
   const {
     loginDemoOrSubmit,
@@ -2937,15 +1882,6 @@ function MainAppInner() {
     setView,
   });
 
-  const openFriendsListFromHome = useCallback(() => {
-    setFriendsListSearch("");
-    goToFriendsListFromHome();
-  }, [goToFriendsListFromHome]);
-
-  const openAddFriendFromHome = goToAddFriend;
-
-  const openSettingsScreen = goToSettings;
-
   const {
     ensurePairingLocationPermission,
     ensurePairingCameraPermission,
@@ -2970,84 +1906,33 @@ function MainAppInner() {
     setDemoPendingAddableQueue,
   });
 
-  /**
-   * Swipe between main top-nav screens with a follow-the-finger page slide.
-   * Feed swipes from anywhere except a multi-image carousel (single photos still switch views).
-   */
-  const openMyProfile = goToMyProfile;
-  const homeTabRef = useRef(homeTab);
-  homeTabRef.current = homeTab;
-  const feedCarouselTouchRef = useRef(false);
-
-  const goToMainNavSurface = useCallback((surface: MainNavSurface) => {
-    switch (surface) {
-      case "myProfile":
-        openMyProfile();
-        break;
-      case "friendsList":
-        openFriendsListFromHome();
-        break;
-      case "chats":
-        openHomeChatsFromNav();
-        break;
-      case "feed":
-        openHomeFeedFromNav();
-        break;
-      case "addFriend":
-        openAddFriendFromHome();
-        break;
-      case "settings":
-        openSettingsScreen();
-        break;
-    }
-  }, [
-    openAddFriendFromHome,
+  const {
     openFriendsListFromHome,
+    openAddFriendFromHome,
+    openSettingsScreen,
+    openMyProfile,
+    feedCarouselTouchRef,
+    mainNavSlideStyle,
+    mainNavSwipePan,
+    isSurfaceVisible,
+    isHomeToHome,
+    incomingMainNav,
+    currentMainNav,
+    homeColumnSlideSurface,
+  } = useHomeNavigation({
+    view,
+    viewRef,
+    homeTab,
+    windowWidth,
+    safeTop,
+    setFriendsListSearch,
+    goToFriendsListFromHome,
+    goToAddFriend,
+    goToSettings,
+    goToMyProfile,
     openHomeChatsFromNav,
     openHomeFeedFromNav,
-    openMyProfile,
-    openSettingsScreen,
-  ]);
-
-  const {
-    incoming: mainNavIncoming,
-    isSurfaceVisible,
-    slideStyle: mainNavSlideStyle,
-    onDragMove,
-    onDragRelease,
-    isHomeToHome,
-  } = useMainNavSlide({
-    getCurrent: () => mainNavSurfaceFromView(viewRef.current, homeTabRef.current),
-    goToSurface: goToMainNavSurface,
-    getWidth: () => windowWidth,
   });
-
-  const mainNavSwipePan = useMemo(
-    () =>
-      createMainNavSwipePan({
-        getSurface: () => mainNavSurfaceFromView(viewRef.current, homeTabRef.current),
-        getMinPageY: () => safeTop + 52,
-        getChatsOnlineStripMaxY: () => safeTop + 148,
-        isCarouselTouch: () => feedCarouselTouchRef.current,
-        onMove: onDragMove,
-        onRelease: onDragRelease,
-      }),
-    [onDragMove, onDragRelease, safeTop]
-  );
-
-  const currentMainNav = mainNavSurfaceFromView(view, homeTab);
-  const incomingMainNav = mainNavIncoming?.surface ?? null;
-  const homeColumnSlideSurface: MainNavSurface | null = isHomeToHome
-    ? null
-    : isSurfaceVisible("chats") && currentMainNav === "chats"
-      ? "chats"
-      : isSurfaceVisible("feed") && currentMainNav === "feed"
-        ? "feed"
-        : isSurfaceVisible("chats")
-          ? "chats"
-          : isSurfaceVisible("feed")
-            ? "feed"
-            : null;
 
   const pickProfileImage = () => pickProfilePhoto({ openPhotoEditorDirect });
 
@@ -3113,45 +1998,59 @@ function MainAppInner() {
     findOrCreateChatWithFriend,
   });
 
-  const handleChatInputChange = (text: string) => {
-    chatInputTextRef.current = text;
-    if (view.screen === "chat" && "pendingDraft" in view && view.pendingDraft && text.trim().length > 0) {
-      promotePendingChatToRow({
-        pending: view.pendingDraft,
-        session: getBackendSession(),
-        friendMap,
-        friendIdToBackendUid,
-        setChats: applyChats,
-        setView,
-      });
-    }
-    setChatInputSynced(text);
-  };
-
-  const ensureChatForSend = (): Chat | null => {
-    if (view.screen !== "chat") return null;
-    if ("chatId" in view) {
-      return chats.find((c) => c.id === view.chatId) ?? null;
-    }
-    return promotePendingChatToRow({
-      pending: view.pendingDraft,
-      session: getBackendSession(),
-      friendMap,
-      friendIdToBackendUid,
-      setChats: applyChats,
-      setView,
-    });
-  };
-
-  const addAutoReplies = (chat: Chat, latestMessages: Message[]) =>
-    scheduleDemoAutoReplies(chat, latestMessages, {
-      demoActiveInboundFriendIds,
-      appendMessages,
-      patchChat,
-      autoReplyTimersRef,
-    });
-
-  const getSenderDisplayName = useCallback(() => myDisplayNameRef.current.trim(), []);
+  const {
+    handleChatInputChange,
+    getSenderDisplayName,
+    commitOutgoingMessages,
+    sendPayload,
+    sendMessage,
+    sendCameraMedia,
+    sendGalleryPhoto,
+    sendGalleryVideo,
+  } = useChatSend({
+    view,
+    chats,
+    friendMap,
+    friendIdToBackendUid,
+    friendMapRef,
+    friendIdToBackendUidRef,
+    getBackendSession,
+    applyChats,
+    applyMessages,
+    setView,
+    setHiddenChatIds,
+    demoActiveInboundFriendIds,
+    appendMessages,
+    patchChat,
+    autoReplyTimersRef,
+    myDisplayNameRef,
+    recipientKeyCacheRef,
+    persistFriendKeyCacheNow,
+    resolveConversationId,
+    pullEncryptedMessagesIncremental,
+    isDirectTombstoneChat,
+    isOnline,
+    editingMessageId,
+    patchMessage,
+    setEditingMessageId,
+    setChatInputSynced,
+    messages,
+    replyTargetMessage,
+    setReplyTargetMessageId,
+    setSelectedBroadcastThreadFriendId,
+    selectedBroadcastThreadFriendId,
+    chatInputTextRef,
+    pendingChatMediaAttachment,
+    chatInputRef,
+    setPendingChatMediaAttachment,
+    chatPicker: {
+      setPhotoEditorTarget,
+      setPhotoEditorMediaType,
+      setPhotoEditorAsset,
+      setPhotoEditorOpen,
+      openPhotoEditorDirect,
+    },
+  });
 
   const { finalizeVideoPosterAndPublish, publishPost } = createPostPublishActions({
     getBackendSession,
@@ -3171,25 +2070,6 @@ function MainAppInner() {
     openVideoThumbnailModal,
   });
 
-  const { commitOutgoingMessages } = useOutgoingMessages({
-    demoOfflineMode: DEMO_OFFLINE_MODE,
-    getBackendSession,
-    friendMap,
-    friendIdToBackendUid,
-    friendMapRef,
-    friendIdToBackendUidRef,
-    recipientKeyCacheRef,
-    persistFriendKeyCacheNow,
-    resolveConversationId,
-    getSenderDisplayName,
-    pullEncryptedMessagesIncremental,
-    setChats: applyChats,
-    setMessages: applyMessages,
-    setHiddenChatIds,
-    setView,
-    addAutoReplies,
-  });
-
   const { retryFailedMessage, deleteFailedMessage, handleChatMessagePress } = useMemo(
     () =>
       createFailedMessageActions({
@@ -3199,79 +2079,6 @@ function MainAppInner() {
       }),
     [chats, removeMessageById, commitOutgoingMessages]
   );
-
-  const sendPayload = (payload: {
-    text: string;
-    kind?: "text" | "photo" | "video" | "voice" | "gif";
-    mediaUri?: string;
-    mediaWidth?: number;
-    mediaHeight?: number;
-    durationSec?: number;
-    videoTextOverlays?: VideoTextOverlayData[];
-  }) =>
-    sendChatPayload(payload, {
-      ensureChatForSend,
-      isDirectTombstoneChat,
-      getBackendSession,
-      isOnline,
-      editingMessageId,
-      patchMessage,
-      setEditingMessageId,
-      setChatInputSynced,
-      messages,
-      friendIdToBackendUid,
-      friendMapRef,
-      friendIdToBackendUidRef,
-      recipientKeyCacheRef,
-      persistFriendKeyCacheNow,
-      resolveConversationId,
-      replyTargetMessage,
-      commitOutgoingMessages,
-      setReplyTargetMessageId,
-      appendMessages,
-      patchChat,
-      autoReplyTimersRef,
-      setSelectedBroadcastThreadFriendId,
-      selectedBroadcastThreadFriendId,
-    });
-
-  const sendMessage = () => {
-    sendComposerDraft({
-      chatInputTextRef,
-      pendingChatMediaAttachment,
-      chatInputRef,
-      setPendingChatMediaAttachment,
-      sendPayload,
-    });
-  };
-
-  const sendCameraMedia = (mode: "photo" | "video") =>
-    pickChatCameraMedia(mode, {
-      setPhotoEditorTarget,
-      setPhotoEditorMediaType,
-      setPhotoEditorAsset,
-      setPhotoEditorOpen,
-      openPhotoEditorDirect,
-    });
-
-  const sendGalleryPhoto = () =>
-    pickChatGalleryPhoto({
-      setPhotoEditorTarget,
-      setPhotoEditorMediaType,
-      setPhotoEditorAsset,
-      setPhotoEditorOpen,
-      openPhotoEditorDirect,
-      sendPayload,
-    });
-
-  const sendGalleryVideo = () =>
-    pickChatGalleryVideo({
-      setPhotoEditorTarget,
-      setPhotoEditorMediaType,
-      setPhotoEditorAsset,
-      setPhotoEditorOpen,
-      openPhotoEditorDirect,
-    });
 
   const completePhotoEditor = (result: PhotoEditorResult) => {
     completePhotoEditorSession(result, {
@@ -3296,38 +2103,18 @@ function MainAppInner() {
     });
   };
 
-  const sendPendingVoiceNote = useCallback(async () => {
-    await sendComposerVoiceNote({
-      preparePendingVoiceNoteForSend,
-      sendPayload,
-      setPendingVoiceNote,
-      setVoiceNoteMode,
-    });
-  }, [preparePendingVoiceNoteForSend, sendPayload]);
-
-  const onComposerPrimaryPress = useCallback(() => {
-    if (voiceNoteMode) {
-      if (pendingVoiceNote) {
-        void sendPendingVoiceNote();
-        return;
-      }
-      if (voiceRecordStartedAt) {
-        void stopVoiceRecordingForPreview();
-      } else {
-        void startVoiceRecording();
-      }
-      return;
-    }
-    sendMessage();
-  }, [
+  const { sendPendingVoiceNote, onComposerPrimaryPress } = useComposerPrimaryAction({
+    preparePendingVoiceNoteForSend,
+    sendPayload,
+    setPendingVoiceNote,
+    setVoiceNoteMode,
     voiceNoteMode,
     pendingVoiceNote,
     voiceRecordStartedAt,
     stopVoiceRecordingForPreview,
-    sendPendingVoiceNote,
     startVoiceRecording,
     sendMessage,
-  ]);
+  });
 
   const toggleVoiceMessagePlayback = (message: Message) =>
     toggleVoiceMessagePlaybackImpl(message, {
@@ -3594,38 +2381,14 @@ function MainAppInner() {
     setEditChatPictureOpen,
   });
 
-  const getCaptionedMediaLayout = useCallback(
-    (message: Message) => {
-      const measured = measuredChatMediaByMessageId[message.id];
-      const fallbackAspect = message.kind === "video" ? 9 / 16 : 4 / 3;
-      return chatCaptionedMediaLayout(
-        windowWidth,
-        message.mediaWidth ?? measured?.width,
-        message.mediaHeight ?? measured?.height,
-        fallbackAspect
-      );
-    },
-    [windowWidth, measuredChatMediaByMessageId]
-  );
-
-  const rememberChatVideoDimensions = useCallback((messageId: string, width: number, height: number) => {
-    setMeasuredChatMediaByMessageId((prev) => {
-      const cur = prev[messageId];
-      if (cur?.width === width && cur?.height === height) return prev;
-      return { ...prev, [messageId]: { width, height } };
-    });
-  }, []);
-
-  const cancelVideoPrepare = useCallback((messageId: string) => {
-    setVideoPlayAfterPrepareId((cur) => (cur === messageId ? null : cur));
-    setPlayingVideoMessageId((cur) => (cur === messageId ? null : cur));
-    setVideoPrepareRequestedIds((prev) => {
-      if (!prev.has(messageId)) return prev;
-      const next = new Set(prev);
-      next.delete(messageId);
-      return next;
-    });
-  }, []);
+  const { getCaptionedMediaLayout, rememberChatVideoDimensions, cancelVideoPrepare } = useChatMediaFrame({
+    windowWidth,
+    measuredChatMediaByMessageId,
+    setMeasuredChatMediaByMessageId,
+    setVideoPlayAfterPrepareId,
+    setPlayingVideoMessageId,
+    setVideoPrepareRequestedIds,
+  });
 
   const getReactionEntries = (message: Message) => {
     const session = getBackendSession();
@@ -3637,169 +2400,40 @@ function MainAppInner() {
     );
   };
 
-  const renderAvatar = (
-    uri: string | null | undefined,
-    fallbackLetter: string,
-    size: number,
-    style?: object
-  ) => {
-    const circle = {
-      width: size,
-      height: size,
-      borderRadius: size / 2,
-      overflow: "hidden" as const,
-      backgroundColor: theme.accent,
-      alignItems: "center" as const,
-      justifyContent: "center" as const,
-    };
-    if (uri) {
-      return (
-        <View style={[circle, style]}>
-          <Image source={{ uri }} style={{ width: size, height: size }} />
-        </View>
-      );
-    }
-    return (
-      <View style={[circle, style]}>
-        <Text style={{ color: "#FFFFFF", fontWeight: "700", fontSize: size * 0.38 }}>
-          {fallbackLetter}
-        </Text>
-      </View>
-    );
-  };
-
-  const postAuthorMeta = useCallback(
-    (authorId: string) => {
-      if (authorId === CURRENT_USER_ID) {
-        return { name: "You", avatarUri: myProfilePictureUrl ?? undefined };
-      }
-      const pd = resolvePd(authorId);
-      return { name: pd.displayName, avatarUri: pd.profilePictureUrl || undefined };
-    },
-    [myProfilePictureUrl, friendMap, unfriendedIds, serverFriendUidsForDisplay]
-  );
-
-  const feedReactionDetailRows = useMemo(() => {
-    if (!reactionDetailPost) return [];
-    return Object.entries(reactionDetailPost.feedReactions ?? {})
-      .filter(
-        ([userId]) =>
-          userId === CURRENT_USER_ID || visibleFriendIds.includes(userId)
-      )
-      .map(([userId, emoji]) => ({
-        userId,
-        emoji,
-        name:
-          userId === CURRENT_USER_ID
-            ? "You"
-            : friendDisplayNameFromProfile(
-                friendMap[userId]?.displayName,
-                friendMap[userId]?.backendUid ?? userId
-              ),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [reactionDetailPost, visibleFriendIds, friendMap]);
-
-  const reactTheme = useMemo(
-    () => ({
-      accent: theme.accent,
-      divider: theme.divider,
-      text: theme.text,
-      subtleText: theme.subtleText,
-      background: theme.background,
-    }),
-    [theme]
-  );
-
-  const renderPostGridCell = (post: Post) => (
-    <PostGridCell
-      post={post}
-      width={postGridLayout.cell}
-      height={postGridLayout.cell}
-      styles={styles}
-      subtleTextColor={theme.subtleText}
-      resolvePriority="normal"
-    />
-  );
-
-  const commentReactionEntries = useCallback(
-    (reactions: Record<string, string> | undefined) => {
-      const session = getBackendSession();
-      return aggregateReactionCounts(
-        reactions,
-        session?.uid ?? null,
-        backendUidToFriendId,
-        visibleFriendIds
-      );
-    },
-    [backendUidToFriendId, getBackendSession, visibleFriendIds]
-  );
-
-  const feedPostGalleryProps = useCallback(
-    (post: Post) => {
-      const count = postCarouselImageCount(post);
-      const raw = postMediaGalleryIndexByPostId[post.id];
-      const onMediaGalleryIndexChange = (index: number) => {
-        const clamped = count > 0 ? Math.max(0, Math.min(index, count - 1)) : 0;
-        setPostMediaGalleryIndex(post.id, clamped);
-      };
-      if (raw === undefined) {
-        return { onMediaGalleryIndexChange };
-      }
-      return {
-        mediaGalleryIndex: count > 0 ? Math.min(raw, count - 1) : 0,
-        onMediaGalleryIndexChange,
-      };
-    },
-    [postMediaGalleryIndexByPostId, setPostMediaGalleryIndex]
-  );
-
-  const feedPostCardShared = useMemo(
-    () => ({
-      windowWidth,
-      subtleTextColor: theme.subtleText,
-      styles,
-      reactTheme,
-      currentUserId: CURRENT_USER_ID,
-      visibleFriendIds,
-      demoOfflineMode: DEMO_OFFLINE_MODE,
-      resolveAuthorMeta: postAuthorMeta,
-      resolveCanOpenProfile: (friendId: string) => resolvePd(friendId).canOpenProfile,
-      formatTime: formatDayTime,
-      renderAvatar,
-      getBackendSession,
-      commentReactionEntries,
-      canReactToComment: (messageId: string) => !messageId.startsWith("srv_"),
-      onOpenFriendProfile: (friendId: string) => openFriendProfile(friendId, "home"),
-      onOpenMyProfile: openMyProfile,
-      onOpenPostActions: openFeedPostActions,
-      onConfirmDeletePost: confirmDeletePost,
-      onOpenReactionPickerForPost: openReactionPickerForPost,
-      onOpenReactionPickerForComment: openReactionPickerForComment,
-      onOpenReactionDetail: setReactionDetailPost,
-      onHorizontalMediaCarouselTouchChange: (active: boolean) => {
-        feedCarouselTouchRef.current = active;
-      },
-      onOpenMedia: (
-        uri: string,
-        kind: "photo" | "video",
-        options?: { galleryUris?: string[]; galleryIndex?: number; postId?: string }
-      ) => openFullscreenMedia(uri, kind, options),
-    }),
-    [
-      windowWidth,
-      theme.subtleText,
-      styles,
-      reactTheme,
-      visibleFriendIds,
-      postAuthorMeta,
-      getBackendSession,
-      commentReactionEntries,
-      openReactionPickerForPost,
-      openReactionPickerForComment,
-      openFullscreenMedia,
-    ]
-  );
+  const {
+    postAuthorMeta,
+    feedReactionDetailRows,
+    reactTheme,
+    renderAvatar,
+    renderPostGridCell,
+    feedPostGalleryProps,
+    feedPostCardShared,
+  } = useFeedCardPresentation({
+    myProfilePictureUrl,
+    resolvePd,
+    friendMap,
+    unfriendedIds,
+    serverFriendUidsForDisplay,
+    visibleFriendIds,
+    reactionDetailPost,
+    theme,
+    windowWidth,
+    styles,
+    postGridLayout,
+    postMediaGalleryIndexByPostId,
+    setPostMediaGalleryIndex,
+    getBackendSession,
+    backendUidToFriendId,
+    openFriendProfile,
+    openMyProfile,
+    openFeedPostActions,
+    confirmDeletePost,
+    openReactionPickerForPost,
+    openReactionPickerForComment,
+    setReactionDetailPost,
+    feedCarouselTouchRef,
+    openFullscreenMedia,
+  });
 
   const showHome = isSurfaceVisible("chats") || isSurfaceVisible("feed");
   /** Keep chat mounted whenever `view.screen === "chat"` — do not gate on `resolvedChat` (send/migrate can briefly drop the row). */
