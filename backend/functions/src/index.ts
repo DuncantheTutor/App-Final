@@ -6,7 +6,6 @@ import { createHash, randomBytes, randomInt } from "crypto";
 import { canonicalizeEmail } from "./canonicalizeEmail";
 import { getFirestore } from "./firebaseAdmin";
 import {
-  filterPostItemsByFriendship,
   isPresenceFresh,
   kickPairFromSharedGroups,
   listConversationMessages,
@@ -49,7 +48,19 @@ import {
   normalizePostStorageObjectPaths,
   resolveFirebaseAuthUidForAppUid,
 } from "./postStorageCleanup";
-import { resolveParticipantAuthUids } from "./authUidMirror";
+import { resolveAuthUidByAppUid, resolveParticipantAuthUids } from "./authUidMirror";
+import {
+  assertAcceptedFriendship,
+  assertAcceptedFriendships,
+  assertEveryPairFriends,
+  filterAcceptedFriendUids,
+  friendshipId,
+  getAcceptedFriendSet,
+  getAcceptedFriendUids,
+  getAllChunked,
+  linkAcceptedFriends,
+  unlinkAcceptedFriends,
+} from "./friendIndex";
 import { assertEmailOtpAvailable } from "./emailOtpAvailability";
 import { verifyKeyBundleSignature } from "./keyBundleSignature";
 import { assertPairingProximity, type PairingProximityEvidence } from "./pairingProximity";
@@ -141,39 +152,6 @@ function assertReasonableCiphertext(ciphertext: string): void {
   }
 }
 
-function friendshipId(a: string, b: string): string {
-  return a < b ? `${a}_${b}` : `${b}_${a}`;
-}
-
-function isAppBackendUid(id: string): boolean {
-  return id.startsWith("u_");
-}
-
-/** Normalizes friendship `participants` entries to canonical app uids (`u_*`). */
-async function normalizeParticipantToAppUid(raw: string): Promise<string | null> {
-  const id = String(raw ?? "").trim();
-  if (!id) return null;
-  if (isAppBackendUid(id)) {
-    const snap = await db.collection("users").doc(id).get();
-    return snap.exists ? id : null;
-  }
-  const rev = await db.collection("firebaseAuthToAppUid").doc(id).get();
-  let appUid = String(rev.data()?.appUid ?? "").trim();
-  if (!appUid) {
-    const mapQuery = await db
-      .collection("userFirebaseAuthMap")
-      .where("firebaseAuthUid", "==", id)
-      .limit(1)
-      .get();
-    if (!mapQuery.empty) {
-      appUid = mapQuery.docs[0].id.trim();
-    }
-  }
-  if (!appUid || !isAppBackendUid(appUid)) return null;
-  const userSnap = await db.collection("users").doc(appUid).get();
-  return userSnap.exists ? appUid : null;
-}
-
 function privateThreadId(postId: string, ownerUid: string, friendUid: string): string {
   const pair = ownerUid < friendUid ? `${ownerUid}_${friendUid}` : `${friendUid}_${ownerUid}`;
   return `${postId}__${pair}`;
@@ -210,32 +188,6 @@ function normalizePairingProximityEvidence(raw: unknown): PairingProximityEviden
   return { lat, lng, horizontalAccuracyM, locationTimestampMs, isWifiConnected, localIp };
 }
 
-async function assertAcceptedFriendship(uid: string, otherUid: string): Promise<void> {
-  if (uid === otherUid) return;
-  const canonicalSnap = await db.collection("friendships").doc(friendshipId(uid, otherUid)).get();
-  if (canonicalSnap.exists) {
-    const data = canonicalSnap.data() as { status?: string } | undefined;
-    if (data?.status === "accepted") return;
-    throw new HttpsError("permission-denied", "Friendship not accepted.");
-  }
-  // Manual Console edges sometimes use a reversed doc id; accept any accepted edge
-  // whose participants include both app uids (same query `listMyFriends` uses).
-  const querySnap = await db
-    .collection("friendships")
-    .where("participants", "array-contains", uid)
-    .where("status", "==", "accepted")
-    .get();
-  for (const doc of querySnap.docs) {
-    const participants = (doc.data().participants ?? []) as string[];
-    for (const raw of participants) {
-      if (raw === uid) continue;
-      const normalized = raw === otherUid ? otherUid : await normalizeParticipantToAppUid(raw);
-      if (normalized === otherUid) return;
-    }
-  }
-  throw new HttpsError("permission-denied", "You can only view profiles of friends.");
-}
-
 /**
  * Refreshes the Firebase Auth UID mirror for the signed-in account.
  * The uid is taken from the ID token. A value in the request body is ignored.
@@ -244,8 +196,17 @@ export const registerFirebaseAuthUid = onCall(async (req) => {
   const { appUid: uid, deviceId } = await assertVerifiedCallableCaller(req);
   const { firebaseAuthUid } = requireVerifiedFirebaseIdentity(req);
 
+  const mapRef = db.collection("userFirebaseAuthMap").doc(uid);
+  const reverseRef = db.collection("firebaseAuthToAppUid").doc(firebaseAuthUid);
+  const [mapSnap, reverseSnap] = await Promise.all([mapRef.get(), reverseRef.get()]);
+  const mapped = String(mapSnap.data()?.firebaseAuthUid ?? "").trim();
+  const reverseApp = String(reverseSnap.data()?.appUid ?? "").trim();
+  if (mapped === firebaseAuthUid && reverseApp === uid) {
+    return { ok: true };
+  }
+
   const updatedAt = admin.firestore.FieldValue.serverTimestamp();
-  await db.collection("userFirebaseAuthMap").doc(uid).set(
+  await mapRef.set(
     {
       uid,
       firebaseAuthUid,
@@ -253,7 +214,7 @@ export const registerFirebaseAuthUid = onCall(async (req) => {
     },
     { merge: true }
   );
-  await db.collection("firebaseAuthToAppUid").doc(firebaseAuthUid).set(
+  await reverseRef.set(
     {
       appUid: uid,
       firebaseAuthUid,
@@ -597,29 +558,29 @@ export const cleanupExpiredTransientDocs = onSchedule("every 15 minutes", async 
     }
   };
 
-  const [handshakes, sessions, vouchers, bleSessions, nfcPinPairs, oldTelemetry] = await Promise.all([
-    db.collection("handshakes").where("expiresAt", "<", now).limit(500).get(),
-    db.collection("handshakeSessions").where("expiresAt", "<", now).limit(500).get(),
-    db.collection("nfcFriendVouchers").where("expiresAt", "<", now).limit(500).get(),
-    db.collection("bleFriendSessions").where("expiresAt", "<", now).limit(500).get(),
-    db.collection("nfcPinPairSessions").where("expiresAt", "<", now).limit(500).get(),
-    db.collection("clientTelemetry").where("receivedAtMs", "<", telemetryStaleBefore).limit(500).get(),
-  ]);
-  await commitDeletes(handshakes.docs.map((d) => d.ref));
-  await commitDeletes(sessions.docs.map((d) => d.ref));
-  await commitDeletes(vouchers.docs.map((d) => d.ref));
-  await commitDeletes(bleSessions.docs.map((d) => d.ref));
-  await commitDeletes(nfcPinPairs.docs.map((d) => d.ref));
-  await commitDeletes(oldTelemetry.docs.map((d) => d.ref));
+  const deleteUntilShort = async (loadPage: () => Promise<FirebaseFirestore.QuerySnapshot>) => {
+    for (;;) {
+      const page = await loadPage();
+      if (page.empty) return;
+      await commitDeletes(page.docs.map((doc) => doc.ref));
+      if (page.size < 500) return;
+    }
+  };
 
-  const oldOtpThrottle = await db.collection("otpIpThrottle").where("windowStartMs", "<", staleBefore).limit(500).get();
-  await commitDeletes(oldOtpThrottle.docs.map((d) => d.ref));
-  const oldTelemetryThrottle = await db
-    .collection("telemetryIpThrottle")
-    .where("windowStartMs", "<", staleBefore)
-    .limit(500)
-    .get();
-  await commitDeletes(oldTelemetryThrottle.docs.map((d) => d.ref));
+  await deleteUntilShort(() => db.collection("handshakes").where("expiresAt", "<", now).limit(500).get());
+  await deleteUntilShort(() => db.collection("handshakeSessions").where("expiresAt", "<", now).limit(500).get());
+  await deleteUntilShort(() => db.collection("nfcFriendVouchers").where("expiresAt", "<", now).limit(500).get());
+  await deleteUntilShort(() => db.collection("bleFriendSessions").where("expiresAt", "<", now).limit(500).get());
+  await deleteUntilShort(() => db.collection("nfcPinPairSessions").where("expiresAt", "<", now).limit(500).get());
+  await deleteUntilShort(() =>
+    db.collection("clientTelemetry").where("receivedAtMs", "<", telemetryStaleBefore).limit(500).get()
+  );
+  await deleteUntilShort(() =>
+    db.collection("otpIpThrottle").where("windowStartMs", "<", staleBefore).limit(500).get()
+  );
+  await deleteUntilShort(() =>
+    db.collection("telemetryIpThrottle").where("windowStartMs", "<", staleBefore).limit(500).get()
+  );
 });
 
 /**
@@ -1076,6 +1037,9 @@ export const finalizeNfcPinPairOffer = onCall(async (req) => {
     );
     return redeemer;
   });
+  await linkAcceptedFriends(uid, redeemerUid).catch((err) => {
+    console.error("friendIndex.link_failed", err);
+  });
   void refreshPresenceAfterFriendshipPair(uid, redeemerUid).catch(() => undefined);
   return { ok: true, accepted: true, friendUid: redeemerUid, pin };
 });
@@ -1113,6 +1077,11 @@ export const seedDemoFriendships = onCall(async (req) => {
     );
   }
   await batch.commit();
+  await Promise.all(
+    friendUids
+      .filter((friendUid) => friendUid && friendUid !== uid)
+      .map((friendUid) => linkAcceptedFriends(uid, friendUid))
+  );
   return { ok: true, count: friendUids.length };
 });
 
@@ -1131,17 +1100,8 @@ export const upsertConversation = onCall(async (req) => {
   if (!participantUids.includes(uid)) {
     throw new HttpsError("invalid-argument", "Caller must be in participantUids.");
   }
-  for (const otherUid of participantUids) {
-    await assertAcceptedFriendship(uid, otherUid);
-  }
   const uniqueParticipants = [...new Set(participantUids)].sort();
-  if (uniqueParticipants.length > 2) {
-    for (let i = 0; i < uniqueParticipants.length; i += 1) {
-      for (let j = i + 1; j < uniqueParticipants.length; j += 1) {
-        await assertAcceptedFriendship(uniqueParticipants[i], uniqueParticipants[j]);
-      }
-    }
-  }
+  await assertEveryPairFriends(uniqueParticipants);
   const participantAuthUids = await resolveParticipantAuthUids(uniqueParticipants);
   const existing = await db.collection("conversations").doc(conversationId).get();
   const existingData = existing.data() as
@@ -1326,20 +1286,8 @@ export const createEncryptedPost = onCall(async (req) => {
   if (!nonce) throw new HttpsError("invalid-argument", "nonce is required.");
   if (!envelopes[uid]) throw new HttpsError("invalid-argument", "Sender envelope is required.");
 
-  const recipientUids: string[] = [];
-  for (const recipientUid of Object.keys(envelopes)) {
-    if (recipientUid === uid) {
-      recipientUids.push(recipientUid);
-      continue;
-    }
-    if (!recipientUid.startsWith("u_")) continue;
-    try {
-      await assertAcceptedFriendship(uid, recipientUid);
-      recipientUids.push(recipientUid);
-    } catch {
-      /* Stale local-roster uids must not block publishing to self and real friends. */
-    }
-  }
+  const acceptedRecipients = await filterAcceptedFriendUids(uid, Object.keys(envelopes));
+  const recipientUids = [uid, ...acceptedRecipients];
   if (!recipientUids.includes(uid)) {
     throw new HttpsError("invalid-argument", "Sender envelope is required.");
   }
@@ -1458,43 +1406,23 @@ export const sendEncryptedMessage = onCall(async (req) => {
   if (!nonce) throw new HttpsError("invalid-argument", "nonce is required.");
 
   const convRef = db.collection("conversations").doc(conversationId);
-  let convSnap = await convRef.get();
+  const convSnap = await convRef.get();
   const requestedParticipants = Array.isArray(req.data?.participantUids)
     ? [...new Set((req.data.participantUids as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean))].sort()
     : [];
-  if (!convSnap.exists) {
-    if (requestedParticipants.length < 2 || !requestedParticipants.includes(uid)) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Conversation not found. Reopen the chat and try again."
-      );
-    }
-    for (const otherUid of requestedParticipants) {
-      if (otherUid !== uid) await assertAcceptedFriendship(uid, otherUid);
-    }
-    const participantAuthUidsBootstrap = await resolveParticipantAuthUids(requestedParticipants);
-    const nowBootstrap = nowMs();
-    const memberJoinedAtBootstrap: Record<string, number> = { [uid]: nowBootstrap };
-    await convRef.set(
-      {
-        conversationId,
-        participantUids: requestedParticipants,
-        participantAuthUids: participantAuthUidsBootstrap,
-        createdBy: uid,
-        adminIds: [uid],
-        memberJoinedAt: memberJoinedAtBootstrap,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
+  const creating = !convSnap.exists;
+  if (creating && (requestedParticipants.length < 2 || !requestedParticipants.includes(uid))) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Conversation not found. Reopen the chat and try again."
     );
-    convSnap = await convRef.get();
   }
-  const conv = convSnap.data() as { participantUids?: string[]; memberJoinedAt?: Record<string, number> };
+  const conv = (convSnap.data() ?? {}) as {
+    participantUids?: string[];
+    memberJoinedAt?: Record<string, number>;
+  };
   let participants = conv.participantUids ?? [];
   if (requestedParticipants.length >= 2 && requestedParticipants.includes(uid)) {
-    for (const otherUid of requestedParticipants) {
-      if (otherUid !== uid) await assertAcceptedFriendship(uid, otherUid);
-    }
     participants = requestedParticipants;
   }
   if (!participants.includes(uid)) {
@@ -1504,8 +1432,8 @@ export const sendEncryptedMessage = onCall(async (req) => {
     if (!envelopes[participantUid]) {
       throw new HttpsError("invalid-argument", "Envelope missing for a participant.");
     }
-    if (participantUid !== uid) await assertAcceptedFriendship(uid, participantUid);
   }
+  await assertAcceptedFriendships(uid, participants);
 
   const memberJoinedAt = { ...(conv.memberJoinedAt ?? {}) };
   const nowSend = nowMs();
@@ -1513,12 +1441,16 @@ export const sendEncryptedMessage = onCall(async (req) => {
     memberJoinedAt[uid] = nowSend;
   }
   const joinCutoff = Number(memberJoinedAt[uid] ?? 0);
-  let participantAuthUids = await resolveParticipantAuthUids(participants);
-  if (participantAuthUids.length < participants.length) {
-    participantAuthUids = await resolveParticipantAuthUids(participants);
-  }
+  const participantAuthUids = await resolveParticipantAuthUids(participants);
   await convRef.set(
-    { participantUids: participants, participantAuthUids, memberJoinedAt },
+    {
+      conversationId,
+      participantUids: participants,
+      participantAuthUids,
+      memberJoinedAt,
+      ...(creating ? { createdBy: uid, adminIds: [uid] } : {}),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
     { merge: true }
   );
   const requestedMessageId = String(req.data?.messageId ?? "").trim();
@@ -1548,11 +1480,6 @@ export const sendEncryptedMessage = onCall(async (req) => {
     envelopes,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
-  const authUidsAfterWrite = await resolveParticipantAuthUids(participants);
-  if (authUidsAfterWrite.length > 0) {
-    await msgRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
-    await convRef.set({ participantAuthUids: authUidsAfterWrite }, { merge: true });
-  }
   void notifyConversationParticipantsPush({
     senderUid: uid,
     conversationId,
@@ -1572,22 +1499,17 @@ export const getFriendKeyBundles = onCall(async (req) => {
     ? (req.data.friendUids as unknown[]).map((x) => String(x))
     : [];
   const unique = [...new Set(friendUids.filter((id) => id.startsWith("u_")))];
-
-  const entries = await Promise.all(
-    unique.map(async (friendUid) => {
-      try {
-        await assertAcceptedFriendship(uid, friendUid);
-        const snap = await db.collection("users").doc(friendUid).get();
-        const keyBundle = snap.data()?.keyBundle ?? null;
-        return [friendUid, keyBundle] as const;
-      } catch {
-        return [friendUid, null] as const;
-      }
-    })
-  );
-  return {
-    keyBundles: Object.fromEntries(entries),
-  };
+  const friends = await getAcceptedFriendSet(uid);
+  const allowed = unique.filter((friendUid) => friends.has(friendUid));
+  const snaps = await getAllChunked(allowed.map((friendUid) => db.collection("users").doc(friendUid)));
+  const keyBundles: Record<string, unknown> = {};
+  for (const friendUid of unique) keyBundles[friendUid] = null;
+  snaps.forEach((snap, index) => {
+    const friendUid = allowed[index];
+    if (!friendUid) return;
+    keyBundles[friendUid] = snap.data()?.keyBundle ?? null;
+  });
+  return { keyBundles };
 });
 
 /**
@@ -1654,7 +1576,6 @@ export const listEncryptedPosts = onCall(async (req) => {
   }
   const snap = await query.limit(limit + 1).get();
 
-  const reactionMirrorByPostId = new Map<string, string[]>();
   let items = snap.docs
     .map((doc) => {
       const data = doc.data() as {
@@ -1664,13 +1585,7 @@ export const listEncryptedPosts = onCall(async (req) => {
         nonce: string;
         envelopes: EnvelopeMap;
         createdAt?: unknown;
-        recipientAuthUids?: unknown;
       };
-      const postIdForMirror = String(data.postId || doc.id);
-      const mirror = Array.isArray(data.recipientAuthUids)
-        ? data.recipientAuthUids.map((x) => String(x ?? "").trim()).filter(Boolean)
-        : [];
-      if (mirror.length > 0) reactionMirrorByPostId.set(postIdForMirror, mirror);
       const envelope = data.envelopes?.[uid];
       if (!envelope) return null;
       return {
@@ -1684,32 +1599,23 @@ export const listEncryptedPosts = onCall(async (req) => {
     })
     .filter((x): x is NonNullable<typeof x> => !!x);
 
-  items = await filterPostItemsByFriendship(uid, items);
+  const friendSet = await getAcceptedFriendSet(uid);
+  friendSet.add(uid);
+  items = items.filter((item) => friendSet.has(item.ownerUid));
   const hasMore = items.length > limit;
   const page = items.slice(0, limit);
 
-  const reactionSnaps = await Promise.all(
-    page.slice(0, 100).map((item) => db.collection("encryptedPostReactions").doc(item.postId).get())
+  const reactionSnaps = await getAllChunked(
+    page.map((item) => db.collection("encryptedPostReactions").doc(item.postId))
   );
   const reactionsByPostId: Record<string, Record<string, string>> = {};
-  const reactionMirrorWrites: Promise<unknown>[] = [];
   reactionSnaps.forEach((reactionSnap, idx) => {
     if (!reactionSnap.exists) return;
     const postId = page[idx]?.postId;
     if (!postId) return;
     const data = reactionSnap.data() ?? {};
     reactionsByPostId[postId] = (data.reactions ?? {}) as Record<string, string>;
-    const existingMirror = data.recipientAuthUids;
-    const mirror = reactionMirrorByPostId.get(postId) ?? [];
-    if (mirror.length > 0 && (!Array.isArray(existingMirror) || existingMirror.length === 0)) {
-      reactionMirrorWrites.push(
-        reactionSnap.ref.set({ recipientAuthUids: mirror }, { merge: true })
-      );
-    }
   });
-  if (reactionMirrorWrites.length > 0) {
-    await Promise.all(reactionMirrorWrites);
-  }
 
   return { items: page, reactionsByPostId, incremental: sinceMs != null, hasMore };
 });
@@ -1970,24 +1876,8 @@ export const listEncryptedMessages = onCall(async (req) => {
  */
 export const listMyFriends = onCall(async (req) => {
   const { appUid: uid } = await assertVerifiedCallableCaller(req);
-  const mine = await db
-    .collection("friendships")
-    .where("participants", "array-contains", uid)
-    .where("status", "==", "accepted")
-    .get();
-  const candidateUids: string[] = [];
-  for (const doc of mine.docs) {
-    const participants = (doc.data().participants ?? []) as string[];
-    const otherRaw = participants.find((p) => p !== uid);
-    if (!otherRaw) continue;
-    const normalized = await normalizeParticipantToAppUid(otherRaw);
-    if (normalized && normalized !== uid) candidateUids.push(normalized);
-  }
-  const unique = [...new Set(candidateUids)];
-  // Return every accepted friendship uid. Requiring a `users/{uid}` doc here hid
-  // brand-new friends until profile upsert finished, which broke boot roster sync,
-  // profile open, and push participant mirrors right after pairing.
-  return { friendUids: unique };
+  const friendUids = await getAcceptedFriendUids(uid);
+  return { friendUids };
 });
 
 /**
@@ -2001,17 +1891,28 @@ async function revokeOwnedPostRecipients(
   removeUid: string,
   removeAuthUid: string | null
 ): Promise<void> {
-  const snap = await db.collection("encryptedPosts").where("ownerUid", "==", ownerUid).get();
-  if (snap.empty) return;
   const writer = db.bulkWriter();
-  for (const doc of snap.docs) {
-    const patch: Record<string, unknown> = {
-      recipientUids: admin.firestore.FieldValue.arrayRemove(removeUid),
-    };
-    if (removeAuthUid) {
-      patch.recipientAuthUids = admin.firestore.FieldValue.arrayRemove(removeAuthUid);
+  let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+  for (;;) {
+    let query: FirebaseFirestore.Query = db
+      .collection("encryptedPosts")
+      .where("ownerUid", "==", ownerUid)
+      .orderBy(admin.firestore.FieldPath.documentId())
+      .limit(200);
+    if (cursor) query = query.startAfter(cursor);
+    const snap = await query.get();
+    if (snap.empty) break;
+    for (const doc of snap.docs) {
+      const patch: Record<string, unknown> = {
+        recipientUids: admin.firestore.FieldValue.arrayRemove(removeUid),
+      };
+      if (removeAuthUid) {
+        patch.recipientAuthUids = admin.firestore.FieldValue.arrayRemove(removeAuthUid);
+      }
+      writer.set(doc.ref, patch, { merge: true });
     }
-    writer.set(doc.ref, patch, { merge: true });
+    cursor = snap.docs[snap.docs.length - 1];
+    if (snap.size < 200) break;
   }
   await writer.close();
 }
@@ -2087,6 +1988,9 @@ export const removeFriendship = onCall(async (req) => {
     return { ok: true };
   }
   await edgeRef.delete();
+  await unlinkAcceptedFriends(uid, otherUid).catch((err) => {
+    console.error("friendIndex.unlink_failed", err);
+  });
   await kickPairFromSharedGroups(uid, otherUid);
   // Best-effort: revoke read-mirror access. Never fail the unfriend on this.
   try {
@@ -2130,40 +2034,37 @@ export const getFriendPresence = onCall(async (req) => {
     ? (req.data.friendUids as unknown[]).map((x) => String(x)).filter(Boolean)
     : [];
   const unique = [...new Set(friendUids.filter((id) => id.startsWith("u_")))].slice(0, 200);
-  const entries = await Promise.all(
-    unique.map(async (friendUid) => {
-      try {
-        await assertAcceptedFriendship(uid, friendUid);
-        const snap = await db.collection("presence").doc(friendUid).get();
-        if (!snap.exists) return [friendUid, { state: "offline", heartbeatAtMs: 0, online: false }] as const;
-        const data = snap.data() as {
-          state?: string;
-          heartbeatAtMs?: unknown;
-          online?: boolean;
-        };
-        const state = data?.state === "active" ? "active" : "background";
-        const heartbeatAtMs = normalizePresenceHeartbeatMs(data?.heartbeatAtMs);
-        const fresh = isPresenceFresh(heartbeatAtMs);
-        const online = presenceDocOnlineFromData({
-          state: data?.state,
-          heartbeatAtMs: data?.heartbeatAtMs,
-          online: data?.online,
-        });
-        const effectiveState = fresh ? state : "offline";
-        return [
-          friendUid,
-          {
-            state: effectiveState,
-            heartbeatAtMs: fresh ? heartbeatAtMs : 0,
-            online,
-          },
-        ] as const;
-      } catch {
-        return [friendUid, { state: "offline", heartbeatAtMs: 0 }] as const;
-      }
-    })
-  );
-  return { byUid: Object.fromEntries(entries) };
+  const friends = await getAcceptedFriendSet(uid);
+  const allowed = unique.filter((friendUid) => friends.has(friendUid));
+  const snaps = await getAllChunked(allowed.map((friendUid) => db.collection("presence").doc(friendUid)));
+  const byUid: Record<string, { state: string; heartbeatAtMs: number; online?: boolean }> = {};
+  for (const friendUid of unique) {
+    byUid[friendUid] = { state: "offline", heartbeatAtMs: 0, online: false };
+  }
+  snaps.forEach((snap, index) => {
+    const friendUid = allowed[index];
+    if (!friendUid) return;
+    if (!snap.exists) return;
+    const data = snap.data() as {
+      state?: string;
+      heartbeatAtMs?: unknown;
+      online?: boolean;
+    };
+    const state = data?.state === "active" ? "active" : "background";
+    const heartbeatAtMs = normalizePresenceHeartbeatMs(data?.heartbeatAtMs);
+    const fresh = isPresenceFresh(heartbeatAtMs);
+    const online = presenceDocOnlineFromData({
+      state: data?.state,
+      heartbeatAtMs: data?.heartbeatAtMs,
+      online: data?.online,
+    });
+    byUid[friendUid] = {
+      state: fresh ? state : "offline",
+      heartbeatAtMs: fresh ? heartbeatAtMs : 0,
+      online,
+    };
+  });
+  return { byUid };
 });
 
 /**
@@ -2180,41 +2081,51 @@ export const getUserProfiles = onCall(async (req) => {
     ? (req.data.targetUids as unknown[]).map((x) => String(x)).filter(Boolean)
     : [];
   const unique = [...new Set(targetUids.filter((id) => id.startsWith("u_")))].slice(0, 200);
-  const entries = await Promise.all(
-    unique.map(async (targetUid) => {
-      try {
-        if (targetUid !== uid) {
-          if (pairingPin) {
-            await assertPairingSessionAllowsProfileRead(uid, targetUid, pairingPin);
-          } else {
-            await assertAcceptedFriendship(uid, targetUid);
-          }
-        }
-        const snap = await db.collection("users").doc(targetUid).get();
-        if (!snap.exists) return [targetUid, null] as const;
-        const data = snap.data() as {
-          username?: string;
-          bio?: string;
-          profilePictureUrl?: string | null;
-          profilePicturePath?: string | null;
-        };
-        const pairingPreviewOnly = pairingPin && targetUid !== uid;
-        const storedUsername = String(data.username ?? "").trim();
-        return [
-          targetUid,
-          {
-            uid: pairingPreviewOnly ? undefined : targetUid,
-            username: storedUsername || "Friend",
-            bio: pairingPreviewOnly ? "" : data.bio ?? "",
-            profilePictureUrl: await presentStoredProfilePicture(targetUid, data),
-          },
-        ] as const;
-      } catch {
-        return [targetUid, null] as const;
+  const allowed: string[] = [];
+  if (pairingPin) {
+    for (const targetUid of unique) {
+      if (targetUid === uid) {
+        allowed.push(targetUid);
+        continue;
       }
+      try {
+        await assertPairingSessionAllowsProfileRead(uid, targetUid, pairingPin);
+        allowed.push(targetUid);
+      } catch {
+        /* pairing session does not cover this uid */
+      }
+    }
+  } else {
+    const friends = await getAcceptedFriendSet(uid);
+    for (const targetUid of unique) {
+      if (targetUid === uid || friends.has(targetUid)) allowed.push(targetUid);
+    }
+  }
+  const snaps = await getAllChunked(allowed.map((targetUid) => db.collection("users").doc(targetUid)));
+  const authByApp = await resolveAuthUidByAppUid(allowed);
+  const profiles: Record<string, unknown> = {};
+  for (const targetUid of unique) profiles[targetUid] = null;
+  await Promise.all(
+    snaps.map(async (snap, index) => {
+      const targetUid = allowed[index];
+      if (!targetUid || !snap.exists) return;
+      const data = snap.data() as {
+        username?: string;
+        bio?: string;
+        profilePictureUrl?: string | null;
+        profilePicturePath?: string | null;
+      };
+      const pairingPreviewOnly = Boolean(pairingPin) && targetUid !== uid;
+      const storedUsername = String(data.username ?? "").trim();
+      profiles[targetUid] = {
+        uid: pairingPreviewOnly ? undefined : targetUid,
+        username: storedUsername || "Friend",
+        bio: pairingPreviewOnly ? "" : data.bio ?? "",
+        profilePictureUrl: await profilePictureUrlForClient(authByApp.get(targetUid) ?? null, data),
+      };
     })
   );
-  return { profiles: Object.fromEntries(entries) };
+  return { profiles };
 });
 
 /**

@@ -1,5 +1,4 @@
 import { callEmulatorFunction } from "../../backendBridge";
-import { firebaseAuth } from "../../firebaseAuthClient";
 import { logAppError } from "../../telemetry";
 import { normalizePresenceHeartbeatMs } from "../lib/presenceNormalize";
 import { PRESENCE_HEARTBEAT_MS, PRESENCE_ONLINE_WINDOW_MS } from "../theme/preludeConstants";
@@ -94,22 +93,9 @@ export async function runPresenceHeartbeatTick(params: {
   return pollFriendPresence({ session, friendUids, now });
 }
 
-/** Re-links Firebase Auth ↔ app uid and rebuilds presence viewer lists (safe to repeat). */
+/** @deprecated Heartbeat no longer re-registers auth. Call publishActivePresence. */
 export async function repairPresenceAuthAndHeartbeat(session: BackendSession): Promise<void> {
-  const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
-  const now = Date.now();
-  if (firebaseAuthUid) {
-    try {
-      await callEmulatorFunction("registerFirebaseAuthUid", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        firebaseAuthUid,
-      });
-    } catch (err) {
-      logAppError("presence.repair.register_auth", err, { uid: session.uid });
-    }
-  }
-  await publishActivePresence(session, now);
+  await publishActivePresence(session, Date.now());
 }
 
 export async function setBackgroundPresence(session: BackendSession): Promise<void> {

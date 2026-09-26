@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-26 13:18 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 13:18 +01:00 | Backend | Heartbeat no longer rewrites every friend's presence doc or re-reads the friend graph. Friend lists, profiles, keys, and post reactions are batched, and the five-minute profile poll is gone. |
+
+---
+
 ## 2026-09-26 12:59 +01:00
 
 | Time | Area | Change |

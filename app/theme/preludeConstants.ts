@@ -1088,7 +1088,7 @@ export const ENCRYPTED_MESSAGES_CONVERSATION_LISTENER_LIMIT = CHAT_INITIAL_MESSA
 export const ENCRYPTED_MESSAGES_FOREGROUND_PULL_MS = 25_000;
 /** @deprecated Per-chat callable polling removed (Jun 2026). */
 export const ENCRYPTED_MESSAGES_ACTIVE_CHAT_PULL_MS = 12_000;
-/** Friend profile pictures/names refresh (roster listener is primary). */
+/** @deprecated Profile cards refresh when the roster changes, not on a timer. */
 export const FRIEND_PROFILE_REFRESH_MS = 5 * 60_000;
 /**
  * Wall-clock threshold after which the next poll-on-open for posts asks for

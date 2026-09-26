@@ -2,6 +2,7 @@ import * as admin from "firebase-admin";
 import { createHash, randomBytes } from "crypto";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { resolveParticipantAuthUids } from "./authUidMirror";
+import { linkAcceptedFriends } from "./friendIndex";
 import { assertActiveDeviceSession, resolveAppUidFromRequest } from "./deviceSession";
 import { getFirestore } from "./firebaseAdmin";
 import { assertLegacyFriendshipCallableAllowed } from "./legacyPairingGate";
@@ -148,6 +149,9 @@ export const redeemNfcFriendVoucher = onCall(async (req) => {
       },
       { merge: true }
     );
+  });
+  await linkAcceptedFriends(issuerUid, redeemerUid).catch((err) => {
+    console.error("friendIndex.link_failed", err);
   });
   return { ok: true, accepted: true, friendUid: issuerUid, voucherCode };
 });
@@ -313,6 +317,9 @@ export const joinBleFriendSession = onCall(async (req) => {
       },
       { merge: true }
     );
+  });
+  await linkAcceptedFriends(issuerUid, redeemerUid).catch((err) => {
+    console.error("friendIndex.link_failed", err);
   });
   return { ok: true, accepted: true, friendUid: issuerUid, sessionId };
 });
@@ -557,6 +564,9 @@ export const finalizeNfcHandshakeSession = onCall(async (req) => {
     );
   });
   const friendUid = uid === data.initiatorUid ? responderUid : data.initiatorUid;
+  await linkAcceptedFriends(data.initiatorUid, responderUid).catch((err) => {
+    console.error("friendIndex.link_failed", err);
+  });
   return { ok: true, accepted: true, friendUid, sessionId };
 });
 
@@ -612,6 +622,9 @@ export const consumeHandshake = onCall(async (req) => {
       { merge: true }
     );
     tx.set(hsRef, { consumed: true, consumedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  });
+  await linkAcceptedFriends(uid, hs.ownerUid).catch((err) => {
+    console.error("friendIndex.link_failed", err);
   });
   return { ok: true, accepted: true, friendUid: hs.ownerUid };
 });

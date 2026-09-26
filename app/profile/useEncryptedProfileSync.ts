@@ -136,7 +136,11 @@ export function useEncryptedProfileSync(params: {
                 );
               } else {
                 const ownerUid = data.ownerUid;
-                void refreshFriendProfilesFromServer(session, addedFriendsFromRitualRef.current).then(
+                const oneFriend = addedFriendsFromRitualRef.current.filter(
+                  (friend) => friend.backendUid === ownerUid
+                );
+                if (oneFriend.length === 0) continue;
+                void refreshFriendProfilesFromServer(session, oneFriend).then(
                   (refreshed) => {
                     if (cancelled) return;
                     setAddedFriendsFromRitual((current) => {

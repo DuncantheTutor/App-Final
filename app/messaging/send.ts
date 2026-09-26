@@ -23,6 +23,7 @@ import {
 } from "../lib/directChatId";
 import { isLegacyDraftChatId } from "./localChatId";
 import { publishActivePresence } from "../presence/heartbeat";
+import { registerFirebaseAuthUidOnce } from "../session/registerFirebaseAuthUidOnce";
 import { resolveRecipientEncryptionKeys } from "./recipientKeys";
 import type { Chat, Friend, Message } from "../domain/types";
 import type { BackendSession } from "./types";
@@ -163,23 +164,14 @@ export async function deliverOutgoingMessages(
     }
   }
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  if (authUid) {
     try {
-      await callEmulatorFunction("registerFirebaseAuthUid", {
-        uid: session.uid,
-        deviceId: session.deviceId,
-        firebaseAuthUid: authUid,
-      });
-      break;
+      await registerFirebaseAuthUidOnce(session);
     } catch (regErr) {
-      if (attempt >= 2) {
-        logAppError("send.register_firebase_uid", regErr, {
-          uid: session.uid,
-          note: "send_continues_via_callable_pull",
-        });
-      } else {
-        await new Promise<void>((r) => setTimeout(r, 350 * (attempt + 1)));
-      }
+      logAppError("send.register_firebase_uid", regErr, {
+        uid: session.uid,
+        note: "send_continues_via_callable_pull",
+      });
     }
   }
 

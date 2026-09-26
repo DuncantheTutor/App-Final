@@ -280,7 +280,6 @@ import {
   CHAT_INITIAL_MESSAGE_LIMIT,
   CHAT_UI_INITIAL_DISPLAY_COUNT,
   CHAT_UI_DISPLAY_PAGE_SIZE,
-  FRIEND_PROFILE_REFRESH_MS,
   REACTION_EMOJIS,
   SCROLL_TEST_MESSAGES,
   SESSION_LOCK_TOKEN_STORAGE_KEY,
@@ -1408,10 +1407,8 @@ function MainAppInner() {
       replaceFriendsIfChanged(refreshed);
     };
     void run();
-    const id = setInterval(() => void run(), FRIEND_PROFILE_REFRESH_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
     };
   }, [signedIn, initialServerSyncDone, friendBackendUidsKey, getBackendSession, replaceFriendsIfChanged]);
 

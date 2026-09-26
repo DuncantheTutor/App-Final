@@ -21,6 +21,7 @@ import {
 } from "firebase/firestore";
 
 import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
+import { registerFirebaseAuthUidOnce } from "../session/registerFirebaseAuthUidOnce";
 
 import { logAppEvent } from "../../telemetry";
 
@@ -367,13 +368,11 @@ export function attachEncryptedMessageListener(params: {
 
     try {
 
-      await callEmulatorFunction("registerFirebaseAuthUid", {
+      await registerFirebaseAuthUidOnce({
 
         uid: session.uid,
 
         deviceId: session.deviceId,
-
-        firebaseAuthUid,
 
       });
 

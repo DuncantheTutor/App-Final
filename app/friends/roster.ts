@@ -63,7 +63,6 @@ export function attachFriendRosterListener(params: {
 
   const profileFetchAttemptedRef = new Set<string>();
   const liveFriendBackendUidsRef = { current: new Set<string>() };
-  const lastProfileBatchRefreshMsRef = { current: 0 };
   let snapshotGeneration = 0;
 
   const unsubscribe = onSnapshot(
@@ -155,15 +154,9 @@ export function attachFriendRosterListener(params: {
       for (const f of addedFriendsFromRitualRef.current) {
         if (f.backendUid) knownByBackendUid.set(f.backendUid, f);
       }
-      const uidsNeedingProfile = [...liveBackendUids].filter(
-        (uid) => !knownByBackendUid.has(uid) && !profileFetchAttemptedRef.has(uid)
-      );
-      const shouldBatchRefreshProfiles =
-        uidsNeedingProfile.length > 0 ||
-        Date.now() - lastProfileBatchRefreshMsRef.current > 45_000;
-      const profileTargetUids = shouldBatchRefreshProfiles
-        ? [...liveBackendUids].slice(0, 200)
-        : uidsNeedingProfile;
+      const profileTargetUids = [...liveBackendUids]
+        .filter((uid) => !knownByBackendUid.has(uid) && !profileFetchAttemptedRef.has(uid))
+        .slice(0, 200);
       let fetchedProfiles: Record<
         string,
         { username?: string; bio?: string; profilePictureUrl?: string | null } | null
@@ -181,9 +174,6 @@ export function attachFriendRosterListener(params: {
             targetUids: profileTargetUids,
           });
           fetchedProfiles = profilesRes.profiles ?? {};
-          if (shouldBatchRefreshProfiles) {
-            lastProfileBatchRefreshMsRef.current = Date.now();
-          }
           for (const uid of profileTargetUids) {
             profileFetchAttemptedRef.add(uid);
           }

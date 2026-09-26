@@ -2,6 +2,7 @@ import { useCallback, type MutableRefObject } from "react";
 
 import { backendUidForFriendId, callEmulatorFunction } from "../../backendBridge";
 import { firebaseAuth } from "../../firebaseAuthClient";
+import { registerFirebaseAuthUidOnce } from "../session/registerFirebaseAuthUidOnce";
 import { logAppError } from "../../telemetry";
 import type { Friend } from "../domain/types";
 import { friendDisplayNameFromProfile } from "../lib/friendDisplayName";
@@ -68,14 +69,9 @@ export function useHydrateFriendByUid({
           new Set([...acceptedFriendBackendUidsRef.current, friendUid])
         );
         persistSocialMessagingNow();
-        const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
-        if (firebaseAuthUid) {
+        if (firebaseAuth.currentUser?.uid) {
           try {
-            await callEmulatorFunction("registerFirebaseAuthUid", {
-              uid: session.uid,
-              deviceId: session.deviceId,
-              firebaseAuthUid,
-            });
+            await registerFirebaseAuthUidOnce(session);
           } catch (err) {
             logAppError("friends.hydrate.register_firebase_uid", err, { friendUid });
           }

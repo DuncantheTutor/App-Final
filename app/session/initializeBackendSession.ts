@@ -9,6 +9,7 @@ import { storageGetItem, storageSetItem } from "../lib/encryptedLocalStorage";
 import { restoreKeyBundleFromCloudIfMissing } from "../lib/e2eeKeyBackup";
 import { mergeProfilePictureUrl, normalizeHttpsProfilePictureUrl } from "../lib/profilePictureUrl";
 import { publishActivePresence } from "../presence/heartbeat";
+import { registerFirebaseAuthUidOnce } from "./registerFirebaseAuthUidOnce";
 import type { Chat, Message, MockAuthAccount, Post } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
 import type { EncryptedSyncState } from "./useSignedInSession";
@@ -99,28 +100,12 @@ export async function initializeBackendSessionForAccount(
     try {
       const firebaseAuthUid = firebaseAuth.currentUser?.uid;
       if (firebaseAuthUid) {
-        let authRegistryOk = false;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          try {
-            await callEmulatorFunction("registerFirebaseAuthUid", {
-              uid,
-              deviceId,
-              firebaseAuthUid,
-            });
-            await publishActivePresence({ uid, deviceId }, Date.now());
-            authRegistryOk = true;
-            break;
-          } catch (err) {
-            if (attempt >= 2) {
-              logAppError("auth.register_firebase_uid", err, { uid, attempt });
-            } else {
-              await new Promise<void>((r) => setTimeout(r, 400 * (attempt + 1)));
-            }
-          }
+        try {
+          await registerFirebaseAuthUidOnce({ uid, deviceId });
+        } catch (err) {
+          logAppError("auth.register_firebase_uid", err, { uid });
         }
-        if (!authRegistryOk) {
-          void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
-        }
+        void publishActivePresence({ uid, deviceId }, Date.now()).catch(() => undefined);
       }
 
       let resolvedBio = (account.bio || "").trim() || persistedBio;

@@ -22,6 +22,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Firestore rules:** Client writes to `users` are denied. Posts, profiles, messages, and presence can be read only when the caller's Auth uid is in the server-written mirror array.
 
 ### Changed (Sep 2026)
+- **Firestore read load:** The foreground heartbeat only updates your own presence document. Registering the Firebase Auth uid, rewriting friends' presence documents, and backfilling message auth mirrors runs once per sign-in, not every 30 seconds. Accepted friends are stored in `friendIndex/{uid}` and read in one document. Profile, presence, and key lookups batch those reads. Friend names and photos refresh when the roster changes, not on a five-minute timer. Listing posts no longer writes reaction mirrors. Unfriend and expired-doc cleanup page through results instead of loading the whole collection at once.
 - **App name:** Erdos is shown in the theme colour on the home bar and the sign-in screen. An open chat does not show it.
 - **Colour theme:** Settings → Colour theme includes Fire orange (`#FF4F00`) as well as Green and Hot pink, in light and dark.
 - **New post:** The composer no longer shows the empty photo prompt, the clear-media trash icon, or the bottom Cancel and Publish buttons. Camera, gallery, video, and the caption sit in the middle of the screen. Pressing Done on the caption publishes.

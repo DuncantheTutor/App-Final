@@ -6,6 +6,12 @@ import * as admin from "firebase-admin";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { resolveParticipantAuthUids } from "./authUidMirror";
 import { assertVerifiedCallableCaller } from "./deviceSession";
+import {
+  assertAcceptedFriendship,
+  assertAcceptedFriendships,
+  filterAcceptedFriendUids,
+  getAcceptedFriendUids,
+} from "./friendIndex";
 import { getFirestore } from "./firebaseAdmin";
 
 function firestoreDb() {
@@ -23,10 +29,6 @@ function requireAuthUid(uid: string | null | undefined): string {
 
 function nowMs(): number {
   return Date.now();
-}
-
-function friendshipId(a: string, b: string): string {
-  return a < b ? `${a}_${b}` : `${b}_${a}`;
 }
 
 function timestampToMs(value: unknown): number {
@@ -47,80 +49,6 @@ function parseSinceMs(raw: unknown): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
-}
-
-async function assertAcceptedFriendship(uid: string, otherUid: string): Promise<void> {
-  if (uid === otherUid) return;
-  const canonicalSnap = await firestoreDb()
-    .collection("friendships")
-    .doc(friendshipId(uid, otherUid))
-    .get();
-  if (canonicalSnap.exists) {
-    const data = canonicalSnap.data() as { status?: string } | undefined;
-    if (data?.status === "accepted") return;
-    throw new HttpsError("permission-denied", "Friendship not accepted.");
-  }
-  const querySnap = await firestoreDb()
-    .collection("friendships")
-    .where("participants", "array-contains", uid)
-    .where("status", "==", "accepted")
-    .get();
-  for (const doc of querySnap.docs) {
-    const participants = (doc.data().participants ?? []) as string[];
-    for (const raw of participants) {
-      if (raw === uid) continue;
-      const normalized = raw === otherUid ? otherUid : await normalizeParticipantToAppUid(raw);
-      if (normalized === otherUid) return;
-    }
-  }
-  throw new HttpsError("permission-denied", "Friendship required.");
-}
-
-function isAppBackendUid(id: string): boolean {
-  return id.startsWith("u_");
-}
-
-/** Maps friendship participant entries (app uid or legacy Firebase Auth uid) to `u_*`. */
-async function normalizeParticipantToAppUid(raw: string): Promise<string | null> {
-  const id = String(raw ?? "").trim();
-  if (!id) return null;
-  if (isAppBackendUid(id)) {
-    const snap = await firestoreDb().collection("users").doc(id).get();
-    return snap.exists ? id : null;
-  }
-  const rev = await firestoreDb().collection("firebaseAuthToAppUid").doc(id).get();
-  let appUid = String(rev.data()?.appUid ?? "").trim();
-  if (!appUid) {
-    const mapQuery = await firestoreDb()
-      .collection("userFirebaseAuthMap")
-      .where("firebaseAuthUid", "==", id)
-      .limit(1)
-      .get();
-    if (!mapQuery.empty) {
-      appUid = mapQuery.docs[0].id.trim();
-    }
-  }
-  if (!appUid || !isAppBackendUid(appUid)) return null;
-  const userSnap = await firestoreDb().collection("users").doc(appUid).get();
-  return userSnap.exists ? appUid : null;
-}
-
-async function getAcceptedFriendUids(uid: string): Promise<string[]> {
-  const mine = await firestoreDb()
-    .collection("friendships")
-    .where("participants", "array-contains", uid)
-    .where("status", "==", "accepted")
-    .get();
-  const friendUids: string[] = [];
-  for (const doc of mine.docs) {
-    const participants = (doc.data().participants ?? []) as string[];
-    for (const raw of participants) {
-      if (raw === uid) continue;
-      const normalized = await normalizeParticipantToAppUid(raw);
-      if (normalized && normalized !== uid) friendUids.push(normalized);
-    }
-  }
-  return [...new Set(friendUids)];
 }
 
 type ConversationData = {
@@ -584,9 +512,7 @@ export const manageConversationMembership = onCall(async (req) => {
       throw new HttpsError("permission-denied", "Only admins can add members.");
     }
     if (participants.includes(targetUid)) return { ok: true, participantUids: participants };
-    for (const memberUid of participants) {
-      await assertAcceptedFriendship(memberUid, targetUid);
-    }
+    await assertAcceptedFriendships(targetUid, participants);
     const nextParticipants = [...participants, targetUid].sort();
     const memberJoinedAt = { ...(conv.memberJoinedAt ?? {}), [targetUid]: now };
     const participantAuthUids = await resolveParticipantAuthUids(nextParticipants);
@@ -735,20 +661,8 @@ export const updateEncryptedPost = onCall(async (req) => {
   if (!candidateUids.includes(uid)) {
     candidateUids.unshift(uid);
   }
-  const recipientUids: string[] = [];
-  for (const recipientUid of candidateUids) {
-    if (recipientUid === uid) {
-      recipientUids.push(recipientUid);
-      continue;
-    }
-    if (!recipientUid.startsWith("u_")) continue;
-    try {
-      await assertAcceptedFriendship(uid, recipientUid);
-      recipientUids.push(recipientUid);
-    } catch {
-      /* Stale local-roster uids must not block editing for self and real friends. */
-    }
-  }
+  const acceptedRecipients = await filterAcceptedFriendUids(uid, candidateUids);
+  const recipientUids = [...new Set([uid, ...acceptedRecipients])];
   if (recipientUids.length === 0 || !recipientUids.includes(uid)) {
     throw new HttpsError("invalid-argument", "At least one recipient is required.");
   }
@@ -864,26 +778,33 @@ export const updateEncryptedMessage = onCall(async (req) => {
   return { ok: true, editedAt };
 });
 
-/** Extends removeFriendship: kick both from shared groups. */
+/** Extends removeFriendship: kick both from shared groups, one page of conversations at a time. */
 export async function kickPairFromSharedGroups(uidA: string, uidB: string): Promise<void> {
-  const snap = await firestoreDb()
-    .collection("conversations")
-    .where("participantUids", "array-contains", uidA)
-    .get();
-  const batch = firestoreDb().batch();
-  let pending = 0;
-  for (const doc of snap.docs) {
-    const data = doc.data() as ConversationData;
-    const participants = data.participantUids ?? [];
-    if (!participants.includes(uidA) || !participants.includes(uidB)) continue;
-    if (participants.length <= 2) continue;
-    const next = participants.filter((id) => id !== uidA && id !== uidB);
-    if (next.length === participants.length) continue;
-    const participantAuthUids = await resolveParticipantAuthUids(next);
-    if (next.length === 0) {
-      batch.delete(doc.ref);
-    } else {
-      batch.set(
+  const db = firestoreDb();
+  const writer = db.bulkWriter();
+  let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+  for (;;) {
+    let query: FirebaseFirestore.Query = db
+      .collection("conversations")
+      .where("participantUids", "array-contains", uidA)
+      .orderBy(admin.firestore.FieldPath.documentId())
+      .limit(200);
+    if (cursor) query = query.startAfter(cursor);
+    const snap = await query.get();
+    if (snap.empty) break;
+    for (const doc of snap.docs) {
+      const data = doc.data() as ConversationData;
+      const participants = data.participantUids ?? [];
+      if (!participants.includes(uidA) || !participants.includes(uidB)) continue;
+      if (participants.length <= 2) continue;
+      const next = participants.filter((id) => id !== uidA && id !== uidB);
+      if (next.length === participants.length) continue;
+      if (next.length === 0) {
+        writer.delete(doc.ref);
+        continue;
+      }
+      const participantAuthUids = await resolveParticipantAuthUids(next);
+      writer.set(
         doc.ref,
         {
           participantUids: next,
@@ -893,19 +814,10 @@ export async function kickPairFromSharedGroups(uidA: string, uidB: string): Prom
         { merge: true }
       );
     }
-    pending++;
-    if (pending >= 400) break;
+    cursor = snap.docs[snap.docs.length - 1];
+    if (snap.size < 200) break;
   }
-  if (pending > 0) await batch.commit();
-}
-
-export async function filterPostItemsByFriendship<T extends { ownerUid: string }>(
-  uid: string,
-  items: T[]
-): Promise<T[]> {
-  const friendSet = new Set(await getAcceptedFriendUids(uid));
-  friendSet.add(uid);
-  return items.filter((item) => friendSet.has(item.ownerUid));
+  await writer.close();
 }
 
 /** Refresh `viewerAuthUids` only — does not mark the user online (auth map repair). */
@@ -1028,15 +940,16 @@ export async function refreshPresenceAfterFriendshipPair(
   ]);
 }
 
-/** Presence heartbeat with viewerAuthUids for client onSnapshot. */
+/**
+ * Heartbeat writes only this user's presence doc.
+ * `viewerAuthUids` is maintained when auth is first registered and when a friendship changes.
+ */
 export async function writePresenceWithViewers(
   uid: string,
   deviceId: string,
   state: "active" | "background",
   heartbeatAtMs?: number
 ): Promise<void> {
-  const friendUids = await getAcceptedFriendUids(uid);
-  const viewerAuthUids = await resolveParticipantAuthUids([uid, ...friendUids]);
   const clientHb = Number(heartbeatAtMs ?? 0);
   const safeHeartbeatAtMs =
     Number.isFinite(clientHb) &&
@@ -1050,7 +963,6 @@ export async function writePresenceWithViewers(
       state,
       heartbeatAtMs: safeHeartbeatAtMs,
       deviceId,
-      viewerAuthUids,
       online: state === "active",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },

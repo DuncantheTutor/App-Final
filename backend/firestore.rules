@@ -66,9 +66,8 @@ service cloud.firestore {
     }
 
     // Encrypted posts: clients subscribe via `recipientAuthUids` (Firebase
-    // Auth UID mirror), populated by `createEncryptedPost` and backfilled on
-    // each `listEncryptedPosts` read. The legacy `recipientUids` (app-uid)
-    // array stays on the doc for the callable path.
+    // Auth UID mirror), populated when the post is written. The legacy
+    // `recipientUids` (app-uid) array stays on the doc for the callable path.
     match /encryptedPosts/{postId} {
       allow read: if isSignedIn()
         && resource.data.recipientAuthUids is list
@@ -81,6 +80,12 @@ service cloud.firestore {
         && resource.data.recipientAuthUids is list
         && request.auth.uid in resource.data.recipientAuthUids;
       allow write: if false;
+    }
+
+    // Server-only accepted-friend list. Clients use `listMyFriends` and the
+    // friendships listener; they do not read this document.
+    match /friendIndex/{uid} {
+      allow read, write: if false;
     }
 
     match /presence/{uid} {

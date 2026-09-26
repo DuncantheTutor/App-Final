@@ -6,7 +6,7 @@ import { Platform } from "react-native";
 
 import { callEmulatorFunction, getOrCreateBackendDeviceId } from "../../backendBridge";
 
-import { firebaseAuth } from "../../firebaseAuthClient";
+import { registerFirebaseAuthUidOnce } from "../session/registerFirebaseAuthUidOnce";
 
 import { logAppError, logAppEvent } from "../../telemetry";
 
@@ -136,14 +136,8 @@ async function ensureFirebaseAuthMapRegistered(session: {
   uid: string;
   deviceId: string;
 }): Promise<void> {
-  const firebaseAuthUid = firebaseAuth.currentUser?.uid?.trim();
-  if (!firebaseAuthUid) return;
   try {
-    await callEmulatorFunction("registerFirebaseAuthUid", {
-      uid: session.uid,
-      deviceId: session.deviceId,
-      firebaseAuthUid,
-    });
+    await registerFirebaseAuthUidOnce(session);
   } catch (err) {
     logAppError("push.auth_map", err, { uid: session.uid });
   }

@@ -10,8 +10,6 @@ import {
 
   publishActivePresence,
 
-  repairPresenceAuthAndHeartbeat,
-
   setBackgroundPresence,
 
 } from "./heartbeat";
@@ -78,7 +76,7 @@ export function usePresenceHeartbeat(params: {
 
       try {
 
-        await repairPresenceAuthAndHeartbeat(session);
+        await publishActivePresence(session, Date.now());
 
       } catch (err) {
 

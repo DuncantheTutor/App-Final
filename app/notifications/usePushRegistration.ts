@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
-import { callEmulatorFunction } from "../../backendBridge";
 import { firebaseAuth } from "../../firebaseAuthClient";
+import { registerFirebaseAuthUidOnce } from "../session/registerFirebaseAuthUidOnce";
 import { logAppError } from "../../telemetry";
 import {
   getOsNotificationPermissionStatus,
@@ -49,14 +49,9 @@ export function usePushRegistration(params: {
       const granted = isOsNotificationPermissionGranted(osStatus);
       setOsNotificationGranted(granted);
       if (!granted) return;
-      const authUid = firebaseAuth.currentUser?.uid;
-      if (authUid) {
+      if (firebaseAuth.currentUser?.uid) {
         try {
-          await callEmulatorFunction("registerFirebaseAuthUid", {
-            uid: session.uid,
-            deviceId: session.deviceId,
-            firebaseAuthUid: authUid,
-          });
+          await registerFirebaseAuthUidOnce(session);
         } catch (err) {
           logAppError("push.foreground.auth_map", err, { uid: session.uid });
         }
