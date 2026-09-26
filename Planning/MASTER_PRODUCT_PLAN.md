@@ -123,7 +123,7 @@ The `userFirebaseAuthMap/{uid}` collection (populated by `registerFirebaseAuthUi
 
 - **Friend-gated** reads for sensitive profile fields and messaging (defense in depth: client + rules + callable validation).
 - **Chat membership** is the stored participant list. Send and conversation upsert cannot rewrite it. Add, leave, and kick use `manageConversationMembership`.
-- **Message keys** are backed up as a password-wrapped blob. A new phone that signs in with that password uses the same keys. The server cannot open the blob. Settings says so. A ratchet is planned, not shipped.
+- **Message keys** are backed up as a password-wrapped blob of the current key and a few previous secrets. A new phone that signs in with that password opens older messages, then uses a new key. The server cannot open the blob. Settings says so.
 - **E2EE verification** checklists in **`Planning/E2EE_VERIFICATION_CHECKLIST.md`** for messaging hardening.
 - **Pairing replay resistance** via short-lived offers and server-side validation.
 

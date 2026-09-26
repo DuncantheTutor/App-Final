@@ -14,7 +14,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ### Security
 - **Friends key:** Profile and posts are sealed with one key. Adding a friend adds a wrap of that key and lets them read existing posts. Removing a friend replaces the key and re-seals those posts and the profile.
-- **Message keys:** A new phone that signs in with the account password installs the same keys, so older messages, posts, and the profile open. The server stores a scrypt-wrapped copy and cannot read it. Settings explains this. A phone that already has the app asks for the password once if that copy is missing. A ratchet is still a later protocol change.
+- **Message keys:** A new phone that signs in with the account password opens older messages, posts, and the profile, then starts a new key. The previous secret stays in the password-wrapped backup so history still opens. Messages sent after the new key stay closed to a copy of the old secret. The server cannot read the backup. Settings explains this. Friends see a safety-number change and confirm the new key before sending.
+- **Message ingest:** A new thread from another account waits until this sign-in's friend list is known. An empty list drops it. Existing chats still accept messages.
+- **Unfriend:** The newest messages in a 1:1 lose both delivery mirrors so a reinstall does not pull that thread. New sends were already blocked. Posts and profiles were already stripped.
+- **Groups:** A new group id is a hash of the account ids, so both phones open the same thread.
+- **Boot catch-up:** A full incremental message page asks for at most two more pages. A failed boot pull retries once.
+- **Friends list:** "No friends yet" waits until the account link and the friend list have both settled. A failed account link says the phone is still connecting.
 - **Signed-in identity:** Cloud Functions take the account from the Firebase ID token. The request body cannot choose the account. `claimDeviceSession` returns the app account id. Existing mailboxes keep their current id; new accounts get a random id. The device stays signed in through the saved Firebase session.
 - **Pairing confirm:** The confirm screen still shows the other person's name and photo. Their account id is not sent until the friendship is saved.
 - **Profile fields:** Phone numbers are not stored. Usernames are not filled in from the email. Profile photos stored in Firebase are returned as short-lived signed URLs. `seedDemoFriendships` works only in the emulator.

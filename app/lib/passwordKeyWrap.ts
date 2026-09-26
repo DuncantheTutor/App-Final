@@ -61,9 +61,25 @@ export function isDeviceKeySecrets(value: unknown): value is DeviceKeySecrets {
   );
 }
 
-/** Locks the device key bundle with the account password. The password never leaves the phone. */
-export async function wrapKeyBundleWithPassword(
-  secrets: DeviceKeySecrets,
+export type DeviceKeyArchive = {
+  v: 2;
+  current: DeviceKeySecrets;
+  previous: DeviceKeySecrets[];
+};
+
+function archiveFromParsed(value: unknown): DeviceKeyArchive | null {
+  if (isDeviceKeySecrets(value)) return { v: 2, current: value, previous: [] };
+  if (!value || typeof value !== "object") return null;
+  const row = value as DeviceKeyArchive;
+  if (row.v !== 2 || !isDeviceKeySecrets(row.current)) return null;
+  const previous = Array.isArray(row.previous)
+    ? row.previous.filter(isDeviceKeySecrets).slice(0, 3)
+    : [];
+  return { v: 2, current: row.current, previous };
+}
+
+async function wrapBytes(
+  plaintext: string,
   password: string,
   randomBytes: (length: number) => Promise<Uint8Array>
 ): Promise<PasswordWrappedKeyBackup> {
@@ -72,7 +88,7 @@ export async function wrapKeyBundleWithPassword(
   const salt = await randomBytes(SALT_BYTES);
   const nonce = await randomBytes(nacl.secretbox.nonceLength);
   const key = await wrappingKey(trimmed, salt);
-  const cipher = nacl.secretbox(utf8(JSON.stringify(secrets)), nonce, key);
+  const cipher = nacl.secretbox(utf8(plaintext), nonce, key);
   return {
     v: PASSWORD_KEY_BACKUP_VERSION,
     kdf: PASSWORD_KEY_BACKUP_KDF,
@@ -85,11 +101,7 @@ export async function wrapKeyBundleWithPassword(
   };
 }
 
-/** Opens a password-wrapped bundle. A wrong password throws and does not return partial keys. */
-export async function unwrapKeyBundleWithPassword(
-  backup: PasswordWrappedKeyBackup,
-  password: string
-): Promise<DeviceKeySecrets> {
+async function openWrappedBytes(backup: PasswordWrappedKeyBackup, password: string): Promise<unknown> {
   const trimmed = password.trim();
   if (!trimmed) throw new Error("Password is required to open message keys.");
   if (
@@ -106,8 +118,48 @@ export async function unwrapKeyBundleWithPassword(
   const cipher = decodeBase64(backup.ciphertext);
   const key = await wrappingKey(trimmed, salt);
   const opened = nacl.secretbox.open(cipher, nonce, key);
-  if (!opened) throw new Error("Could not open message keys with this password.");
-  const parsed = JSON.parse(encodeUTF8(opened)) as unknown;
-  if (!isDeviceKeySecrets(parsed)) throw new Error("The saved message keys are incomplete.");
-  return parsed;
+  if (!opened) throw new Error("Can't unlock your messages with this password.");
+  return JSON.parse(encodeUTF8(opened)) as unknown;
+}
+
+/** Locks one device key bundle with the account password. The password never leaves the phone. */
+export async function wrapKeyBundleWithPassword(
+  secrets: DeviceKeySecrets,
+  password: string,
+  randomBytes: (length: number) => Promise<Uint8Array>
+): Promise<PasswordWrappedKeyBackup> {
+  return wrapBytes(JSON.stringify(secrets), password, randomBytes);
+}
+
+/** Locks the current key and the previous keys that still open older messages. */
+export async function wrapKeyArchiveWithPassword(
+  archive: DeviceKeyArchive,
+  password: string,
+  randomBytes: (length: number) => Promise<Uint8Array>
+): Promise<PasswordWrappedKeyBackup> {
+  const previous = archive.previous.filter(isDeviceKeySecrets).slice(0, 3);
+  return wrapBytes(
+    JSON.stringify({ v: 2, current: archive.current, previous }),
+    password,
+    randomBytes
+  );
+}
+
+/** Opens a password-wrapped bundle. A wrong password throws and does not return partial keys. */
+export async function unwrapKeyArchiveWithPassword(
+  backup: PasswordWrappedKeyBackup,
+  password: string
+): Promise<DeviceKeyArchive> {
+  const parsed = await openWrappedBytes(backup, password);
+  const archive = archiveFromParsed(parsed);
+  if (!archive) throw new Error("The saved message keys are incomplete.");
+  return archive;
+}
+
+export async function unwrapKeyBundleWithPassword(
+  backup: PasswordWrappedKeyBackup,
+  password: string
+): Promise<DeviceKeySecrets> {
+  const archive = await unwrapKeyArchiveWithPassword(backup, password);
+  return archive.current;
 }

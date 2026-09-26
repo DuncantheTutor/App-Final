@@ -21,6 +21,7 @@ import {
 } from "firebase/firestore";
 
 import { firebaseAuth, getFirestoreDb } from "../../firebaseAuthClient";
+import { holdInboundMessage, takeHeldInboundMessages } from "./inboundHold";
 import { registerFirebaseAuthUidOnce } from "../session/registerFirebaseAuthUidOnce";
 
 import { logAppEvent } from "../../telemetry";
@@ -89,6 +90,9 @@ export type PullEncryptedMessagesParams = {
 
   /** Override callable page size (boot uses a smaller cap). */
   limit?: number;
+
+  /** Internal: extra pages after a full incremental result. Capped at 2. */
+  followPages?: number;
 
 };
 
@@ -184,6 +188,36 @@ export async function pullEncryptedMessagesIncremental(
 
   });
 
+  const pageFull = Boolean(res.incremental) && res.items.length >= messagesRequest.limit;
+  const afterMs = refs.messagesWatermarkMsRef.current ?? 0;
+  const followed = params.followPages ?? 0;
+  if (pageFull && afterMs > watermarkMs && followed < 2) {
+    await pullEncryptedMessagesIncremental({ ...params, followPages: followed + 1 });
+  }
+
+}
+
+/** Decode ciphertext that arrived before the friend list was known. */
+export async function drainHeldInboundMessages(params: PullEncryptedMessagesParams): Promise<void> {
+  const items = takeHeldInboundMessages();
+  if (items.length === 0) return;
+  const { session, refs, persistWatermarksNow, setChats, setMessages } = params;
+  const { batch, decodeFailures, earliestFailureMs } = await decodeEncryptedMessagePullItems({
+    sessionUid: session.uid,
+    items,
+    refs,
+    allFriends: allFriendsFromRefs(refs),
+  });
+  applyDecodedBatchToState({
+    batch,
+    decodeFailures,
+    earliestFailureMs,
+    incremental: true,
+    refs,
+    persistWatermarksNow,
+    setChats,
+    setMessages,
+  });
 }
 
 
@@ -617,7 +651,35 @@ export function attachEncryptedMessageListener(params: {
 
           });
 
-          if (!result) {
+          if (!result || result.hold) {
+
+            if (result?.hold) {
+
+              holdInboundMessage({
+
+                messageId: messageDocId,
+
+                conversationId,
+
+                senderUid: data.senderUid ?? "",
+
+                ciphertext: data.ciphertext,
+
+                nonce: data.nonce,
+
+                envelope,
+
+                createdAtMs,
+
+                reactions: docMetadata.reactions,
+
+                editedAt: docMetadata.editedAt,
+
+                unsentAt: docMetadata.unsentAt,
+
+              });
+
+            }
 
             if (change.type === "modified") {
 
@@ -628,6 +690,8 @@ export function attachEncryptedMessageListener(params: {
             continue;
 
           }
+
+          if (!result.message) continue;
 
           batch.decoded.push(result.message);
 
@@ -866,7 +930,24 @@ export function attachConversationMessageListener(params: {
               rosterFriendBackendUids,
               docMetadata,
             });
-            if (!result) continue;
+            if (!result || result.hold) {
+              if (result?.hold) {
+                holdInboundMessage({
+                  messageId: messageDocId,
+                  conversationId: trimmedConversationId,
+                  senderUid: data.senderUid ?? "",
+                  ciphertext: data.ciphertext,
+                  nonce: data.nonce,
+                  envelope,
+                  createdAtMs,
+                  reactions: docMetadata.reactions,
+                  editedAt: docMetadata.editedAt,
+                  unsentAt: docMetadata.unsentAt,
+                });
+              }
+              continue;
+            }
+            if (!result.message) continue;
             batch.decoded.push(result.message);
             if (result.missingChat) batch.missingChats.push(result.missingChat);
           } catch (err) {

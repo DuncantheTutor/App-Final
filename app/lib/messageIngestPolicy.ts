@@ -1,15 +1,22 @@
 import type { Friend } from "../domain/types";
 
-/** Whether an inbound encrypted message should be merged into local state. */
-export function shouldIngestInboundMessage(params: {
+export type IngestDecision = "ingest" | "drop" | "hold";
+
+/**
+ * New threads from other accounts wait until this sign-in's friend list is known.
+ * An empty list then drops them. An existing thread still accepts the sender.
+ */
+export function inboundMessageIngestDecision(params: {
   sessionUid: string;
   senderUid: string;
   resolvedChatId: string;
   knownChatIds: Set<string>;
   acceptedFriendBackendUids: Set<string>;
-  /** Local roster `backendUid` values — trust UI friends when server set lags. */
+  /** Local roster `backendUid` values — trust UI friends when the server set lags. */
   rosterFriendBackendUids?: Set<string>;
-}): boolean {
+  /** False until `listMyFriends` or a server friendship snapshot has returned. */
+  rosterReady: boolean;
+}): IngestDecision {
   const {
     sessionUid,
     senderUid,
@@ -17,21 +24,34 @@ export function shouldIngestInboundMessage(params: {
     knownChatIds,
     acceptedFriendBackendUids,
     rosterFriendBackendUids,
+    rosterReady,
   } = params;
   const sender = senderUid.trim();
 
-  // Existing thread always wins — do not block delivery on a stale friends set.
-  if (knownChatIds.has(resolvedChatId)) return true;
+  if (knownChatIds.has(resolvedChatId)) return "ingest";
 
-  if (!sender.startsWith("u_") || sender === sessionUid) return false;
+  if (!sender.startsWith("u_") || sender === sessionUid) return "drop";
 
-  if (acceptedFriendBackendUids.size === 0) return true;
+  if (!rosterReady) return "hold";
 
-  if (acceptedFriendBackendUids.has(sender)) return true;
+  if (acceptedFriendBackendUids.has(sender)) return "ingest";
 
-  if (rosterFriendBackendUids?.has(sender)) return true;
+  if (rosterFriendBackendUids?.has(sender)) return "ingest";
 
-  return false;
+  return "drop";
+}
+
+/** Whether an inbound encrypted message should be merged into local state. */
+export function shouldIngestInboundMessage(params: {
+  sessionUid: string;
+  senderUid: string;
+  resolvedChatId: string;
+  knownChatIds: Set<string>;
+  acceptedFriendBackendUids: Set<string>;
+  rosterFriendBackendUids?: Set<string>;
+  rosterReady: boolean;
+}): boolean {
+  return inboundMessageIngestDecision(params) === "ingest";
 }
 
 export function rosterFriendBackendUidsFromMap(

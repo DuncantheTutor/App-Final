@@ -24,11 +24,15 @@ import {
 
   attachEncryptedMessageListener,
 
+  drainHeldInboundMessages,
+
   pullEncryptedMessagesForConversation as pullConversationMessages,
 
   pullEncryptedMessagesIncremental as pullMessages,
 
 } from "./sync";
+
+import { subscribeFriendRosterReady } from "./inboundHold";
 
 import type { Dispatch, SetStateAction } from "react";
 
@@ -379,6 +383,23 @@ export function useMessagingSync(options: UseMessagingSyncOptions) {
   );
 
 
+
+  useEffect(() => {
+    return subscribeFriendRosterReady(() => {
+      if (demoOfflineMode || !signedIn) return;
+      const session = getBackendSession();
+      if (!session) return;
+      void drainHeldInboundMessages({
+        session,
+        refs,
+        persistWatermarksNow,
+        setChats,
+        setMessages,
+      }).catch((err) => {
+        logAppError("messages.hold.replay", err, { uid: session.uid });
+      });
+    });
+  }, [demoOfflineMode, signedIn, getBackendSession, refs, persistWatermarksNow, setChats, setMessages]);
 
   /** Open chat: Firestore per-thread listener only (no periodic callable polling). */
 

@@ -2053,14 +2053,63 @@ async function revokeOwnedPostRecipients(
 }
 
 /**
+ * Stops an ex-friend's reinstall from pulling the shared 1:1 through the
+ * live listener or `listEncryptedMessages`. Local history already on each
+ * phone stays there. Capped so an unfriend does not scan the whole inbox.
+ */
+async function revokePairDirectMessages(
+  uid: string,
+  otherUid: string,
+  authUid: string | null,
+  otherAuthUid: string | null
+): Promise<void> {
+  const snap = await db
+    .collection("conversations")
+    .where("participantUids", "array-contains", uid)
+    .limit(40)
+    .get();
+  const arrayRemove = admin.firestore.FieldValue.arrayRemove;
+  const authIds = [authUid, otherAuthUid].filter((id): id is string => Boolean(id));
+  const writer = db.bulkWriter();
+  for (const conv of snap.docs) {
+    const participants = Array.isArray(conv.data()?.participantUids)
+      ? (conv.data()?.participantUids as unknown[]).map((id) => String(id))
+      : [];
+    if (participants.length !== 2 || !participants.includes(otherUid)) continue;
+    let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+    for (let page = 0; page < 3; page += 1) {
+      let query: FirebaseFirestore.Query = conv.ref
+        .collection("messages")
+        .orderBy("createdAt", "desc")
+        .limit(100);
+      if (cursor) query = query.startAfter(cursor);
+      const messages = await query.get();
+      if (messages.empty) break;
+      for (const doc of messages.docs) {
+        const patch: Record<string, unknown> = {
+          participantUids: arrayRemove(uid, otherUid),
+        };
+        if (authIds.length > 0) {
+          patch.participantAuthUids = arrayRemove(...authIds);
+        }
+        writer.set(doc.ref, patch, { merge: true });
+      }
+      cursor = messages.docs[messages.docs.length - 1];
+      if (messages.size < 100) break;
+    }
+  }
+  await writer.close();
+}
+
+/**
  * Revokes the Firestore read-mirror access two former friends had to each
  * other's owned data after an unfriend. Deleting only the friendship edge is
  * not enough: `encryptedProfiles`, `encryptedPosts`, and `presence` reads are
  * authorised by the `recipientAuthUids` / `viewerAuthUids` arrays on the docs,
  * which otherwise keep an ex-friend authorised until the owner happens to
  * rewrite them. We strip each party from the *other's* owned docs (never from
- * their own). The shared 1:1 conversation is intentionally left intact — it is
- * mutual history both sides already hold locally, and new sends are blocked by
+ * their own). The newest 1:1 messages also lose both delivery mirrors so a
+ * reinstall does not pull that thread. New sends stay blocked by
  * `assertAcceptedFriendship`.
  */
 async function revokeFriendDataMirrors(uid: string, otherUid: string): Promise<void> {
@@ -2095,6 +2144,8 @@ async function revokeFriendDataMirrors(uid: string, otherUid: string): Promise<v
   }
   ops.push(revokeOwnedPostRecipients(uid, otherUid, otherAuthUid).catch(() => {}));
   ops.push(revokeOwnedPostRecipients(otherUid, uid, authUid).catch(() => {}));
+
+  ops.push(revokePairDirectMessages(uid, otherUid, authUid, otherAuthUid).catch(() => {}));
 
   await Promise.all(ops);
 }

@@ -3,10 +3,10 @@ import * as Random from "expo-random";
 import { callEmulatorFunction } from "../../backendBridge";
 import { firebaseAuth } from "../../firebaseAuthClient";
 import { EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
-import { readPersistedKeyBundle, savePersistedKeyBundle } from "../../e2eeCrypto";
+import { readAccountKeyArchive, readPersistedKeyBundle, installRestoredKeyArchive, rotateAccountEncryptionKey } from "../../e2eeCrypto";
 import {
-  unwrapKeyBundleWithPassword,
-  wrapKeyBundleWithPassword,
+  unwrapKeyArchiveWithPassword,
+  wrapKeyArchiveWithPassword,
   type PasswordWrappedKeyBackup,
 } from "./passwordKeyWrap";
 
@@ -53,8 +53,11 @@ export async function restoreKeyBundleFromCloud(
   password: string,
   backup: PasswordWrappedKeyBackup
 ): Promise<void> {
-  const secrets = await unwrapKeyBundleWithPassword(backup, password);
-  await savePersistedKeyBundle(appUid, secrets);
+  const hadLocal = Boolean(await readPersistedKeyBundle(appUid));
+  if (hadLocal) return;
+  const archive = await unwrapKeyArchiveWithPassword(backup, password);
+  await installRestoredKeyArchive(appUid, archive);
+  await rotateAccountEncryptionKey(appUid);
 }
 
 /** Saves the keys already on this phone, locked with the account password. */
@@ -63,9 +66,9 @@ export async function uploadKeyBundleToCloudBackup(
   deviceId: string,
   password: string
 ): Promise<void> {
-  const secrets = await readPersistedKeyBundle(appUid);
-  if (!secrets) throw new Error("This phone has no message keys to save.");
-  const keyBackup = await wrapKeyBundleWithPassword(secrets, password, deviceRandom);
+  const archive = await readAccountKeyArchive(appUid);
+  if (!archive) throw new Error("This phone has no message keys to save.");
+  const keyBackup = await wrapKeyArchiveWithPassword(archive, password, deviceRandom);
   await callEmulatorFunction("putUserKeyBackup", {
     uid: appUid,
     deviceId,

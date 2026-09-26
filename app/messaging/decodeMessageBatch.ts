@@ -1,3 +1,4 @@
+import { holdInboundMessage } from "./inboundHold";
 import { rosterFriendBackendUidsFromMap } from "../lib/messageIngestPolicy";
 import { yieldToUi } from "../lib/yieldToUi";
 import { decodeIncomingEncryptedMessage, logDecodeIncomingError } from "./decodeIncoming";
@@ -68,6 +69,11 @@ export async function decodeEncryptedMessagePullItems(params: {
         },
       });
       if (!result) continue;
+      if (result.hold) {
+        holdInboundMessage(item);
+        continue;
+      }
+      if (!result.message) continue;
       batch.decoded.push(result.message);
       if (result.missingChat) batch.missingChats.push(result.missingChat);
       decodedSinceYield += 1;

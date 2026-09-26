@@ -12,6 +12,7 @@ import {
   INITIAL_SERVER_SYNC_TIMEOUT_MS,
 } from "../theme/preludeConstants";
 import { fetchFriendsOnBoot } from "./fetchFriendsOnBoot";
+import { markFriendRosterReady } from "../messaging/inboundHold";
 import { reconcileSocialStateWithServerFriends } from "./reconcileSocialWithServer";
 import type { Chat, Friend, Message, Post } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
@@ -132,6 +133,7 @@ export function useInitialServerSync(params: {
         try {
           const mapped = await fetchFriendsOnBoot(session, addedFriendsFromRitualRef.current);
           friendsFetchSucceeded = true;
+          markFriendRosterReady();
           if (cancelled) return;
           const bootUids = mapped
             .map((f) => f.backendUid?.trim())
@@ -211,7 +213,6 @@ export function useInitialServerSync(params: {
             }
           } else {
             await pullEncryptedMessagesIncremental({
-              forceFull: true,
               limit: ENCRYPTED_MESSAGES_BOOT_SYNC_LIMIT,
             });
           }
@@ -225,6 +226,18 @@ export function useInitialServerSync(params: {
           });
         } catch (err) {
           logAppError("boot.timeline", err, { uid: session.uid });
+          if (!cancelled) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 4_000));
+          }
+          if (!cancelled) {
+            try {
+              await pullEncryptedMessagesIncremental({
+                limit: ENCRYPTED_MESSAGES_BOOT_SYNC_LIMIT,
+              });
+            } catch (retryErr) {
+              logAppError("boot.timeline.retry", retryErr, { uid: session.uid });
+            }
+          }
         }
       } finally {
         clearTimeout(safetyTimer);

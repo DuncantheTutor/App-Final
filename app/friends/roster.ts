@@ -7,6 +7,7 @@ import { dedupeFriendsByBackendUid } from "../lib/mergeFriendsCatalog";
 import { resolveParticipantToAppUid } from "../lib/resolveParticipantAppUid";
 import { mergeProfileBio } from "../lib/mergeProfileBio";
 import { mergeProfilePictureUrl } from "../lib/profilePictureUrl";
+import { markFriendRosterReady } from "../messaging/inboundHold";
 import type { Friend } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
 
@@ -69,6 +70,7 @@ export function attachFriendRosterListener(params: {
     q,
     async (snap) => {
       if (cancelled) return;
+      if (!snap.metadata.fromCache) markFriendRosterReady();
       const generation = ++snapshotGeneration;
 
       const publishServerFriendUids = (uids: Set<string>) => {

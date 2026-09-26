@@ -12,6 +12,7 @@ import {
 export { publicBundleSigningMessage, safetyNumberForIdentityKey, verifyPublicBundleSignature };
 
 const KEY_BUNDLE_PREFIX = "app.e2ee.bundle.v1.";
+const MAX_PREVIOUS_KEYS = 3;
 
 export type PersistedKeyBundle = {
   v: 1;
@@ -56,6 +57,37 @@ async function generateBundle(): Promise<PersistedKeyBundle> {
   };
 }
 
+type StoredKeyArchive = {
+  v: 2;
+  current: PersistedKeyBundle;
+  previous: PersistedKeyBundle[];
+};
+
+function parseStoredKeyArchive(value: unknown): StoredKeyArchive | null {
+  if (isPersistedKeyBundle(value)) return { v: 2, current: value, previous: [] };
+  if (!value || typeof value !== "object") return null;
+  const row = value as StoredKeyArchive;
+  if (row.v !== 2 || !isPersistedKeyBundle(row.current)) return null;
+  const previous = Array.isArray(row.previous)
+    ? row.previous.filter(isPersistedKeyBundle).slice(0, MAX_PREVIOUS_KEYS)
+    : [];
+  return { v: 2, current: row.current, previous };
+}
+
+async function readStoredKeyArchive(uid: string): Promise<StoredKeyArchive | null> {
+  const raw = await SecureStore.getItemAsync(keyForUid(uid));
+  if (!raw) return null;
+  try {
+    return parseStoredKeyArchive(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+async function writeStoredKeyArchive(uid: string, archive: StoredKeyArchive): Promise<void> {
+  await SecureStore.setItemAsync(keyForUid(uid), JSON.stringify(archive));
+}
+
 function isPersistedKeyBundle(value: unknown): value is PersistedKeyBundle {
   if (!value || typeof value !== "object") return false;
   const parsed = value as PersistedKeyBundle;
@@ -68,20 +100,46 @@ function isPersistedKeyBundle(value: unknown): value is PersistedKeyBundle {
   );
 }
 
+export async function readAccountKeyArchive(uid: string): Promise<StoredKeyArchive | null> {
+  return readStoredKeyArchive(uid);
+}
+
 export async function readPersistedKeyBundle(uid: string): Promise<PersistedKeyBundle | null> {
-  const raw = await SecureStore.getItemAsync(keyForUid(uid));
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return isPersistedKeyBundle(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  return (await readStoredKeyArchive(uid))?.current ?? null;
 }
 
 export async function savePersistedKeyBundle(uid: string, bundle: PersistedKeyBundle): Promise<void> {
   if (!isPersistedKeyBundle(bundle)) throw new Error("Message keys are incomplete.");
-  await SecureStore.setItemAsync(keyForUid(uid), JSON.stringify(bundle));
+  const existing = await readStoredKeyArchive(uid);
+  await writeStoredKeyArchive(uid, {
+    v: 2,
+    current: bundle,
+    previous: existing?.previous ?? [],
+  });
+}
+
+export async function installRestoredKeyArchive(
+  uid: string,
+  archive: { current: PersistedKeyBundle; previous: PersistedKeyBundle[] }
+): Promise<void> {
+  if (!isPersistedKeyBundle(archive.current)) throw new Error("Message keys are incomplete.");
+  await writeStoredKeyArchive(uid, {
+    v: 2,
+    current: archive.current,
+    previous: archive.previous.filter(isPersistedKeyBundle).slice(0, MAX_PREVIOUS_KEYS),
+  });
+}
+
+/** New messages use a new key. The previous secret stays on this phone so older messages still open. */
+export async function rotateAccountEncryptionKey(uid: string): Promise<void> {
+  const existing = await readStoredKeyArchive(uid);
+  if (!existing) throw new Error("This phone has no message keys to rotate.");
+  const next = await generateBundle();
+  await writeStoredKeyArchive(uid, {
+    v: 2,
+    current: next,
+    previous: [existing.current, ...existing.previous].slice(0, MAX_PREVIOUS_KEYS),
+  });
 }
 
 async function getOrCreatePersistedBundle(uid: string): Promise<PersistedKeyBundle> {
@@ -120,10 +178,10 @@ export async function signLocalPublicBundle(
 /**
  * Encrypts a payload with a fresh symmetric key, then wraps that key for each
  * recipient using the sender's long-term encryption key (nacl.box).
- * This is not forward secret. A copy of the secret key unwraps older content
- * keys. The same secret is restored on a new phone from the password-wrapped
- * backup, so that phone can read older messages. The envelope field `epk` is
- * the long-term public key. A ratchet is a later protocol change.
+ * This is not forward secret for the life of one key. A new phone keeps the
+ * previous secret so older messages still open, then publishes a new key.
+ * Messages wrapped to the new key stay closed to a copy of the old secret.
+ * The envelope field `epk` is the sender's current long-term public key.
  */
 export async function encryptPayloadForRecipients(
   senderUid: string,
@@ -165,8 +223,11 @@ export async function decryptPayloadForRecipient<T>(
   nonceB64: string,
   envelopeBlobRaw: string
 ): Promise<T> {
-  const recipient = await getOrCreatePersistedBundle(recipientUid);
-  const recipientSecretKey = decodeBase64(recipient.encryptionSecretKey);
+  const archive = await readStoredKeyArchive(recipientUid);
+  const secrets = archive ? [archive.current, ...archive.previous] : [];
+  if (secrets.length === 0) {
+    throw new Error("Could not unwrap content key");
+  }
   const envelope = JSON.parse(envelopeBlobRaw) as EnvelopeBlobV1;
   if (!envelope || envelope.v !== 1 || !envelope.epk || !envelope.n || !envelope.c) {
     throw new Error("Invalid envelope format");
@@ -174,7 +235,12 @@ export async function decryptPayloadForRecipient<T>(
   const senderLongTermPublicKey = decodeBase64(envelope.epk);
   const wrapNonce = decodeBase64(envelope.n);
   const wrappedKey = decodeBase64(envelope.c);
-  const contentKey = nacl.box.open(wrappedKey, wrapNonce, senderLongTermPublicKey, recipientSecretKey);
+  let contentKey: Uint8Array | null = null;
+  for (const bundle of secrets) {
+    const recipientSecretKey = decodeBase64(bundle.encryptionSecretKey);
+    contentKey = nacl.box.open(wrappedKey, wrapNonce, senderLongTermPublicKey, recipientSecretKey);
+    if (contentKey) break;
+  }
   if (!contentKey) {
     throw new Error("Could not unwrap content key");
   }

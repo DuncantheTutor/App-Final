@@ -4,7 +4,12 @@ import {
   storageRemoveItem,
   storageSetItem,
 } from "../lib/encryptedLocalStorage";
-import { setUserHapticsEnabled, useHapticSettings } from "../lib/haptics";
+import { isFriendRosterReady, subscribeFriendRosterFlag } from "../messaging/inboundHold";
+import {
+  getAccountLinkStatus,
+  subscribeAccountLinkStatus,
+  type AccountLinkStatus,
+} from "../session/registerFirebaseAuthUidOnce";
 import { clearEncryptedMediaCaches } from "../lib/encryptedMediaCache";
 import * as ImagePicker from "expo-image-picker";
 import * as NavigationBar from "expo-navigation-bar";
@@ -1041,6 +1046,10 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
     photoEditorMediaType,
     photoEditorTarget,
   } = props;
+  const [accountLink, setAccountLink] = useState<AccountLinkStatus>(getAccountLinkStatus);
+  const [friendRosterReady, setFriendRosterReady] = useState(isFriendRosterReady);
+  useEffect(() => subscribeAccountLinkStatus(setAccountLink), []);
+  useEffect(() => subscribeFriendRosterFlag(setFriendRosterReady), []);
   return (
     <View style={[styles.screenRoot, { backgroundColor: theme.background }]}>
       <StatusBar style={isDarkMode ? "light" : "dark"} />
@@ -2272,7 +2281,13 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               }}
               ListEmptyComponent={
                 <Text style={styles.subtleText}>
-                  {friendsListSearch.trim() ? "No friends match." : "No friends yet."}
+                  {friendsListSearch.trim()
+                    ? "No friends match."
+                    : accountLink === "failed"
+                      ? "This phone is still connecting. Reopen the app to load friends."
+                      : friendRosterReady
+                        ? "No friends yet."
+                        : "Loading friends…"}
                 </Text>
               }
             />
@@ -4075,7 +4090,7 @@ export function SignedInTree<P extends SignedInTreeConstraint>(props: P) {
               <View style={{ gap: 6, paddingVertical: 4 }}>
                 <Text style={styles.chatName}>Your messages</Text>
                 <Text style={[styles.settingsRowHint, { fontSize: 14, lineHeight: 20 }]}>
-                  Messages are encrypted so the server cannot read them. Signing in on a new phone with your password opens the same messages, posts, and profile. The server keeps a locked copy of the keys, and only your password can open it.
+                  Messages are encrypted so the server cannot read them. Your account password locks a copy of the keys. A new phone uses that password to open older messages, posts, and the profile, then starts a new key. Messages sent after that stay closed to a copy of the old key. The server cannot read the locked copy.
                 </Text>
               </View>
               <View style={[styles.settingsRow, { paddingVertical: 12 }]}>

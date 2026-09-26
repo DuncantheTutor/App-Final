@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { shouldIngestInboundMessage } from "./messageIngestPolicy.ts";
+import { inboundMessageIngestDecision, shouldIngestInboundMessage } from "./messageIngestPolicy.ts";
 
 const base = {
   sessionUid: "u_me",
@@ -9,6 +9,7 @@ const base = {
   resolvedChatId: "dm_u_a__u_me",
   knownChatIds: new Set<string>(),
   acceptedFriendBackendUids: new Set<string>(["u_a"]),
+  rosterReady: true,
 };
 
 test("an existing thread is ingested even when the sender is no longer accepted", () => {
@@ -32,13 +33,25 @@ test("a new thread from a non-friend is dropped", () => {
   );
 });
 
-test("an empty accepted set still allows ingest while the server roster is loading", () => {
+test("a new thread waits while the friend list is still unknown", () => {
   assert.equal(
-    shouldIngestInboundMessage({
+    inboundMessageIngestDecision({
       ...base,
       acceptedFriendBackendUids: new Set(),
+      rosterReady: false,
     }),
-    true
+    "hold"
+  );
+});
+
+test("an empty friend list drops a new thread once the list is known", () => {
+  assert.equal(
+    inboundMessageIngestDecision({
+      ...base,
+      acceptedFriendBackendUids: new Set(),
+      rosterReady: true,
+    }),
+    "drop"
   );
 });
 

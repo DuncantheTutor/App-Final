@@ -44,7 +44,7 @@ export function KeyBackupPasswordPrompt({
             Keep messages on a new phone
           </Text>
           <Text style={{ color: theme.subtleText, fontSize: 15, lineHeight: 21 }}>
-            Enter your account password once. It locks a copy of your message keys that a new phone can open when you sign in. The server cannot read that copy.
+            Enter your account password once. It locks a copy of your message keys. A new phone uses that same password to open older messages, then uses a new key for anything sent after that. The server cannot read the copy.
           </Text>
           <TextInput
             value={password}

@@ -6,6 +6,8 @@ import { debugSessionLog, firebaseAuth } from "../../firebaseAuthClient";
 import { logAppEvent, setTelemetryContext } from "../../telemetry";
 import { storageRemoveItem } from "../lib/encryptedLocalStorage";
 import { clearEncryptedMediaCaches } from "../lib/encryptedMediaCache";
+import { resetFriendRosterGate } from "../messaging/inboundHold";
+import { resetAccountLinkStatus } from "./registerFirebaseAuthUidOnce";
 import { clearLocalSocialCacheForEmail } from "../lib/localSocialCache";
 import { lastHomeTabStorageKey, lastViewStorageKey } from "../lib/viewPersistence";
 import type { ViewState } from "../domain/types";
@@ -52,6 +54,8 @@ export function clearSignedOutSocialState(deps: ClearSignedOutSocialStateDeps): 
   resetMessagingState();
   resetPosts();
   resetFriendsState();
+  resetFriendRosterGate();
+  resetAccountLinkStatus();
   resetMyProfile();
   resetFeedPrefs();
   deletedPostIdsRef.current = new Set();

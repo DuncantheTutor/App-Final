@@ -239,6 +239,24 @@ async function deliverFcmPushNotifications(args: {
         code === "messaging/invalid-registration-token"
       ) {
         await deleteStalePushToken(row.ownerUid, row.docId);
+      } else if (
+        code === "messaging/internal-error" ||
+        code === "messaging/server-unavailable" ||
+        code === "messaging/unknown-error"
+      ) {
+        try {
+          await admin.messaging().sendEachForMulticast({
+            tokens: [row.token],
+            data: args.data,
+            android: { priority: "high" },
+            notification: {
+              title: args.title,
+              body: args.body,
+            },
+          });
+        } catch (retryErr) {
+          console.warn("push.fcm.retry_failed", { ownerUid: row.ownerUid, retryErr });
+        }
       }
     }
   } catch (err) {

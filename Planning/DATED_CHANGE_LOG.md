@@ -10,6 +10,14 @@
 
 ---
 
+## 2026-09-26 17:53 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 17:53 +01:00 | Chat | New threads wait for the friend list; unfriend stops 1:1 delivery; a new phone keeps history and rotates the key; group ids use account ids; boot catch-up is capped at two extra pages. |
+
+---
+
 ## 2026-09-26 16:32 +01:00
 
 | Time | Area | Change |

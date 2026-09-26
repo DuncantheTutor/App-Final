@@ -8,9 +8,10 @@ import {
 } from "../lib/directChatId";
 import { friendDisplayNameFromProfile } from "../lib/friendDisplayName";
 import {
+  inboundMessageIngestDecision,
   rosterFriendBackendUidsFromMap,
-  shouldIngestInboundMessage,
 } from "../lib/messageIngestPolicy";
+import { isFriendRosterReady } from "./inboundHold";
 import {
   CURRENT_USER_LOCAL_ID,
   resolveIncomingSenderFriendId,
@@ -40,15 +41,19 @@ export type DecodeIncomingParams = {
   identityLockedChatIds?: ReadonlySet<string>;
   /** Skip listener docs already covered by boot callable watermark. */
   watermarkMs?: number;
-  /** When set, unknown 1:1 threads from non-friends are dropped. */
+  /** When set, unknown 1:1 threads from non-friends are dropped once the roster is known. */
   acceptedFriendBackendUids?: Set<string>;
   rosterFriendBackendUids?: Set<string>;
+  /** When omitted, the process-wide roster gate is used. */
+  rosterReady?: boolean;
   docMetadata?: MessageDocMetadata;
 };
 
 export type DecodeIncomingResult = {
-  message: Message;
+  message?: Message;
   missingChat?: Chat;
+  /** Ciphertext stays queued until the friend list for this sign-in is known. */
+  hold?: boolean;
 };
 
 /**
@@ -79,6 +84,7 @@ export async function decodeIncomingEncryptedMessage(
     watermarkMs,
     acceptedFriendBackendUids,
     rosterFriendBackendUids,
+    rosterReady,
     docMetadata,
   } = params;
 
@@ -98,6 +104,32 @@ export async function decodeIncomingEncryptedMessage(
     identityLockedChatIds,
   });
   if ("drop" in preTarget) return null;
+
+  const resolvedBeforeDecrypt = preTarget.resolvedLocalChatId;
+  if (acceptedFriendBackendUids && resolvedBeforeDecrypt) {
+    const rosterUids =
+      rosterFriendBackendUids ??
+      rosterFriendBackendUidsFromMap(
+        allFriends?.length
+          ? Object.fromEntries(
+              allFriends
+                .filter((f) => f.backendUid?.startsWith("u_"))
+                .map((f) => [f.id, f])
+            )
+          : undefined
+      );
+    const decision = inboundMessageIngestDecision({
+      sessionUid,
+      senderUid: senderUidTrimmed,
+      resolvedChatId: resolvedBeforeDecrypt,
+      knownChatIds,
+      acceptedFriendBackendUids,
+      rosterFriendBackendUids: rosterUids,
+      rosterReady: rosterReady ?? isFriendRosterReady(),
+    });
+    if (decision === "drop") return null;
+    if (decision === "hold" && !isFriendRosterReady()) return { hold: true };
+  }
 
   if (
     typeof watermarkMs === "number" &&
@@ -142,30 +174,18 @@ export async function decodeIncomingEncryptedMessage(
   const finalChatId = postTarget.resolvedLocalChatId;
   if (!finalChatId) return null;
 
-  if (acceptedFriendBackendUids) {
-    const rosterUids =
-      rosterFriendBackendUids ??
-      rosterFriendBackendUidsFromMap(
-        allFriends?.length
-          ? Object.fromEntries(
-              allFriends
-                .filter((f) => f.backendUid?.startsWith("u_"))
-                .map((f) => [f.id, f])
-            )
-          : undefined
-      );
-    if (
-      !shouldIngestInboundMessage({
-        sessionUid,
-        senderUid: senderUidTrimmed,
-        resolvedChatId: finalChatId,
-        knownChatIds,
-        acceptedFriendBackendUids,
-        rosterFriendBackendUids: rosterUids,
-      })
-    ) {
-      return null;
-    }
+  if (acceptedFriendBackendUids && finalChatId !== resolvedBeforeDecrypt) {
+    const decision = inboundMessageIngestDecision({
+      sessionUid,
+      senderUid: senderUidTrimmed,
+      resolvedChatId: finalChatId,
+      knownChatIds,
+      acceptedFriendBackendUids,
+      rosterFriendBackendUids,
+      rosterReady: rosterReady ?? isFriendRosterReady(),
+    });
+    if (decision === "drop") return null;
+    if (decision === "hold" && !isFriendRosterReady()) return { hold: true };
   }
 
   let missingChat: Chat | undefined;

@@ -17,7 +17,17 @@ export function isLegacyDraftChatId(chatId: string): boolean {
   return chatId.trim().startsWith("draft-");
 }
 
-/** Deterministic id for group / broadcast threads (same members → same id on one device). */
+function accountUidForChatMember(
+  memberId: string,
+  sessionAppUid: string | null,
+  friendMap: Record<string, Friend>,
+  friendIdToBackendUid: Record<string, string>
+): string | null {
+  if (!sessionAppUid) return null;
+  return resolveChatMemberToBackendUid(memberId, sessionAppUid, friendMap, friendIdToBackendUid);
+}
+
+/** Deterministic id for group / broadcast threads. The same account uids produce the same id on every phone. */
 export function stableMultiPartyChatLocalId(
   kind: "standard" | "broadcast",
   memberIds: string[]
@@ -50,6 +60,12 @@ export function resolveLocalChatIdForPending(
       return canonicalDirectChatLocalId(sessionAppUid, friendBackendUid);
     }
     return null;
+  }
+  const accountUids = pending.memberIds.map((id) =>
+    accountUidForChatMember(id, sessionAppUid, friendMap, friendIdToBackendUid)
+  );
+  if (sessionAppUid && accountUids.every((id) => id?.startsWith("u_"))) {
+    return stableMultiPartyChatLocalId(kind, accountUids as string[]);
   }
   return stableMultiPartyChatLocalId(kind, pending.memberIds);
 }

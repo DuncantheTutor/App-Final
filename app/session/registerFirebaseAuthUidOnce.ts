@@ -3,6 +3,32 @@ import { firebaseAuth } from "../../firebaseAuthClient";
 
 const registeredKeys = new Set<string>();
 
+export type AccountLinkStatus = "pending" | "ready" | "failed";
+
+let accountLinkStatus: AccountLinkStatus = "pending";
+const accountLinkListeners = new Set<(status: AccountLinkStatus) => void>();
+
+function setAccountLinkStatus(next: AccountLinkStatus): void {
+  accountLinkStatus = next;
+  for (const listener of accountLinkListeners) listener(next);
+}
+
+export function getAccountLinkStatus(): AccountLinkStatus {
+  return accountLinkStatus;
+}
+
+export function subscribeAccountLinkStatus(listener: (status: AccountLinkStatus) => void): () => void {
+  accountLinkListeners.add(listener);
+  return () => {
+    accountLinkListeners.delete(listener);
+  };
+}
+
+export function resetAccountLinkStatus(): void {
+  registeredKeys.clear();
+  setAccountLinkStatus("pending");
+}
+
 /**
  * Binds this Firebase Auth uid to the app account once per process.
  * Later sends and foreground resumes must not repeat the callable: the server
@@ -26,6 +52,7 @@ export async function registerFirebaseAuthUidOnce(session: {
         firebaseAuthUid,
       });
       registeredKeys.add(key);
+      setAccountLinkStatus("ready");
       return;
     } catch (err) {
       lastError = err;
@@ -34,5 +61,6 @@ export async function registerFirebaseAuthUidOnce(session: {
       }
     }
   }
+  setAccountLinkStatus("failed");
   throw lastError;
 }

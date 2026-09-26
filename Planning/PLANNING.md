@@ -107,7 +107,7 @@ These scenarios are motivation only, not product specs.
 ### 3.3 End-to-end encryption
 
 - Store message ciphertext in backend.
-- Today each account has one long-term encryption key. A password-wrapped copy is stored on the server. A new phone that signs in with that password installs the same key and can read older messages, posts, and the profile. The server cannot open the copy. A ratchet, so an old key cannot read new messages, is a later protocol change.
+- Today each account has one current encryption key plus up to three previous secrets kept on the phone. A password-wrapped copy of that set is stored on the server. A new phone that signs in with that password opens older messages, posts, and the profile, then generates a new key for anything sent after that. The server cannot open the copy. A full per-message ratchet is still a later protocol change.
 - 1:1 can use ratcheting protocol.
 - Groups need group-key protocol with re-key on membership changes.
 
