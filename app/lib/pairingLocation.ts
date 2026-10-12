@@ -95,28 +95,40 @@ export async function ensurePreciseLocationForPairing(options?: {
 function applyLocationObject(pos: ExpoLocation.LocationObject): {
   lat: number;
   lng: number;
-  horizontalAccuracyM: number;
-  locationTimestampMs: number;
+  horizontalAccuracyM: number | null;
+  locationTimestampMs: number | null;
 } | null {
   const lat = Number.isFinite(pos.coords.latitude) ? pos.coords.latitude : null;
   const lng = Number.isFinite(pos.coords.longitude) ? pos.coords.longitude : null;
+  if (lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
   const horizontalAccuracyM = Number.isFinite(pos.coords.accuracy ?? NaN)
     ? (pos.coords.accuracy as number)
     : null;
-  const locationTimestampMs = Number.isFinite(pos.timestamp) ? pos.timestamp : Date.now();
-  if (lat == null || lng == null || horizontalAccuracyM == null) return null;
-  if (horizontalAccuracyM <= 0 || horizontalAccuracyM > MAX_HORIZONTAL_ACCURACY_M) return null;
-  if (Math.abs(Date.now() - locationTimestampMs) > MAX_LOCATION_AGE_MS) return null;
+  const locationTimestampMs = Number.isFinite(pos.timestamp) ? pos.timestamp : null;
   return { lat, lng, horizontalAccuracyM, locationTimestampMs };
 }
 
-/** GPS fix suitable for server proximity checks (≤50m accuracy, fresh). */
+function isGoodPairingFix(fix: {
+  horizontalAccuracyM: number | null;
+  locationTimestampMs: number | null;
+}): boolean {
+  if (fix.horizontalAccuracyM == null || fix.locationTimestampMs == null) return false;
+  if (fix.horizontalAccuracyM <= 0 || fix.horizontalAccuracyM > MAX_HORIZONTAL_ACCURACY_M) return false;
+  return Math.abs(Date.now() - fix.locationTimestampMs) <= MAX_LOCATION_AGE_MS;
+}
+
+/**
+ * GPS sample for a friend request. A tight fresh fix is preferred.
+ * A coarse fix is still returned so the server can use the Wi-Fi fallback.
+ * Missing coordinates mean GPS is off.
+ */
 export async function readPrecisePairingLocationFix(): Promise<{
   lat: number | null;
   lng: number | null;
   horizontalAccuracyM: number | null;
   locationTimestampMs: number | null;
 }> {
+  const empty = { lat: null, lng: null, horizontalAccuracyM: null, locationTimestampMs: null };
   try {
     const cached = await ExpoLocation.getLastKnownPositionAsync({
       maxAge: MAX_LOCATION_AGE_MS,
@@ -124,7 +136,7 @@ export async function readPrecisePairingLocationFix(): Promise<{
     });
     if (cached) {
       const parsed = applyLocationObject(cached);
-      if (parsed) return parsed;
+      if (parsed && isGoodPairingFix(parsed)) return parsed;
     }
   } catch {
     /* fall through to fresh GPS fix */
@@ -140,18 +152,21 @@ export async function readPrecisePairingLocationFix(): Promise<{
         setTimeout(() => resolve(null), PAIRING_LOCATION_FIX_TIMEOUT_MS)
       ),
     ]);
-    if (!pos) return { lat: null, lng: null, horizontalAccuracyM: null, locationTimestampMs: null };
-    const parsed = applyLocationObject(pos);
-    if (!parsed) return { lat: null, lng: null, horizontalAccuracyM: null, locationTimestampMs: null };
-    return parsed;
+    if (!pos) return empty;
+    return applyLocationObject(pos) ?? empty;
   } catch {
-    return { lat: null, lng: null, horizontalAccuracyM: null, locationTimestampMs: null };
+    return empty;
   }
 }
 
-/** Proximity payload for pairing callables: precise GPS when available + Wi-Fi fallback hints. */
+const GPS_REQUIRED_FOR_PAIRING = "Turn on GPS and wait for a location fix before adding a friend.";
+
+/** Proximity payload for pairing callables. GPS coordinates are required; Wi-Fi is sent for a coarse fix. */
 export async function collectPrecisePairingProximityEvidence(): Promise<PairingProximityEvidence> {
   const fix = await readPrecisePairingLocationFix();
+  if (fix.lat == null || fix.lng == null) {
+    throw new Error(GPS_REQUIRED_FOR_PAIRING);
+  }
 
   let isWifiConnected = false;
   let localIp: string | null = null;

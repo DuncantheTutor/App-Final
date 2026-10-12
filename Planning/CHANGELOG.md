@@ -12,11 +12,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ## [Unreleased]
 
+### Fixed
+- **Add Friend proximity:** Both phones must send a GPS reading during the friend request. Two good fixes must be within 100m. Same private Wi-Fi is only used when a reading is present but coarser than 50m. Turning location off, or leaving it out, does not skip the distance check. Location is requested on that request only.
+- **Unfriend:** The open pairing offer between those two accounts is deleted, so it cannot write the friendship back. The whole 1:1 and its messages are deleted on the server and leave both phones. Each friends-key wrap drops the other person, and this phone still rotates and re-seals the profile and posts. Group chats stay.
+- **Presence:** A friend is online only while the app is in the foreground and the heartbeat is fresh (about 45 seconds). A stored online flag with an old heartbeat shows offline.
+- **Offline banner:** A phone with a working connection no longer stays on “You're offline” when Android reports an active network but does not name the transport. Friend online/offline follows a fresh presence heartbeat, and a foreground heartbeat also pulls the server result.
+- **Show QR:** The pairing code is drawn as solid squares, so it shows up again. Opening it no longer counts an older screenshot as a new one and hides the code immediately.
+
 ### Security
 - **Friends key:** Profile and posts are sealed with one key. Adding a friend adds a wrap of that key and lets them read existing posts. Removing a friend replaces the key and re-seals those posts and the profile.
 - **Message keys:** A new phone that signs in with the account password opens older messages, posts, and the profile, then starts a new key. The previous secret stays in the password-wrapped backup so history still opens. Messages sent after the new key stay closed to a copy of the old secret. The server cannot read the backup. Settings explains this. Friends see a safety-number change and confirm the new key before sending.
 - **Message ingest:** A new thread from another account waits until this sign-in's friend list is known. An empty list drops it. Existing chats still accept messages.
-- **Unfriend:** The newest messages in a 1:1 lose both delivery mirrors so a reinstall does not pull that thread. New sends were already blocked. Posts and profiles were already stripped.
+- **Unfriend:** The 1:1 and its messages are deleted. An open pairing offer between the two accounts is deleted. Each friends-key wrap drops the other person. New sends stay blocked. Posts and profiles are stripped.
 - **Groups:** A new group id is a hash of the account ids, so both phones open the same thread.
 - **Boot catch-up:** A full incremental message page asks for at most two more pages. A failed boot pull retries once.
 - **Friends list:** "No friends yet" waits until the account link and the friend list have both settled. A failed account link says the phone is still connecting.

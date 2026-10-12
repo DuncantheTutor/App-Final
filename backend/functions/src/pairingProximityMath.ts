@@ -83,13 +83,39 @@ export function hasSameWifiSubnetFallback(
 
 export type ProximityVerdict =
   | { ok: true }
-  | { ok: false; reason: "gps" | "fallback" };
+  | { ok: false; reason: "gps" | "fallback" | "gps-required" };
 
+function hasGpsCoordinates(e: PairingProximityEvidence): boolean {
+  return (
+    typeof e.lat === "number" &&
+    typeof e.lng === "number" &&
+    Number.isFinite(e.lat) &&
+    Number.isFinite(e.lng) &&
+    Math.abs(e.lat) <= 90 &&
+    Math.abs(e.lng) <= 180
+  );
+}
+
+/** Coordinates are present, but accuracy is too poor for the distance check. */
+function signalTooCoarse(e: PairingProximityEvidence): boolean {
+  if (!hasGpsCoordinates(e)) return false;
+  if (typeof e.horizontalAccuracyM !== "number" || !Number.isFinite(e.horizontalAccuracyM)) return true;
+  return e.horizontalAccuracyM <= 0 || e.horizontalAccuracyM > PROXIMITY_MAX_ACCURACY_M;
+}
+
+/**
+ * Both phones must send a GPS reading. Two good fixes must be within 100m.
+ * Same private Wi-Fi is only the fallback when a reading is present but too coarse.
+ * Omitting GPS, or sending a stale fix with a tight accuracy, is not a weak signal.
+ */
 export function evaluatePairingProximity(
   a: PairingProximityEvidence,
   b: PairingProximityEvidence,
   nowMs: number
 ): ProximityVerdict {
+  if (!hasGpsCoordinates(a) || !hasGpsCoordinates(b)) {
+    return { ok: false, reason: "gps-required" };
+  }
   const aGps = isGpsEvidenceUsable(a, nowMs);
   const bGps = isGpsEvidenceUsable(b, nowMs);
   if (aGps && bGps) {
@@ -100,6 +126,12 @@ export function evaluatePairingProximity(
     return gpsSeparationAllowed(separationM, combinedUncertaintyM)
       ? { ok: true }
       : { ok: false, reason: "gps" };
+  }
+  const aCoarse = signalTooCoarse(a);
+  const bCoarse = signalTooCoarse(b);
+  const coarseFallback = (aGps || aCoarse) && (bGps || bCoarse) && (aCoarse || bCoarse);
+  if (!coarseFallback) {
+    return { ok: false, reason: "gps-required" };
   }
   return hasSameWifiSubnetFallback(a, b) ? { ok: true } : { ok: false, reason: "fallback" };
 }

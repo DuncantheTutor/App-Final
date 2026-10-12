@@ -17,9 +17,8 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import QRCode from "react-native-qrcode-svg";
-
 import { HomeTopNavBar, type HomeNavBadges, type HomeNavHighlight } from "../components/HomeTopNavBar";
+import { PairingQrCode } from "../components/PairingQrCode";
 import { PressAckButton } from "../components/PressAckButton";
 import { playHapticPattern } from "../lib/haptics";
 import {
@@ -107,6 +106,11 @@ export function AddFriendScreen(props: {
   ) => Promise<"pending" | "awaiting_redeemer_confirm" | "awaiting_issuer_confirm" | "joined" | "gone">;
   /** Parent registers this to cancel PIN / background work when leaving the screen (Android back, etc.). */
   onRegisterPairingAbort?: (abort: () => void) => void;
+  /**
+   * False while this page is still sliding in. Camera and location prompts wait
+   * until the swipe has landed.
+   */
+  pageSettled?: boolean;
 }) {
   const {
     theme,
@@ -137,6 +141,7 @@ export function AddFriendScreen(props: {
     onPairingPollOfferStillPresent,
     onPairingGetOfferStatus,
     onRegisterPairingAbort,
+    pageSettled = true,
   } = props;
   const iconColor = theme.accent;
   const textColor = theme.text;
@@ -179,6 +184,8 @@ export function AddFriendScreen(props: {
   const [cameraPermission, , refreshCameraPermission] = useCameraPermissions();
   /** Active 4-digit PIN for issuer (never shown in UI); used for cancel + poll. */
   const hostActivePinRef = useRef<string | null>(null);
+  const activeQrPayloadRef = useRef<string | null>(null);
+  const qrShownAtRef = useRef(0);
   const qrHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qrVoidingForScreenshotRef = useRef(false);
   const hostAwaitSessionRef = useRef(0);
@@ -206,32 +213,49 @@ export function AddFriendScreen(props: {
     };
   }, []);
 
-  /** Warm-check precise location when Add Friend opens (no alert until Show/Read QR). */
+  /** Warm-check precise location after Add Friend has landed (no alert until Show/Read QR). */
   useEffect(() => {
-    void (async () => {
-      const ok = await onEnsurePairingLocationPermission({ showAlerts: false });
-      if (!ok) {
+    if (!pageSettled) return;
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
+      void (async () => {
+        const ok = await onEnsurePairingLocationPermission({ showAlerts: false });
+        if (cancelled || ok) return;
         setPairingStatusLabel(
           "Turn on Precise location in your phone settings before Show QR or Read QR."
         );
-      }
-    })();
-  }, [onEnsurePairingLocationPermission]);
+      })();
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [onEnsurePairingLocationPermission, pageSettled]);
 
-  /** Warm-check camera for Read QR (no alert until user switches to scan). */
+  /** Warm-check camera after Add Friend has landed (no alert until user switches to scan). */
   useEffect(() => {
-    void (async () => {
-      const ok = await onEnsurePairingCameraPermission({ showAlerts: false });
-      await refreshCameraPermission();
-      if (!ok) {
+    if (!pageSettled) return;
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
+      void (async () => {
+        const ok = await onEnsurePairingCameraPermission({ showAlerts: false });
+        if (cancelled) return;
+        await refreshCameraPermission();
+        if (cancelled || ok) return;
         setPairingStatusLabel((prev) =>
           prev.trim()
             ? prev
             : "Allow camera access before Read QR, or tap Try again on the scanner."
         );
-      }
-    })();
-  }, [onEnsurePairingCameraPermission, refreshCameraPermission]);
+      })();
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [onEnsurePairingCameraPermission, pageSettled, refreshCameraPermission]);
 
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const dimOpacity = useRef(new Animated.Value(0)).current;
@@ -408,12 +432,17 @@ export function AddFriendScreen(props: {
     return ok;
   }, [onEnsurePairingCameraPermission, refreshCameraPermission]);
 
+  activeQrPayloadRef.current = activeQrPayload;
+
   const voidActiveQrFromScreenshot = useCallback(async () => {
-    if (!activeQrPayload || qrVoidingForScreenshotRef.current) return;
+    if (!activeQrPayloadRef.current || qrVoidingForScreenshotRef.current) return;
+    // The screenshot observer can report an older gallery file as soon as the code appears.
+    if (Date.now() - qrShownAtRef.current < 700) return;
     qrVoidingForScreenshotRef.current = true;
     try {
       const pin = hostActivePinRef.current;
       hostActivePinRef.current = null;
+      activeQrPayloadRef.current = null;
       setActiveQrPayload(null);
       clearQrHideTimer();
       if (pin) await onPairingCancelPinOffer(pin).catch(() => {});
@@ -423,17 +452,20 @@ export function AddFriendScreen(props: {
     } finally {
       qrVoidingForScreenshotRef.current = false;
     }
-  }, [activeQrPayload, clearQrHideTimer, onPairingCancelPinOffer]);
+  }, [clearQrHideTimer, onPairingCancelPinOffer]);
+
+  const voidActiveQrFromScreenshotRef = useRef(voidActiveQrFromScreenshot);
+  voidActiveQrFromScreenshotRef.current = voidActiveQrFromScreenshot;
 
   useEffect(() => {
     if (Platform.OS === "web") return;
     const sub = ScreenCapture.addScreenshotListener(() => {
-      void voidActiveQrFromScreenshot();
+      void voidActiveQrFromScreenshotRef.current();
     });
     return () => {
       sub.remove();
     };
-  }, [voidActiveQrFromScreenshot]);
+  }, []);
 
   const parseQrPayloadOffer = useCallback((raw: string): string | null => {
     return parseQrPairOfferPlaintext(raw);
@@ -503,6 +535,8 @@ export function AddFriendScreen(props: {
 
     hostActivePinRef.current = pin;
     setPresenterSessionBusy(true);
+    qrShownAtRef.current = Date.now();
+    activeQrPayloadRef.current = qrPayload;
     setActiveQrPayload(qrPayload);
     setPairingStatusLabel("QR visible. Ask your friend to scan now.");
     qrHideTimerRef.current = setTimeout(() => {
@@ -1617,7 +1651,7 @@ export function AddFriendScreen(props: {
                   }}
                 >
                   <View style={{ backgroundColor: "#FFFFFF", padding: 10, borderRadius: 12 }}>
-                    <QRCode value={activeQrPayload} size={Math.min(220, screenWidth * 0.56)} />
+                    <PairingQrCode value={activeQrPayload} size={Math.min(220, screenWidth * 0.56)} />
                   </View>
                 </View>
               ) : null}

@@ -1000,13 +1000,8 @@ export const finalizeNfcPinPairOffer = onCall(async (req) => {
     const edgeSnap = await tx.get(edgeRef);
     const friendshipOk =
       edgeSnap.exists && (edgeSnap.data() as { status?: string } | undefined)?.status === "accepted";
-    if (d.consumed && friendshipOk) {
-      return redeemer;
-    }
-    if (d.consumed && !friendshipOk) {
-      // Pairing session was consumed earlier but friendship was deleted (e.g. manual
-      // Firestore wipe). Repair by re-writing the edge instead of returning success.
-    } else if (d.consumed) {
+    if (d.consumed) {
+      if (friendshipOk) return redeemer;
       throw new HttpsError("failed-precondition", "Offer already used.");
     }
     const scannerEvidence = normalizePairingProximityEvidence(d.scannerProximityEvidence);
@@ -2053,52 +2048,74 @@ async function revokeOwnedPostRecipients(
 }
 
 /**
- * Stops an ex-friend's reinstall from pulling the shared 1:1 through the
- * live listener or `listEncryptedMessages`. Local history already on each
- * phone stays there. Capped so an unfriend does not scan the whole inbox.
+ * Deletes every 1:1 between these two accounts, including older pages.
+ * Group chats stay. `listEncryptedMessages` reads the message documents, so
+ * stripping a mirror is not enough.
  */
-async function revokePairDirectMessages(
-  uid: string,
-  otherUid: string,
-  authUid: string | null,
-  otherAuthUid: string | null
-): Promise<void> {
+async function deletePairDirectMessages(uid: string, otherUid: string): Promise<void> {
   const snap = await db
     .collection("conversations")
     .where("participantUids", "array-contains", uid)
-    .limit(40)
     .get();
-  const arrayRemove = admin.firestore.FieldValue.arrayRemove;
-  const authIds = [authUid, otherAuthUid].filter((id): id is string => Boolean(id));
-  const writer = db.bulkWriter();
   for (const conv of snap.docs) {
     const participants = Array.isArray(conv.data()?.participantUids)
       ? (conv.data()?.participantUids as unknown[]).map((id) => String(id))
       : [];
     if (participants.length !== 2 || !participants.includes(otherUid)) continue;
-    let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
-    for (let page = 0; page < 3; page += 1) {
-      let query: FirebaseFirestore.Query = conv.ref
-        .collection("messages")
-        .orderBy("createdAt", "desc")
-        .limit(100);
-      if (cursor) query = query.startAfter(cursor);
-      const messages = await query.get();
+    for (;;) {
+      const messages = await conv.ref.collection("messages").limit(200).get();
       if (messages.empty) break;
-      for (const doc of messages.docs) {
-        const patch: Record<string, unknown> = {
-          participantUids: arrayRemove(uid, otherUid),
-        };
-        if (authIds.length > 0) {
-          patch.participantAuthUids = arrayRemove(...authIds);
-        }
-        writer.set(doc.ref, patch, { merge: true });
-      }
-      cursor = messages.docs[messages.docs.length - 1];
-      if (messages.size < 100) break;
+      const batch = db.batch();
+      for (const doc of messages.docs) batch.delete(doc.ref);
+      await batch.commit();
     }
+    await conv.ref.delete();
   }
-  await writer.close();
+}
+
+/** Drops the other person from this account's friends-key wraps. */
+async function stripFriendContentKeyRecipient(
+  ownerUid: string,
+  removeUid: string,
+  removeAuthUid: string | null
+): Promise<void> {
+  const ref = db.collection("friendContentKeys").doc(ownerUid);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const data = snap.data() as { envelopes?: Record<string, unknown> } | undefined;
+  const envelopes = { ...(data?.envelopes ?? {}) };
+  delete envelopes[removeUid];
+  const patch: Record<string, unknown> = {
+    envelopes,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (removeAuthUid) {
+    patch.recipientAuthUids = admin.firestore.FieldValue.arrayRemove(removeAuthUid);
+  }
+  await ref.update(patch);
+}
+
+/** Deletes pairing offers between these two accounts so finalize cannot recreate the friendship. */
+async function rescindPairingOffersBetween(uid: string, otherUid: string): Promise<void> {
+  const col = db.collection("nfcPinPairSessions");
+  const [asIssuer, asRedeemer] = await Promise.all([
+    col.where("issuerUid", "==", uid).get(),
+    col.where("issuerUid", "==", otherUid).get(),
+  ]);
+  const matches = [...asIssuer.docs, ...asRedeemer.docs].filter((doc) => {
+    const data = doc.data() as { issuerUid?: string; redeemerUid?: string | null };
+    const issuer = String(data.issuerUid ?? "").trim();
+    const redeemer = String(data.redeemerUid ?? "").trim();
+    return (
+      (issuer === uid && redeemer === otherUid) ||
+      (issuer === otherUid && redeemer === uid)
+    );
+  });
+  for (let i = 0; i < matches.length; i += 400) {
+    const batch = db.batch();
+    for (const doc of matches.slice(i, i + 400)) batch.delete(doc.ref);
+    await batch.commit();
+  }
 }
 
 /**
@@ -2108,9 +2125,8 @@ async function revokePairDirectMessages(
  * authorised by the `recipientAuthUids` / `viewerAuthUids` arrays on the docs,
  * which otherwise keep an ex-friend authorised until the owner happens to
  * rewrite them. We strip each party from the *other's* owned docs (never from
- * their own). The newest 1:1 messages also lose both delivery mirrors so a
- * reinstall does not pull that thread. New sends stay blocked by
- * `assertAcceptedFriendship`.
+ * their own). The shared 1:1 is deleted, and each friends-key wrap loses the
+ * other person. New sends stay blocked by `assertAcceptedFriendship`.
  */
 async function revokeFriendDataMirrors(uid: string, otherUid: string): Promise<void> {
   const [authUid, otherAuthUid] = await Promise.all([
@@ -2145,7 +2161,9 @@ async function revokeFriendDataMirrors(uid: string, otherUid: string): Promise<v
   ops.push(revokeOwnedPostRecipients(uid, otherUid, otherAuthUid).catch(() => {}));
   ops.push(revokeOwnedPostRecipients(otherUid, uid, authUid).catch(() => {}));
 
-  ops.push(revokePairDirectMessages(uid, otherUid, authUid, otherAuthUid).catch(() => {}));
+  ops.push(deletePairDirectMessages(uid, otherUid).catch(() => {}));
+  ops.push(stripFriendContentKeyRecipient(uid, otherUid, otherAuthUid).catch(() => {}));
+  ops.push(stripFriendContentKeyRecipient(otherUid, uid, authUid).catch(() => {}));
 
   await Promise.all(ops);
 }
@@ -2173,6 +2191,9 @@ export const removeFriendship = onCall(async (req) => {
   if (data?.status !== "accepted") {
     return { ok: true };
   }
+  await rescindPairingOffersBetween(uid, otherUid).catch((err) => {
+    console.error("removeFriendship.rescindOffers_failed", err);
+  });
   await edgeRef.delete();
   await unlinkAcceptedFriends(uid, otherUid).catch((err) => {
     console.error("friendIndex.unlink_failed", err);

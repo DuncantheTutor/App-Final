@@ -117,6 +117,7 @@ import { readAvatarsByMessageId, type ReadByMap } from "../lib/readReceipts";
 import { useInitialServerSync } from "../boot/useInitialServerSync";
 import {
   collectDirectChatIdsToLockForFriend,
+  collectDirectChatIdsWithFriend,
   mergeIdentityLockedChatIds,
 } from "../lib/identityLockedChats";
 import { availableStartChatFriends } from "../chat/availableStartChatFriends";
@@ -201,7 +202,8 @@ import {
   readPostsSharedWithFriends,
   writePostsSharedWithFriends,
 } from "../lib/postsSharedWithFriendsPersistence";
-import { publishActivePresence } from "../presence/heartbeat";
+import { deviceNetworkLooksOnline } from "../lib/deviceNetworkOnline";
+import { collectFriendPresenceUids, publishActivePresence } from "../presence/heartbeat";
 import { usePresenceFirestoreListener } from "../presence/usePresenceFirestoreListener";
 import { usePresenceHeartbeat } from "../presence/usePresenceHeartbeat";
 import {
@@ -917,7 +919,7 @@ export function useMainAppModel() {
     const check = async () => {
       try {
         const state = await ExpoNetwork.getNetworkStateAsync();
-        if (!cancelled) setIsOnline(Boolean(state.isConnected && state.isInternetReachable !== false));
+        if (!cancelled) setIsOnline(deviceNetworkLooksOnline(state));
       } catch {
         /* leave previous value on transient error */
       }
@@ -1229,6 +1231,17 @@ export function useMainAppModel() {
       if (additions.length > 0) {
         setIdentityLockedChatIds((cur) => mergeIdentityLockedChatIds(cur, additions));
       }
+      const dropIds = new Set(additions);
+      for (const uid of backendUids) {
+        for (const chatId of collectDirectChatIdsWithFriend(
+          chatsRef.current ?? [],
+          backendUidForFriendId(uid),
+          uid
+        )) {
+          dropIds.add(chatId);
+        }
+      }
+      removeChatsAndMessages(dropIds);
       const removed = new Set(backendUids);
       void rotateFriendContentKey({
         session,
@@ -1238,7 +1251,7 @@ export function useMainAppModel() {
         logAppError("friends.rotate_content_key", err, { removed: backendUids.join(",") });
       });
     },
-    [getBackendSession]
+    [getBackendSession, removeChatsAndMessages]
   );
 
   useFriendRosterSync({
@@ -1315,6 +1328,17 @@ export function useMainAppModel() {
     return `${accepted}::${friendBackendUidsKey}`;
   }, [serverAcceptedFriendBackendUids, friendBackendUidsKey]);
 
+  const presencePollSourcesRef = useRef({
+    allFriends,
+    friendIdToBackendUid,
+    serverAcceptedFriendBackendUids,
+  });
+  presencePollSourcesRef.current = {
+    allFriends,
+    friendIdToBackendUid,
+    serverAcceptedFriendBackendUids,
+  };
+
   usePresenceHeartbeat({
     demoOfflineMode: DEMO_OFFLINE_MODE,
     signedIn,
@@ -1322,6 +1346,18 @@ export function useMainAppModel() {
     initialServerSyncDone,
     appLifecycleState,
     getBackendSession,
+    getFriendUids: () => {
+      const session = getBackendSession();
+      if (!session) return [];
+      const sources = presencePollSourcesRef.current;
+      return collectFriendPresenceUids({
+        allFriends: sources.allFriends,
+        friendIdToBackendUid: sources.friendIdToBackendUid,
+        sessionUid: session.uid,
+        acceptedFriendBackendUids: sources.serverAcceptedFriendBackendUids,
+      });
+    },
+    setPresenceOnlineByBackendUid,
     presenceRosterKey,
   });
 
@@ -1997,6 +2033,7 @@ export function useMainAppModel() {
     getBackendSession,
     unfriendLocally,
     setIdentityLockedChatIds,
+    removeChatsAndMessages,
     postsSharedWithFriendsRef,
     sharePostsBackfillStartedRef,
     sessionEmailRef,

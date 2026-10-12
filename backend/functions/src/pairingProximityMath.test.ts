@@ -49,7 +49,18 @@ function fix(overrides: Partial<PairingProximityEvidence> = {}): PairingProximit
   };
 }
 
-function wifi(ip: string): PairingProximityEvidence {
+function coarseWifi(ip: string, lat = 51.5): PairingProximityEvidence {
+  return {
+    lat,
+    lng: -0.12,
+    horizontalAccuracyM: 80,
+    locationTimestampMs: now,
+    isWifiConnected: true,
+    localIp: ip,
+  };
+}
+
+function omittedGps(ip: string): PairingProximityEvidence {
   return {
     lat: null,
     lng: null,
@@ -68,35 +79,61 @@ test("two usable gps fixes far apart are rejected as gps", () => {
   assert.deepEqual(evaluatePairingProximity(fix(), fix({ lat: 52.5 }), now), { ok: false, reason: "gps" });
 });
 
-test("unusable gps falls back to the same private wifi subnet", () => {
+test("omitting gps is not a wifi fallback", () => {
   assert.deepEqual(
-    evaluatePairingProximity(wifi("192.168.1.10"), wifi("192.168.1.40"), now),
+    evaluatePairingProximity(omittedGps("192.168.1.10"), omittedGps("192.168.1.40"), now),
+    { ok: false, reason: "gps-required" }
+  );
+  assert.deepEqual(
+    evaluatePairingProximity(omittedGps("192.168.1.10"), coarseWifi("192.168.1.40"), now),
+    { ok: false, reason: "gps-required" }
+  );
+});
+
+test("a coarse fix falls back to the same private wifi subnet", () => {
+  assert.deepEqual(
+    evaluatePairingProximity(coarseWifi("192.168.1.10"), coarseWifi("192.168.1.40"), now),
+    { ok: true }
+  );
+  assert.deepEqual(
+    evaluatePairingProximity(fix({ isWifiConnected: true, localIp: "10.1.1.2" }), coarseWifi("10.1.1.9", 80), now),
     { ok: true }
   );
 });
 
-test("a different subnet or a public address is rejected", () => {
+test("a different subnet or a public address is rejected when the signal is coarse", () => {
   assert.deepEqual(
-    evaluatePairingProximity(wifi("192.168.1.10"), wifi("192.168.2.10"), now),
+    evaluatePairingProximity(coarseWifi("192.168.1.10"), coarseWifi("192.168.2.10"), now),
     { ok: false, reason: "fallback" }
   );
-  assert.equal(evaluatePairingProximity(wifi("8.8.8.8"), wifi("8.8.8.9"), now).ok, false);
+  assert.equal(evaluatePairingProximity(coarseWifi("8.8.8.8"), coarseWifi("8.8.8.9"), now).ok, false);
+});
+
+test("two good fixes far apart stay rejected even on the same wifi", () => {
+  assert.deepEqual(
+    evaluatePairingProximity(
+      fix({ isWifiConnected: true, localIp: "192.168.1.10" }),
+      fix({ lat: 52.5, isWifiConnected: true, localIp: "192.168.1.40" }),
+      now
+    ),
+    { ok: false, reason: "gps" }
+  );
 });
 
 test("172.16 through 172.31 are private and 172.32 is not", () => {
-  assert.equal(evaluatePairingProximity(wifi("172.16.1.2"), wifi("172.16.1.9"), now).ok, true);
-  assert.equal(evaluatePairingProximity(wifi("172.31.1.2"), wifi("172.31.1.9"), now).ok, true);
-  assert.equal(evaluatePairingProximity(wifi("172.32.1.2"), wifi("172.32.1.9"), now).ok, false);
+  assert.equal(evaluatePairingProximity(coarseWifi("172.16.1.2"), coarseWifi("172.16.1.9"), now).ok, true);
+  assert.equal(evaluatePairingProximity(coarseWifi("172.31.1.2"), coarseWifi("172.31.1.9"), now).ok, true);
+  assert.equal(evaluatePairingProximity(coarseWifi("172.32.1.2"), coarseWifi("172.32.1.9"), now).ok, false);
 });
 
-test("a stale fix is not used as gps and a coarse fix with no wifi is rejected", () => {
+test("a stale tight fix is not a weak signal and a coarse fix with no wifi is rejected", () => {
   const stale = fix({
     locationTimestampMs: now - 61_000,
     isWifiConnected: true,
     localIp: "10.0.0.2",
   });
   const peer = fix({ lat: 80, isWifiConnected: true, localIp: "10.0.0.8" });
-  assert.equal(evaluatePairingProximity(stale, peer, now).ok, true);
+  assert.deepEqual(evaluatePairingProximity(stale, peer, now), { ok: false, reason: "gps-required" });
   assert.deepEqual(
     evaluatePairingProximity(fix({ horizontalAccuracyM: 51 }), fix({ lat: 60, horizontalAccuracyM: 51 }), now),
     { ok: false, reason: "fallback" }

@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-10-12 21:06 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 21:06 +01:00 | Add Friend, Unfriend, Presence | Friend requests require a GPS reading and use same-Wi-Fi only for a coarse fix. Unfriend deletes the open offer, the 1:1, and the ex-friend's key wrap. Online status follows a fresh heartbeat. |
+
+---
+
+## 2026-10-12 18:16 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 18:16 +01:00 | Presence, Add Friend | A working connection no longer keeps the offline banner up, friend online status follows the server, and Show QR draws a code that stays on screen. |
+
+---
+
 ## 2026-09-26 17:53 +01:00
 
 | Time | Area | Change |

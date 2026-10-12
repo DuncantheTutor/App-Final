@@ -6,6 +6,7 @@ import { logAppError } from "../../telemetry";
 import type { Chat, Friend, Post } from "../domain/types";
 import {
   collectDirectChatIdsToLockForFriend,
+  collectDirectChatIdsWithFriend,
   mergeIdentityLockedChatIds,
 } from "../lib/identityLockedChats";
 import { writePostsSharedWithFriends } from "../lib/postsSharedWithFriendsPersistence";
@@ -20,6 +21,7 @@ type FriendListActionDeps = {
   getBackendSession: () => BackendSession | null;
   unfriendLocally: (friendId: string, otherUid?: string | null) => void;
   setIdentityLockedChatIds: Dispatch<SetStateAction<string[]>>;
+  removeChatsAndMessages: (ids: Iterable<string>) => void;
   postsSharedWithFriendsRef: MutableRefObject<Set<string>>;
   sharePostsBackfillStartedRef: MutableRefObject<Set<string>>;
   sessionEmailRef: MutableRefObject<string | null>;
@@ -39,6 +41,7 @@ export function createFriendListActions(deps: FriendListActionDeps) {
     getBackendSession,
     unfriendLocally,
     setIdentityLockedChatIds,
+    removeChatsAndMessages,
     postsSharedWithFriendsRef,
     sharePostsBackfillStartedRef,
     sessionEmailRef,
@@ -73,6 +76,12 @@ export function createFriendListActions(deps: FriendListActionDeps) {
             if (chatIdsToLock.length > 0) {
               setIdentityLockedChatIds((cur) => mergeIdentityLockedChatIds(cur, chatIdsToLock));
             }
+            removeChatsAndMessages(
+              new Set([
+                ...chatIdsToLock,
+                ...collectDirectChatIdsWithFriend(chatsRef.current ?? [], friendId, otherUid),
+              ])
+            );
             if (!DEMO_OFFLINE_MODE && session && otherUid) {
               try {
                 await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {

@@ -1,10 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 
 
 import { logAppError } from "../../telemetry";
 
 import {
+
+  pollFriendPresence,
 
   PRESENCE_HEARTBEAT_MS,
 
@@ -32,7 +34,17 @@ export function usePresenceHeartbeat(params: {
 
   getBackendSession: () => BackendSession | null;
 
-  /** Kept for API stability; online state comes from the Firestore presence listener. */
+  /** Accepted friend app uids. Polled so a missing presence mirror does not leave everyone offline. */
+
+  getFriendUids: () => string[];
+
+  setPresenceOnlineByBackendUid: (
+
+    updater: (current: Record<string, boolean>) => Record<string, boolean>
+
+  ) => void;
+
+  /** Kept for API stability; online state comes from the listener and the presence poll. */
 
   presenceRosterKey: string;
 
@@ -52,11 +64,21 @@ export function usePresenceHeartbeat(params: {
 
     getBackendSession,
 
+    getFriendUids,
+
+    setPresenceOnlineByBackendUid,
+
+    presenceRosterKey,
+
   } = params;
 
+  const getFriendUidsRef = useRef(getFriendUids);
+
+  getFriendUidsRef.current = getFriendUids;
 
 
-  /** Publish own presence while foreground; friends read via Firestore listener (no callable poll loop). */
+
+  /** Publish own presence while foreground, and pull friend online flags from the server. */
 
   useEffect(() => {
 
@@ -84,6 +106,44 @@ export function usePresenceHeartbeat(params: {
 
       }
 
+      if (cancelled) return;
+
+      const friendUids = getFriendUidsRef.current();
+
+      if (friendUids.length === 0) return;
+
+      try {
+
+        const nextOnline = await pollFriendPresence({ session, friendUids, now: Date.now() });
+
+        if (cancelled) return;
+
+        setPresenceOnlineByBackendUid((current) => {
+
+          let changed = false;
+
+          const merged = { ...current };
+
+          for (const [uid, value] of Object.entries(nextOnline)) {
+
+            if (merged[uid] === value) continue;
+
+            merged[uid] = value;
+
+            changed = true;
+
+          }
+
+          return changed ? merged : current;
+
+        });
+
+      } catch (err) {
+
+        logAppError("presence.poll", err, { uid: session.uid });
+
+      }
+
     };
 
 
@@ -100,7 +160,7 @@ export function usePresenceHeartbeat(params: {
 
     };
 
-  }, [signedIn, backendSessionReady, demoOfflineMode, getBackendSession, appLifecycleState]);
+  }, [signedIn, backendSessionReady, demoOfflineMode, getBackendSession, appLifecycleState, presenceRosterKey, setPresenceOnlineByBackendUid]);
 
 
 

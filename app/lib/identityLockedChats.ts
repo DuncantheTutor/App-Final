@@ -12,6 +12,25 @@ export function isChatIdentityLocked(
   return identityLockedChatIds.has(id);
 }
 
+/** Every standard 1:1 with this friend, including post-refriend `__live` threads. */
+export function collectDirectChatIdsWithFriend(
+  chats: Chat[],
+  friendId: string,
+  friendBackendUid?: string | null
+): string[] {
+  const backendUid = friendBackendUid?.trim();
+  const ids: string[] = [];
+  for (const chat of chats) {
+    const kind = chat.kind ?? "standard";
+    if (kind !== "standard") continue;
+    const others = chat.memberIds.filter((id) => id !== CURRENT_USER_ID);
+    if (others.length !== 1) continue;
+    const other = others[0];
+    if (other === friendId || (backendUid && other === backendUid)) ids.push(chat.id);
+  }
+  return ids;
+}
+
 /** All 1:1 standard threads with this friend (incl. `__live` aliases) — locked on unfriend. */
 export function collectDirectChatIdsToLockForFriend(
   chats: Chat[],

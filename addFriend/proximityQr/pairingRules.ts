@@ -25,7 +25,7 @@ export const SCREENSHOT_REVOKES_OFFER = true;
 /** Both parties must look within this horizontal distance (meters) for redeem to succeed. */
 export const MAX_PAIR_SEPARATION_M = 100;
 
-/** Reject locations whose reported accuracy is worse than this (meters). Tune per field feedback. */
+/** A fix worse than this (meters) is too coarse for distance and may use the same-Wi-Fi fallback. */
 export const MAX_HORIZONTAL_ACCURACY_M = 50;
 
 /** Location fixes older than this at redeem time are rejected (ms). */

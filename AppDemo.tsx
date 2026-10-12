@@ -38,7 +38,7 @@ import {
 } from "react-native";
 import { FlatListUntilScroll, ScrollViewUntilScroll } from "./ScrollUntilScroll";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import QRCode from "react-native-qrcode-svg";
+import { PairingQrCode } from "./app/components/PairingQrCode";
 
 import {
   PhotoEditorModal,
@@ -2793,7 +2793,7 @@ function AddFriendScreen(props: {
                   }}
                 >
                   <View style={{ backgroundColor: "#FFFFFF", padding: 10, borderRadius: 12 }}>
-                    <QRCode value={activeQrPayload} size={Math.min(220, screenWidth * 0.56)} />
+                    <PairingQrCode value={activeQrPayload} size={Math.min(220, screenWidth * 0.56)} />
                   </View>
                 </View>
               ) : null}

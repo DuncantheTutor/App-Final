@@ -20,8 +20,14 @@ export function assertPairingProximity(
       "Could not verify in-person proximity (GPS distance exceeds 100m cap)."
     );
   }
+  if (verdict.reason === "fallback") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Could not verify proximity with GPS. Connect both phones to the same Wi-Fi network (personal hotspot also counts) and try again."
+    );
+  }
   throw new HttpsError(
     "failed-precondition",
-    "Could not verify proximity with GPS. Connect both phones to the same Wi-Fi network (personal hotspot also counts) and try again."
+    "Turn on GPS and wait for a location fix before adding a friend."
   );
 }

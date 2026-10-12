@@ -11,7 +11,7 @@
 - Reliable **in-person** pairing without depending on NFC/BLE success.
 - **Short-lived, one-time** redeem tokens embedded in a QR payload.
 - **Defense in depth:** Android secure surface while QR visible; **screenshot ⇒ revoke**.
-- **Mandatory proximity evidence:** both users must pass GPS evidence or approved Wi-Fi fallback evidence before friendship can be written.
+- **Mandatory proximity evidence:** both phones must send a GPS reading while the friend request is in progress. Two good fixes must be within 100m. Same private Wi-Fi is only the fallback when a reading is present but coarser than 50m. Omitting GPS is not a weak signal. Location is not read on other screens.
 
 ---
 
@@ -54,9 +54,9 @@
 1. **Scan** — Obtain raw payload string from QR (see payload shape below).
 2. **Validate locally** — Non-empty, parse token + optional embedded `ruleVersion`.
 3. **Redeem** — Call `redeemQrFriendOffer` with token + scanner location + `ruleVersion`.
-4. **Proximity check** — Server evaluates GPS first, then Wi-Fi fallback only if GPS quality is poor.
+4. **Proximity check** — Both phones must send GPS. Two good fixes use the distance check. Wi-Fi fallback only when a reading is too coarse.
 5. **Identity confirmation** — Show both profiles and prompt: **`Confirm adding {userName} as a friend?`**
-6. **Outcome** — Success → friendship UI; failure → show reason (expired, revoked, distance, accuracy, missing Wi-Fi fallback evidence).
+6. **Outcome** — Success → friendship UI; failure → show reason (expired, revoked, missing GPS, distance, missing Wi-Fi fallback evidence).
 
 ---
 
@@ -92,9 +92,9 @@ On **mint** and **redeem**, client sends:
    `allowedGpsRadiusM = min(MAX_PAIR_SEPARATION_M, max(0, dynamicToleranceM))`
 7. GPS path passes only if `separationM <= allowedGpsRadiusM`.
 
-### B) Wi-Fi / hotspot fallback (only when GPS path fails for quality reasons)
+### B) Wi-Fi / hotspot fallback (only when the GPS signal is too coarse)
 
-Use this path when GPS is missing/stale/too inaccurate (not when token/security checks fail).
+Use this path only when both phones sent coordinates and at least one fix is coarser than 50m. A missing reading, or a stale reading that still reports a tight accuracy, does not take this path.
 
 1. Evaluate shared network evidence (prefer same BSSID/AP evidence where available).
 2. Treat **personal hotspot** as valid Wi-Fi evidence in this fallback path.
