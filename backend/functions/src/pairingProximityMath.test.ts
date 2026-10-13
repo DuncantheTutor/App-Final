@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   evaluatePairingProximity,
+  PROXIMITY_CLOCK_SKEW_MS,
+  PROXIMITY_MAX_LOCATION_AGE_MS,
   gpsSeparationAllowed,
   type PairingProximityEvidence,
 } from "./pairingProximityMath.ts";
@@ -128,7 +130,7 @@ test("172.16 through 172.31 are private and 172.32 is not", () => {
 
 test("a stale tight fix is not a weak signal and a coarse fix with no wifi is rejected", () => {
   const stale = fix({
-    locationTimestampMs: now - 61_000,
+    locationTimestampMs: now - PROXIMITY_MAX_LOCATION_AGE_MS - PROXIMITY_CLOCK_SKEW_MS - 1_000,
     isWifiConnected: true,
     localIp: "10.0.0.2",
   });

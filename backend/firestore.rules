@@ -129,6 +129,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /pairingDeviceChecks/{checkId} {
+      allow read, write: if false;
+    }
+
     // Private post comment threads between post owner and one friend.
     // Reads gate on `participantAuthUids` (Firebase Auth UID mirror) on each
     // doc — both the thread doc and its message subcollection — so signed-in

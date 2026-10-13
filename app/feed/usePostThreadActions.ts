@@ -11,6 +11,7 @@ import { readComposerTextTrimmed } from "../lib/syncedComposerText";
 import { yieldToUi } from "../lib/yieldToUi";
 import { mapServerReactionsToLocal } from "../messaging/messageMetadata";
 import type { BackendSession } from "../messaging/types";
+import { readPrivateThreadMessageText, sendPrivateThreadMessage } from "./privateThreadCrypto";
 import { CURRENT_USER_ID } from "../theme/preludeConstants";
 import type { CommentReactionTarget } from "./useReactionPicker";
 
@@ -40,6 +41,8 @@ export function usePostThreadActions(params: {
   allFriends: Friend[];
   friendMap: Record<string, Friend>;
   backendUidToFriendId: Record<string, string>;
+  recipientKeyCacheRef: MutableRefObject<Record<string, string>>;
+  persistFriendKeyCacheNow: () => void;
   messages: Message[];
   chats: Chat[];
   patchMessage: (messageId: string, updater: (message: Message) => Message) => void;
@@ -81,6 +84,8 @@ export function usePostThreadActions(params: {
     allFriends,
     friendMap,
     backendUidToFriendId,
+    recipientKeyCacheRef,
+    persistFriendKeyCacheNow,
     messages,
     chats,
     patchMessage,
@@ -159,7 +164,10 @@ export function usePostThreadActions(params: {
               items?: Array<{
                 messageId: string;
                 authorUid: string;
-                text: string;
+                text?: string;
+                ciphertext?: string;
+                nonce?: string;
+                envelope?: string;
                 reactions?: Record<string, string>;
                 createdAtMs?: number;
               }>;
@@ -170,7 +178,15 @@ export function usePostThreadActions(params: {
               postOwnerUid,
               friendUid,
             }).catch(() => ({ items: [] }));
-            const items = (res.items ?? []).slice().sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0));
+            const items = await Promise.all(
+              (res.items ?? [])
+                .slice()
+                .sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+                .map(async (item) => ({
+                  ...item,
+                  text: await readPrivateThreadMessageText(session.uid, item),
+                }))
+            );
             if (items.length === 0) return null;
             const toLocalId = (uid: string) =>
               uid === session.uid ? CURRENT_USER_ID : backendUidToFriendId[uid] ?? backendUidForFriendId(uid);
@@ -272,13 +288,14 @@ export function usePostThreadActions(params: {
           return { ...candidate, comments: [...(candidate.comments ?? []), optimistic] };
         })
       );
-      void callEmulatorFunction("createPrivatePostThreadMessage", {
-        uid: session.uid,
-        deviceId: session.deviceId,
+      void sendPrivateThreadMessage({
+        session,
         postId,
         postOwnerUid,
         friendUid: session.uid,
         text,
+        recipientKeyCacheRef,
+        persistFriendKeyCacheNow,
       })
         .then(() => {
           setPosts((current) =>
@@ -309,7 +326,7 @@ export function usePostThreadActions(params: {
         });
       setCommentDraftByPostId((current) => ({ ...current, [postId]: "" }));
     },
-    [getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid, setCommentDraftByPostId, setPosts]
+    [getBackendSession, hydratePrivateThreadForPost, persistFriendKeyCacheNow, posts, recipientKeyCacheRef, resolvePostOwnerBackendUid, setCommentDraftByPostId, setPosts]
   );
 
   const addThreadReplyToComment = useCallback(
@@ -342,21 +359,42 @@ export function usePostThreadActions(params: {
                 text,
                 createdAt: Date.now(),
                 reactions: {} as Record<string, string>,
+                syncState: "posting" as const,
               };
               return { ...c, thread: [...(c.thread ?? []), entry] };
             }),
           };
         })
       );
-      void callEmulatorFunction("createPrivatePostThreadMessage", {
-        uid: session.uid,
-        deviceId: session.deviceId,
+      void sendPrivateThreadMessage({
+        session,
         postId,
         postOwnerUid,
         friendUid,
         text,
+        recipientKeyCacheRef,
+        persistFriendKeyCacheNow,
       })
-        .then(() => hydratePrivateThreadForPost(post))
+        .then(() => {
+          setPosts((current) =>
+            current.map((candidate) => {
+              if (candidate.id !== postId) return candidate;
+              return {
+                ...candidate,
+                comments: (candidate.comments ?? []).map((c) => {
+                  if (c.id !== commentId) return c;
+                  return {
+                    ...c,
+                    thread: (c.thread ?? []).map((entry) =>
+                      entry.id === optimisticId ? { ...entry, syncState: "posted" as const } : entry
+                    ),
+                  };
+                }),
+              };
+            })
+          );
+          return hydratePrivateThreadForPost(post);
+        })
         .catch(() => {
           setPosts((current) =>
             current.map((candidate) => {
@@ -367,7 +405,9 @@ export function usePostThreadActions(params: {
                   if (c.id !== commentId) return c;
                   return {
                     ...c,
-                    thread: (c.thread ?? []).filter((entry) => entry.id !== optimisticId),
+                    thread: (c.thread ?? []).map((entry) =>
+                      entry.id === optimisticId ? { ...entry, syncState: "failed" as const } : entry
+                    ),
                   };
                 }),
               };
@@ -380,7 +420,9 @@ export function usePostThreadActions(params: {
       friendMap,
       getBackendSession,
       hydratePrivateThreadForPost,
+      persistFriendKeyCacheNow,
       posts,
+      recipientKeyCacheRef,
       resolvePostOwnerBackendUid,
       setPosts,
       setThreadDraftByChainKey,

@@ -2,17 +2,20 @@ import { HttpsError } from "firebase-functions/v2/https";
 
 import {
   evaluatePairingProximity,
+  PROXIMITY_MAX_LOCATION_AGE_MS,
   type PairingProximityEvidence,
 } from "./pairingProximityMath";
 
 export type { PairingProximityEvidence } from "./pairingProximityMath";
+export { PROXIMITY_MAX_LOCATION_AGE_MS };
 
 export function assertPairingProximity(
   a: PairingProximityEvidence,
   b: PairingProximityEvidence,
-  nowMs: number
+  nowMs: number,
+  ageLimits?: { aMs?: number; bMs?: number }
 ): void {
-  const verdict = evaluatePairingProximity(a, b, nowMs);
+  const verdict = evaluatePairingProximity(a, b, nowMs, ageLimits);
   if (verdict.ok) return;
   if (verdict.reason === "gps") {
     throw new HttpsError(

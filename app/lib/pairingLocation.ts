@@ -97,6 +97,7 @@ function applyLocationObject(pos: ExpoLocation.LocationObject): {
   lng: number;
   horizontalAccuracyM: number | null;
   locationTimestampMs: number | null;
+  locationMocked: boolean;
 } | null {
   const lat = Number.isFinite(pos.coords.latitude) ? pos.coords.latitude : null;
   const lng = Number.isFinite(pos.coords.longitude) ? pos.coords.longitude : null;
@@ -105,7 +106,8 @@ function applyLocationObject(pos: ExpoLocation.LocationObject): {
     ? (pos.coords.accuracy as number)
     : null;
   const locationTimestampMs = Number.isFinite(pos.timestamp) ? pos.timestamp : null;
-  return { lat, lng, horizontalAccuracyM, locationTimestampMs };
+  const locationMocked = Boolean(pos.mocked);
+  return { lat, lng, horizontalAccuracyM, locationTimestampMs, locationMocked };
 }
 
 function isGoodPairingFix(fix: {
@@ -122,24 +124,33 @@ function isGoodPairingFix(fix: {
  * A coarse fix is still returned so the server can use the Wi-Fi fallback.
  * Missing coordinates mean GPS is off.
  */
-export async function readPrecisePairingLocationFix(): Promise<{
+export async function readPrecisePairingLocationFix(options?: { fresh?: boolean }): Promise<{
   lat: number | null;
   lng: number | null;
   horizontalAccuracyM: number | null;
   locationTimestampMs: number | null;
+  locationMocked: boolean;
 }> {
-  const empty = { lat: null, lng: null, horizontalAccuracyM: null, locationTimestampMs: null };
-  try {
-    const cached = await ExpoLocation.getLastKnownPositionAsync({
-      maxAge: MAX_LOCATION_AGE_MS,
-      requiredAccuracy: MAX_HORIZONTAL_ACCURACY_M,
-    });
-    if (cached) {
-      const parsed = applyLocationObject(cached);
-      if (parsed && isGoodPairingFix(parsed)) return parsed;
+  const empty = {
+    lat: null,
+    lng: null,
+    horizontalAccuracyM: null,
+    locationTimestampMs: null,
+    locationMocked: false,
+  };
+  if (!options?.fresh) {
+    try {
+      const cached = await ExpoLocation.getLastKnownPositionAsync({
+        maxAge: MAX_LOCATION_AGE_MS,
+        requiredAccuracy: MAX_HORIZONTAL_ACCURACY_M,
+      });
+      if (cached) {
+        const parsed = applyLocationObject(cached);
+        if (parsed && isGoodPairingFix(parsed)) return parsed;
+      }
+    } catch {
+      /* fall through to fresh GPS fix */
     }
-  } catch {
-    /* fall through to fresh GPS fix */
   }
 
   try {
@@ -162,8 +173,10 @@ export async function readPrecisePairingLocationFix(): Promise<{
 const GPS_REQUIRED_FOR_PAIRING = "Turn on GPS and wait for a location fix before adding a friend.";
 
 /** Proximity payload for pairing callables. GPS coordinates are required; Wi-Fi is sent for a coarse fix. */
-export async function collectPrecisePairingProximityEvidence(): Promise<PairingProximityEvidence> {
-  const fix = await readPrecisePairingLocationFix();
+export async function collectPrecisePairingProximityEvidence(options?: {
+  fresh?: boolean;
+}): Promise<PairingProximityEvidence> {
+  const fix = await readPrecisePairingLocationFix(options);
   if (fix.lat == null || fix.lng == null) {
     throw new Error(GPS_REQUIRED_FOR_PAIRING);
   }
@@ -186,5 +199,6 @@ export async function collectPrecisePairingProximityEvidence(): Promise<PairingP
     locationTimestampMs: fix.locationTimestampMs,
     isWifiConnected,
     localIp,
+    locationMocked: fix.locationMocked,
   };
 }

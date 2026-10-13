@@ -3,6 +3,8 @@
 export const PROXIMITY_MAX_DISTANCE_M = 100;
 export const PROXIMITY_MAX_ACCURACY_M = 50;
 export const PROXIMITY_MAX_LOCATION_AGE_MS = 60_000;
+/** Phone clocks drift from the server. A fresh fix can look slightly old or slightly ahead. */
+export const PROXIMITY_CLOCK_SKEW_MS = 2 * 60 * 1000;
 export const PROXIMITY_GPS_UNCERTAINTY_MULTIPLIER = 1.75;
 
 export type PairingProximityEvidence = {
@@ -38,7 +40,11 @@ export function gpsSeparationAllowed(separationM: number, combinedUncertaintyM: 
   return separationM <= uncertaintyRadius;
 }
 
-export function isGpsEvidenceUsable(e: PairingProximityEvidence, nowMs: number): boolean {
+export function isGpsEvidenceUsable(
+  e: PairingProximityEvidence,
+  nowMs: number,
+  maxAgeMs: number = PROXIMITY_MAX_LOCATION_AGE_MS
+): boolean {
   if (
     typeof e.lat !== "number" ||
     typeof e.lng !== "number" ||
@@ -49,7 +55,9 @@ export function isGpsEvidenceUsable(e: PairingProximityEvidence, nowMs: number):
   }
   if (Math.abs(e.lat) > 90 || Math.abs(e.lng) > 180) return false;
   if (e.horizontalAccuracyM <= 0 || e.horizontalAccuracyM > PROXIMITY_MAX_ACCURACY_M) return false;
-  if (Math.abs(nowMs - e.locationTimestampMs) > PROXIMITY_MAX_LOCATION_AGE_MS) return false;
+  const delta = nowMs - e.locationTimestampMs;
+  if (delta > maxAgeMs + PROXIMITY_CLOCK_SKEW_MS) return false;
+  if (delta < -PROXIMITY_CLOCK_SKEW_MS) return false;
   return true;
 }
 
@@ -111,13 +119,14 @@ function signalTooCoarse(e: PairingProximityEvidence): boolean {
 export function evaluatePairingProximity(
   a: PairingProximityEvidence,
   b: PairingProximityEvidence,
-  nowMs: number
+  nowMs: number,
+  ageLimits?: { aMs?: number; bMs?: number }
 ): ProximityVerdict {
   if (!hasGpsCoordinates(a) || !hasGpsCoordinates(b)) {
     return { ok: false, reason: "gps-required" };
   }
-  const aGps = isGpsEvidenceUsable(a, nowMs);
-  const bGps = isGpsEvidenceUsable(b, nowMs);
+  const aGps = isGpsEvidenceUsable(a, nowMs, ageLimits?.aMs);
+  const bGps = isGpsEvidenceUsable(b, nowMs, ageLimits?.bMs);
   if (aGps && bGps) {
     const separationM = haversineMeters(a.lat as number, a.lng as number, b.lat as number, b.lng as number);
     const combinedUncertaintyM = Math.sqrt(

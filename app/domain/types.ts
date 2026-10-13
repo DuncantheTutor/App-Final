@@ -117,6 +117,8 @@ export type PostCommentThreadMessage = {
   text: string;
   createdAt: number;
   reactions?: Record<string, string>;
+  /** Optimistic reply delivery state (client-only until the server copy arrives). */
+  syncState?: "posting" | "posted" | "failed";
 };
 
 export type EncryptedSyncChannelState = "idle" | "syncing" | "ok" | "error";
@@ -214,4 +216,6 @@ export type PairingProximityEvidence = {
   locationTimestampMs: number | null;
   isWifiConnected: boolean;
   localIp: string | null;
+  /** Set when Android reports this fix came from a mock location provider. */
+  locationMocked?: boolean;
 };

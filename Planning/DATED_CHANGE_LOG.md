@@ -10,6 +10,22 @@
 
 ---
 
+## 2026-10-13 22:14 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 22:14 +01:00 | Add Friend, Unfriend, Comments | Pairing allows a two-minute clock difference, takes a fresh GPS fix after attestation, and closes unfriend writers if cleanup throws. This phone drops a friend only after the server accepts, and a failed comment reply stays on screen. |
+
+---
+
+## 2026-10-13 20:54 +01:00
+
+| Time | Area | Change |
+|---|---|-----|
+| 20:54 +01:00 | Add Friend, Comments, Unfriend | Pairing requires a hardware attestation of the genuine app and refuses mock locations. New post comments are sealed. Unfriend deletes comment threads, reaction access, and group-message mirrors, and keeps the friendship if that cleanup fails. |
+
+---
+
 ## 2026-10-12 21:06 +01:00
 
 | Time | Area | Change |

@@ -13,6 +13,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 ## [Unreleased]
 
 ### Fixed
+- **Add Friend clock and GPS:** A phone whose clock is a couple of minutes ahead of the server can still prove the app. The location sample is a fresh fix taken after that proof, and the final confirm allows the 45-second confirm window. A failed hardware key says the phone could not create one.
+- **Unfriend stays until the server accepts:** This phone removes the friend and the chat only after `removeFriendship` succeeds. A failure leaves them in place. Rebuilding the friend index still drops the person being removed. Group unfriend fails closed if either Auth uid is missing, so their read access is not left behind.
+- **Comment send failures:** A reply that does not send stays in the thread as “Could not post”. A comment that cannot be decrypted keeps the text still on this phone instead of showing a second blank row.
+- **Add Friend device check:** Production pairing requires a hardware attestation that the location reading came from the genuine Erdos app on a locked phone with verified boot. A mock location is refused. The check is skipped in the emulator. Set `PAIRING_ATTESTATION_CERT_SHA256` to the release signing certificate before deploying, and install an APK that includes the new native module.
+- **Unfriend cleanup:** Unfriend deletes private comment threads, strips reaction mirrors, and removes both people from existing group-message read mirrors. If that cleanup fails, the friendship edge is left in place so it can be retried.
 - **Add Friend proximity:** Both phones must send a GPS reading during the friend request. Two good fixes must be within 100m. Same private Wi-Fi is only used when a reading is present but coarser than 50m. Turning location off, or leaving it out, does not skip the distance check. Location is requested on that request only.
 - **Unfriend:** The open pairing offer between those two accounts is deleted, so it cannot write the friendship back. The whole 1:1 and its messages are deleted on the server and leave both phones. Each friends-key wrap drops the other person, and this phone still rotates and re-seals the profile and posts. Group chats stay.
 - **Presence:** A friend is online only while the app is in the foreground and the heartbeat is fresh (about 45 seconds). A stored online flag with an old heartbeat shows offline.
@@ -20,6 +25,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - **Show QR:** The pairing code is drawn as solid squares, so it shows up again. Opening it no longer counts an older screenshot as a new one and hides the code immediately.
 
 ### Security
+- **Private comments:** New post-thread messages are stored as ciphertext sealed for the post owner and that friend. The server does not keep the comment text. Comments already stored as plaintext still load until the thread is deleted.
 - **Friends key:** Profile and posts are sealed with one key. Adding a friend adds a wrap of that key and lets them read existing posts. Removing a friend replaces the key and re-seals those posts and the profile.
 - **Message keys:** A new phone that signs in with the account password opens older messages, posts, and the profile, then starts a new key. The previous secret stays in the password-wrapped backup so history still opens. Messages sent after the new key stay closed to a copy of the old secret. The server cannot read the backup. Settings explains this. Friends see a safety-number change and confirm the new key before sending.
 - **Message ingest:** A new thread from another account waits until this sign-in's friend list is known. An empty list drops it. Existing chats still accept messages.

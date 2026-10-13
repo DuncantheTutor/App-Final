@@ -2,10 +2,9 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 
 import { callEmulatorFunction } from "../../backendBridge";
 import { publishActivePresence } from "../presence/heartbeat";
-import type { Friend, PairingProximityEvidence } from "../domain/types";
+import type { Friend } from "../domain/types";
 import { ensureCameraForPairing } from "../lib/pairingCamera";
 import {
-  collectPrecisePairingProximityEvidence,
   ensurePreciseLocationForPairing,
   preciseLocationGateMessage,
 } from "../lib/pairingLocation";
@@ -15,6 +14,7 @@ import {
   DEMO_USER_A_QR_PIN,
   FRIENDS,
 } from "../theme/preludeConstants";
+import { collectPairingDeviceProof } from "./pairingDeviceProof";
 import { registerPairOfferToken } from "./registerPairOffer";
 import { resolvePairingSession } from "./resolvePairingSession";
 
@@ -74,11 +74,6 @@ export function usePairingParentActions(params: {
     setDemoPendingAddableQueue,
   } = params;
 
-  const collectPairingProximityEvidence = useCallback(
-    (): Promise<PairingProximityEvidence> => collectPrecisePairingProximityEvidence(),
-    []
-  );
-
   const ensurePairingLocationPermission = useCallback(
     async (options?: { showAlerts?: boolean }): Promise<boolean> => {
       const gate = await ensurePreciseLocationForPairing({
@@ -109,9 +104,8 @@ export function usePairingParentActions(params: {
     }
     const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
     if (!session) return null;
-    const proximityEvidence = await collectPairingProximityEvidence();
-    return registerPairOfferToken(session, proximityEvidence);
-  }, [collectPairingProximityEvidence, demoOfflineMode, getBackendSession, sessionEmailRef, waitForBackendSession]);
+    return registerPairOfferToken(session);
+  }, [demoOfflineMode, getBackendSession, sessionEmailRef, waitForBackendSession]);
 
   const pairingAwaitPinRedeemParent = useCallback(
     async (pin: string): Promise<Friend | null> => {
@@ -223,14 +217,14 @@ export function usePairingParentActions(params: {
         /* preview optional before phase-1 confirm */
       }
 
-      const proximityEvidence = await collectPairingProximityEvidence();
+      const proof = await collectPairingDeviceProof(session);
       const res = await callEmulatorFunction<{ accepted?: boolean }>(
         "confirmNfcPinPairOffer",
         {
           uid: session.uid,
           deviceId: session.deviceId,
           pin: trimmedPin,
-          proximityEvidence,
+          ...proof,
         }
       );
       if (!res.accepted) return null;
@@ -246,7 +240,6 @@ export function usePairingParentActions(params: {
     },
     [
       acceptFriend,
-      collectPairingProximityEvidence,
       demoOfflineMode,
       demoPendingAddableQueue,
       getBackendSession,
@@ -260,16 +253,14 @@ export function usePairingParentActions(params: {
       if (demoOfflineMode) return true;
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return false;
-      const proximityEvidence = await collectPairingProximityEvidence();
       const res = await callEmulatorFunction<{ accepted?: boolean }>("confirmRedeemerNfcPinPairOffer", {
         uid: session.uid,
         deviceId: session.deviceId,
         pin: pin.trim(),
-        proximityEvidence,
       });
       return Boolean(res.accepted);
     },
-    [collectPairingProximityEvidence, demoOfflineMode, getBackendSession, waitForBackendSession]
+    [demoOfflineMode, getBackendSession, waitForBackendSession]
   );
 
   const pairingAwaitIssuerFinalConfirmParent = useCallback(
@@ -345,7 +336,7 @@ export function usePairingParentActions(params: {
       }
       const session = await resolvePairingSession(getBackendSession, waitForBackendSession);
       if (!session) return null;
-      const proximityEvidence = await collectPairingProximityEvidence();
+      const proof = await collectPairingDeviceProof(session);
       const deadline = Date.now() + ADD_FRIEND_PAIRING_SESSION_TIMEOUT_MS;
       let friendUid = "";
       while (Date.now() < deadline) {
@@ -356,7 +347,7 @@ export function usePairingParentActions(params: {
               uid: session.uid,
               deviceId: session.deviceId,
               pin: pin.trim(),
-              proximityEvidence,
+              ...proof,
             }
           );
           friendUid = res.friendUid?.trim() ?? "";
@@ -392,7 +383,6 @@ export function usePairingParentActions(params: {
     [
       acceptFriend,
       acceptedFriendBackendUidsRef,
-      collectPairingProximityEvidence,
       demoOfflineMode,
       demoPendingAddableQueue,
       getBackendSession,

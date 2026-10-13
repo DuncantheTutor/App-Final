@@ -4,7 +4,7 @@
  */
 import * as admin from "firebase-admin";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
-import { resolveParticipantAuthUids } from "./authUidMirror";
+import { resolveAuthUidByAppUid, resolveParticipantAuthUids } from "./authUidMirror";
 import { assertVerifiedCallableCaller } from "./deviceSession";
 import {
   assertAcceptedFriendship,
@@ -815,45 +815,111 @@ export const updateEncryptedMessage = onCall(async (req) => {
 });
 
 /** Extends removeFriendship: kick both from shared groups, one page of conversations at a time. */
-export async function kickPairFromSharedGroups(uidA: string, uidB: string): Promise<void> {
+async function deleteConversationMessages(convRef: FirebaseFirestore.DocumentReference): Promise<void> {
   const db = firestoreDb();
-  const writer = db.bulkWriter();
+  for (;;) {
+    const messages = await convRef.collection("messages").limit(200).get();
+    if (messages.empty) return;
+    const batch = db.batch();
+    for (const doc of messages.docs) batch.delete(doc.ref);
+    await batch.commit();
+    if (messages.size < 200) return;
+  }
+}
+
+async function stripMembersFromConversationMessages(
+  convRef: FirebaseFirestore.DocumentReference,
+  appUids: string[],
+  authUids: string[]
+): Promise<void> {
+  const db = firestoreDb();
+  const arrayRemove = admin.firestore.FieldValue.arrayRemove;
   let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
   for (;;) {
-    let query: FirebaseFirestore.Query = db
-      .collection("conversations")
-      .where("participantUids", "array-contains", uidA)
+    let query: FirebaseFirestore.Query = convRef
+      .collection("messages")
       .orderBy(admin.firestore.FieldPath.documentId())
       .limit(200);
     if (cursor) query = query.startAfter(cursor);
     const snap = await query.get();
-    if (snap.empty) break;
+    if (snap.empty) return;
+    const batch = db.batch();
     for (const doc of snap.docs) {
-      const data = doc.data() as ConversationData;
-      const participants = data.participantUids ?? [];
-      if (!participants.includes(uidA) || !participants.includes(uidB)) continue;
-      if (participants.length <= 2) continue;
-      const next = participants.filter((id) => id !== uidA && id !== uidB);
-      if (next.length === participants.length) continue;
-      if (next.length === 0) {
-        writer.delete(doc.ref);
-        continue;
+      const patch: Record<string, unknown> = {
+        participantUids: arrayRemove(...appUids),
+      };
+      if (authUids.length > 0) {
+        patch.participantAuthUids = arrayRemove(...authUids);
       }
-      const participantAuthUids = await resolveParticipantAuthUids(next);
-      writer.set(
-        doc.ref,
-        {
-          participantUids: next,
-          participantAuthUids,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      batch.set(doc.ref, patch, { merge: true });
     }
+    await batch.commit();
     cursor = snap.docs[snap.docs.length - 1];
-    if (snap.size < 200) break;
+    if (snap.size < 200) return;
   }
-  await writer.close();
+}
+
+export async function kickPairFromSharedGroups(uidA: string, uidB: string): Promise<void> {
+  const db = firestoreDb();
+  const authByApp = await resolveAuthUidByAppUid([uidA, uidB]);
+  const authA = authByApp.get(uidA);
+  const authB = authByApp.get(uidB);
+  const writer = db.bulkWriter();
+  let failed: unknown;
+  try {
+    let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+    for (;;) {
+      let query: FirebaseFirestore.Query = db
+        .collection("conversations")
+        .where("participantUids", "array-contains", uidA)
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(200);
+      if (cursor) query = query.startAfter(cursor);
+      const snap = await query.get();
+      if (snap.empty) break;
+      for (const doc of snap.docs) {
+        const data = doc.data() as ConversationData;
+        const participants = data.participantUids ?? [];
+        if (!participants.includes(uidA) || !participants.includes(uidB)) continue;
+        if (participants.length <= 2) continue;
+        const next = participants.filter((id) => id !== uidA && id !== uidB);
+        if (next.length === participants.length) continue;
+        if (next.length === 0) {
+          await deleteConversationMessages(doc.ref);
+          writer.delete(doc.ref);
+          continue;
+        }
+        if (!authA || !authB) {
+          throw new HttpsError(
+            "failed-precondition",
+            "Could not revoke group access for this friend. Try unfriend again."
+          );
+        }
+        await stripMembersFromConversationMessages(doc.ref, [uidA, uidB], [authA, authB]);
+        const participantAuthUids = await resolveParticipantAuthUids(next);
+        writer.set(
+          doc.ref,
+          {
+            participantUids: next,
+            participantAuthUids,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      cursor = snap.docs[snap.docs.length - 1];
+      if (snap.size < 200) break;
+    }
+  } catch (err) {
+    failed = err;
+  } finally {
+    try {
+      await writer.close();
+    } catch (closeErr) {
+      if (!failed) failed = closeErr;
+    }
+  }
+  if (failed) throw failed;
 }
 
 /** Refresh `viewerAuthUids` only — does not mark the user online (auth map repair). */

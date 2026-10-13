@@ -39,6 +39,8 @@ import {
 import { FlatListUntilScroll, ScrollViewUntilScroll } from "./ScrollUntilScroll";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PairingQrCode } from "./app/components/PairingQrCode";
+import { collectPairingDeviceProof } from "./app/addFriend/pairingDeviceProof";
+import { readPrivateThreadMessageText, sendPrivateThreadMessage } from "./app/feed/privateThreadCrypto";
 
 import {
   PhotoEditorModal,
@@ -5132,8 +5134,8 @@ export default function App() {
     const session = getBackendSession();
     if (!session) return null;
     logAppEvent("pairing.session.create", {});
-    const proximityEvidence = await collectPairingProximityEvidence();
     try {
+      const proof = await collectPairingDeviceProof(session);
       const res = await callEmulatorFunction<{
         ok?: boolean;
         pin?: string;
@@ -5141,7 +5143,7 @@ export default function App() {
       }>("registerNfcPinPairOffer", {
         uid: session.uid,
         deviceId: session.deviceId,
-        proximityEvidence,
+        ...proof,
       });
       const token = String(res.pairingToken ?? res.pin ?? "").trim().toLowerCase();
       return token.length > 0 ? token : null;
@@ -5227,12 +5229,12 @@ export default function App() {
       }
       const session = getBackendSession();
       if (!session) return null;
-      const proximityEvidence = await collectPairingProximityEvidence();
+      const proof = await collectPairingDeviceProof(session);
       const res = await callEmulatorFunction<{ accepted?: boolean; friendUid?: string }>("confirmNfcPinPairOffer", {
         uid: session.uid,
         deviceId: session.deviceId,
         pin: pin.trim(),
-        proximityEvidence,
+        ...proof,
       });
       const friendUid = res.friendUid?.trim() ?? "";
       if (!res.accepted || !friendUid) return null;
@@ -6677,7 +6679,15 @@ export default function App() {
             postOwnerUid,
             friendUid,
           }).catch(() => ({ items: [] }));
-          const items = (res.items ?? []).slice().sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0));
+          const items = await Promise.all(
+            (res.items ?? [])
+              .slice()
+              .sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+              .map(async (item) => ({
+                ...item,
+                text: await readPrivateThreadMessageText(session.uid, item),
+              }))
+          );
           if (items.length === 0) return null;
           const toLocalId = (uid: string) =>
             uid === session.uid ? CURRENT_USER_ID : backendUidToFriendId[uid] ?? backendUidForFriendId(uid);
@@ -6733,13 +6743,14 @@ export default function App() {
     if (!post || !session) return;
     const postOwnerUid = resolvePostOwnerBackendUid(post, session.uid);
     if (!postOwnerUid || postOwnerUid === session.uid) return;
-    void callEmulatorFunction("createPrivatePostThreadMessage", {
-      uid: session.uid,
-      deviceId: session.deviceId,
+    void sendPrivateThreadMessage({
+      session,
       postId,
       postOwnerUid,
       friendUid: session.uid,
       text,
+      recipientKeyCacheRef: { current: {} },
+      persistFriendKeyCacheNow: () => undefined,
     }).then(() => hydratePrivateThreadForPost(post));
     setCommentDraftByPostId((current) => ({ ...current, [postId]: "" }));
   }, [getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid]);
@@ -6759,13 +6770,14 @@ export default function App() {
         ? friendMap[comment.authorId]?.backendUid ?? null
         : session.uid;
     if (!friendUid) return;
-    void callEmulatorFunction("createPrivatePostThreadMessage", {
-      uid: session.uid,
-      deviceId: session.deviceId,
+    void sendPrivateThreadMessage({
+      session,
       postId,
       postOwnerUid,
       friendUid,
       text,
+      recipientKeyCacheRef: { current: {} },
+      persistFriendKeyCacheNow: () => undefined,
     }).then(() => hydratePrivateThreadForPost(post));
     setThreadDraftByChainKey((current) => ({ ...current, [`${postId}:${commentId}`]: "" }));
   }, [friendMap, getBackendSession, hydratePrivateThreadForPost, posts, resolvePostOwnerBackendUid]);

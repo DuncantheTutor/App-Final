@@ -62,6 +62,23 @@ export function createFriendListActions(deps: FriendListActionDeps) {
             const session = getBackendSession();
             const friendRow = friendMap[friendId];
             const otherUid = friendRow?.backendUid?.trim();
+            if (!DEMO_OFFLINE_MODE && session && otherUid) {
+              try {
+                await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {
+                  uid: session.uid,
+                  deviceId: session.deviceId,
+                  otherUid,
+                });
+              } catch (e) {
+                logAppError("unfriend.removeFriendship", e, { friendId });
+                const detail = e instanceof Error ? e.message.trim() : String(e ?? "");
+                Alert.alert(
+                  "Couldn't unfriend",
+                  detail && detail.length < 200 ? detail : "Check your connection and try again."
+                );
+                return;
+              }
+            }
             unfriendLocally(friendId, otherUid);
             const chatIdsToLock = collectDirectChatIdsToLockForFriend(
               chatsRef.current ?? [],
@@ -82,22 +99,6 @@ export function createFriendListActions(deps: FriendListActionDeps) {
                 ...collectDirectChatIdsWithFriend(chatsRef.current ?? [], friendId, otherUid),
               ])
             );
-            if (!DEMO_OFFLINE_MODE && session && otherUid) {
-              try {
-                await callEmulatorFunction<{ ok?: boolean }>("removeFriendship", {
-                  uid: session.uid,
-                  deviceId: session.deviceId,
-                  otherUid,
-                });
-              } catch (e) {
-                logAppError("unfriend.removeFriendship", e, { friendId });
-                const detail = e instanceof Error ? e.message.trim() : String(e ?? "");
-                Alert.alert(
-                  "Couldn't unfriend",
-                  detail && detail.length < 200 ? detail : "Check your connection and try again."
-                );
-              }
-            }
             if (otherUid?.startsWith("u_")) {
               postsSharedWithFriendsRef.current.delete(otherUid);
               sharePostsBackfillStartedRef.current.delete(otherUid);

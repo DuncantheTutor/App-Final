@@ -2385,6 +2385,8 @@ export function useMainAppModel() {
     allFriends,
     friendMap,
     backendUidToFriendId,
+    recipientKeyCacheRef,
+    persistFriendKeyCacheNow,
     messages,
     chats,
     patchMessage,

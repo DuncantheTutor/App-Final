@@ -63,7 +63,13 @@ import {
 } from "./friendIndex";
 import { assertEmailOtpAvailable } from "./emailOtpAvailability";
 import { verifyKeyBundleSignature } from "./keyBundleSignature";
-import { assertPairingProximity, type PairingProximityEvidence } from "./pairingProximity";
+import {
+  assertPairingProximity,
+  PROXIMITY_MAX_LOCATION_AGE_MS,
+  type PairingProximityEvidence,
+} from "./pairingProximity";
+import { consumePairingDeviceProof, discardPairingDeviceCheck } from "./pairingDeviceCheck";
+export { beginPairingDeviceCheck } from "./pairingDeviceCheck";
 import { getEncryptedMediaReadUrl } from "./encryptedMediaRead";
 import {
   decideSendMembership,
@@ -177,6 +183,11 @@ function parseSinceMs(raw: unknown): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
+}
+
+function readLocationMocked(raw: unknown): boolean {
+  const input = (raw ?? {}) as Record<string, unknown>;
+  return input.locationMocked === true;
 }
 
 function normalizePairingProximityEvidence(raw: unknown): PairingProximityEvidence {
@@ -667,6 +678,14 @@ export const registerNfcPinPairOffer = onCall(async (req) => {
   const deviceId = String(req.data?.deviceId ?? "").trim();
   await assertActiveDeviceSession(uid, deviceId);
   const proximityEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
+  await consumePairingDeviceProof({
+    uid,
+    deviceId,
+    deviceCheckId: req.data?.deviceCheckId,
+    certificateChain: req.data?.certificateChain,
+    proximityEvidence,
+    locationMocked: readLocationMocked(req.data?.proximityEvidence),
+  });
   if (String(req.data?.pin ?? "").trim()) {
     throw new HttpsError("invalid-argument", "Pairing tokens are minted by the server.");
   }
@@ -706,6 +725,7 @@ export const registerNfcPinPairOffer = onCall(async (req) => {
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       });
+      await discardPairingDeviceCheck(req.data?.deviceCheckId);
       return { ok: true, pin: offerId, pairingToken: offerId, expiresAt };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e ?? "");
@@ -850,6 +870,14 @@ export const confirmNfcPinPairOffer = onCall(async (req) => {
   await assertActiveDeviceSession(uid, deviceId);
   const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
   const scannerEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
+  await consumePairingDeviceProof({
+    uid,
+    deviceId,
+    deviceCheckId: req.data?.deviceCheckId,
+    certificateChain: req.data?.certificateChain,
+    proximityEvidence: scannerEvidence,
+    locationMocked: readLocationMocked(req.data?.proximityEvidence),
+  });
   const ref = db.collection("nfcPinPairSessions").doc(pin);
 
   const issuerUid = await db.runTransaction(async (tx: FirebaseFirestore.Transaction) => {
@@ -894,6 +922,7 @@ export const confirmNfcPinPairOffer = onCall(async (req) => {
     );
     return issuer;
   });
+  await discardPairingDeviceCheck(req.data?.deviceCheckId);
   return { ok: true, accepted: true, pendingDualConfirm: true, pin };
 });
 
@@ -903,7 +932,6 @@ export const confirmRedeemerNfcPinPairOffer = onCall(async (req) => {
   const deviceId = String(req.data?.deviceId ?? "").trim();
   await assertActiveDeviceSession(uid, deviceId);
   const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
-  const scannerEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
   const ref = db.collection("nfcPinPairSessions").doc(pin);
 
   const issuerUid = await db.runTransaction(async (tx: FirebaseFirestore.Transaction) => {
@@ -939,7 +967,6 @@ export const confirmRedeemerNfcPinPairOffer = onCall(async (req) => {
       ref,
       {
         redeemerConfirmed: true,
-        scannerProximityEvidence: scannerEvidence,
         redeemerConfirmedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
@@ -957,6 +984,14 @@ export const finalizeNfcPinPairOffer = onCall(async (req) => {
   await assertActiveDeviceSession(uid, deviceId);
   const pin = normalizePairingOfferId(req.data?.pin ?? req.data?.pairingToken);
   const issuerEvidence = normalizePairingProximityEvidence(req.data?.proximityEvidence);
+  await consumePairingDeviceProof({
+    uid,
+    deviceId,
+    deviceCheckId: req.data?.deviceCheckId,
+    certificateChain: req.data?.certificateChain,
+    proximityEvidence: issuerEvidence,
+    locationMocked: readLocationMocked(req.data?.proximityEvidence),
+  });
   const ref = db.collection("nfcPinPairSessions").doc(pin);
 
   // Non-transactional pre-read to discover the redeemer so we can resolve
@@ -1005,7 +1040,11 @@ export const finalizeNfcPinPairOffer = onCall(async (req) => {
       throw new HttpsError("failed-precondition", "Offer already used.");
     }
     const scannerEvidence = normalizePairingProximityEvidence(d.scannerProximityEvidence);
-    assertPairingProximity(issuerEvidence, scannerEvidence, nowMs());
+    const finalizeLocationAgeMs = PROXIMITY_MAX_LOCATION_AGE_MS + NFC_PIN_PAIR_AWAIT_DUAL_CONFIRM_MS;
+    assertPairingProximity(issuerEvidence, scannerEvidence, nowMs(), {
+      aMs: finalizeLocationAgeMs,
+      bMs: finalizeLocationAgeMs,
+    });
     // If the redeemer changed between pre-read and tx (shouldn't happen
     // because the field is write-once on the offer, but defensive), the
     // mirror would be stale — fall back to a fresh resolve. `db.getAll`
@@ -2022,29 +2061,47 @@ async function revokeOwnedPostRecipients(
   removeAuthUid: string | null
 ): Promise<void> {
   const writer = db.bulkWriter();
-  let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
-  for (;;) {
-    let query: FirebaseFirestore.Query = db
-      .collection("encryptedPosts")
-      .where("ownerUid", "==", ownerUid)
-      .orderBy(admin.firestore.FieldPath.documentId())
-      .limit(200);
-    if (cursor) query = query.startAfter(cursor);
-    const snap = await query.get();
-    if (snap.empty) break;
-    for (const doc of snap.docs) {
-      const patch: Record<string, unknown> = {
-        recipientUids: admin.firestore.FieldValue.arrayRemove(removeUid),
-      };
-      if (removeAuthUid) {
-        patch.recipientAuthUids = admin.firestore.FieldValue.arrayRemove(removeAuthUid);
+  let failed: unknown;
+  try {
+    let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+    for (;;) {
+      let query: FirebaseFirestore.Query = db
+        .collection("encryptedPosts")
+        .where("ownerUid", "==", ownerUid)
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(200);
+      if (cursor) query = query.startAfter(cursor);
+      const snap = await query.get();
+      if (snap.empty) break;
+      for (const doc of snap.docs) {
+        const patch: Record<string, unknown> = {
+          recipientUids: admin.firestore.FieldValue.arrayRemove(removeUid),
+        };
+        if (removeAuthUid) {
+          patch.recipientAuthUids = admin.firestore.FieldValue.arrayRemove(removeAuthUid);
+        }
+        writer.set(doc.ref, patch, { merge: true });
+        const reactionRef = db.collection("encryptedPostReactions").doc(doc.id);
+        const reactionSnap = await reactionRef.get();
+        if (!reactionSnap.exists) continue;
+        writer.update(reactionRef, {
+          [`reactions.${removeUid}`]: admin.firestore.FieldValue.delete(),
+          ...patch,
+        });
       }
-      writer.set(doc.ref, patch, { merge: true });
+      cursor = snap.docs[snap.docs.length - 1];
+      if (snap.size < 200) break;
     }
-    cursor = snap.docs[snap.docs.length - 1];
-    if (snap.size < 200) break;
+  } catch (err) {
+    failed = err;
+  } finally {
+    try {
+      await writer.close();
+    } catch (closeErr) {
+      if (!failed) failed = closeErr;
+    }
   }
-  await writer.close();
+  if (failed) throw failed;
 }
 
 /**
@@ -2070,6 +2127,32 @@ async function deletePairDirectMessages(uid: string, otherUid: string): Promise<
       await batch.commit();
     }
     await conv.ref.delete();
+  }
+}
+
+async function deleteDocsInPages(
+  query: FirebaseFirestore.Query
+): Promise<void> {
+  for (;;) {
+    const snap = await query.limit(200).get();
+    if (snap.empty) return;
+    const batch = db.batch();
+    for (const doc of snap.docs) batch.delete(doc.ref);
+    await batch.commit();
+    if (snap.size < 200) return;
+  }
+}
+
+/** Deletes private comment threads between these two accounts, including the plaintext history. */
+async function deletePrivateThreadsBetween(uid: string, otherUid: string): Promise<void> {
+  const snap = await db.collection("privatePostThreads").where("participants", "array-contains", uid).get();
+  for (const doc of snap.docs) {
+    const participants = Array.isArray(doc.data()?.participants)
+      ? (doc.data()?.participants as unknown[]).map((id) => String(id))
+      : [];
+    if (!participants.includes(otherUid)) continue;
+    await deleteDocsInPages(doc.ref.collection("messages"));
+    await doc.ref.delete();
   }
 }
 
@@ -2128,44 +2211,44 @@ async function rescindPairingOffersBetween(uid: string, otherUid: string): Promi
  * their own). The shared 1:1 is deleted, and each friends-key wrap loses the
  * other person. New sends stay blocked by `assertAcceptedFriendship`.
  */
+async function updateMirrorIfPresent(
+  ref: FirebaseFirestore.DocumentReference,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  await ref.update(patch);
+}
+
 async function revokeFriendDataMirrors(uid: string, otherUid: string): Promise<void> {
   const [authUid, otherAuthUid] = await Promise.all([
     resolveFirebaseAuthUidForAppUid(uid),
     resolveFirebaseAuthUidForAppUid(otherUid),
   ]);
   const arrayRemove = admin.firestore.FieldValue.arrayRemove;
-  const ops: Promise<unknown>[] = [];
 
-  // Strip each viewer from the other's profile + presence mirrors. `update`
-  // (not `set`) so a missing doc is a no-op rather than being created empty.
   if (otherAuthUid) {
-    ops.push(
-      db.collection("encryptedProfiles").doc(uid)
-        .update({ recipientAuthUids: arrayRemove(otherAuthUid) }).catch(() => {})
-    );
-    ops.push(
-      db.collection("presence").doc(uid)
-        .update({ viewerAuthUids: arrayRemove(otherAuthUid) }).catch(() => {})
-    );
+    await updateMirrorIfPresent(db.collection("encryptedProfiles").doc(uid), {
+      recipientAuthUids: arrayRemove(otherAuthUid),
+    });
+    await updateMirrorIfPresent(db.collection("presence").doc(uid), {
+      viewerAuthUids: arrayRemove(otherAuthUid),
+    });
   }
   if (authUid) {
-    ops.push(
-      db.collection("encryptedProfiles").doc(otherUid)
-        .update({ recipientAuthUids: arrayRemove(authUid) }).catch(() => {})
-    );
-    ops.push(
-      db.collection("presence").doc(otherUid)
-        .update({ viewerAuthUids: arrayRemove(authUid) }).catch(() => {})
-    );
+    await updateMirrorIfPresent(db.collection("encryptedProfiles").doc(otherUid), {
+      recipientAuthUids: arrayRemove(authUid),
+    });
+    await updateMirrorIfPresent(db.collection("presence").doc(otherUid), {
+      viewerAuthUids: arrayRemove(authUid),
+    });
   }
-  ops.push(revokeOwnedPostRecipients(uid, otherUid, otherAuthUid).catch(() => {}));
-  ops.push(revokeOwnedPostRecipients(otherUid, uid, authUid).catch(() => {}));
-
-  ops.push(deletePairDirectMessages(uid, otherUid).catch(() => {}));
-  ops.push(stripFriendContentKeyRecipient(uid, otherUid, otherAuthUid).catch(() => {}));
-  ops.push(stripFriendContentKeyRecipient(otherUid, uid, authUid).catch(() => {}));
-
-  await Promise.all(ops);
+  await revokeOwnedPostRecipients(uid, otherUid, otherAuthUid);
+  await revokeOwnedPostRecipients(otherUid, uid, authUid);
+  await deletePairDirectMessages(uid, otherUid);
+  await deletePrivateThreadsBetween(uid, otherUid);
+  await stripFriendContentKeyRecipient(uid, otherUid, otherAuthUid);
+  await stripFriendContentKeyRecipient(otherUid, uid, authUid);
 }
 
 /**
@@ -2191,20 +2274,11 @@ export const removeFriendship = onCall(async (req) => {
   if (data?.status !== "accepted") {
     return { ok: true };
   }
-  await rescindPairingOffersBetween(uid, otherUid).catch((err) => {
-    console.error("removeFriendship.rescindOffers_failed", err);
-  });
-  await edgeRef.delete();
-  await unlinkAcceptedFriends(uid, otherUid).catch((err) => {
-    console.error("friendIndex.unlink_failed", err);
-  });
+  await rescindPairingOffersBetween(uid, otherUid);
+  await revokeFriendDataMirrors(uid, otherUid);
   await kickPairFromSharedGroups(uid, otherUid);
-  // Best-effort: revoke read-mirror access. Never fail the unfriend on this.
-  try {
-    await revokeFriendDataMirrors(uid, otherUid);
-  } catch (err) {
-    console.error("removeFriendship.revokeMirrors_failed", err);
-  }
+  await unlinkAcceptedFriends(uid, otherUid);
+  await edgeRef.delete();
   return { ok: true };
 });
 
@@ -2345,15 +2419,27 @@ export const createPrivatePostThreadMessage = onCall(async (req) => {
   const postId = String(req.data?.postId ?? "").trim();
   const postOwnerUid = String(req.data?.postOwnerUid ?? "").trim();
   const friendUid = String(req.data?.friendUid ?? "").trim();
-  const text = String(req.data?.text ?? "").trim();
-  if (!postId || !postOwnerUid || !friendUid || !text) {
-    throw new HttpsError("invalid-argument", "postId, postOwnerUid, friendUid, text are required.");
+  const ciphertext = String(req.data?.ciphertext ?? "");
+  const nonce = String(req.data?.nonce ?? "");
+  const envelopes = (req.data?.envelopes ?? {}) as Record<string, unknown>;
+  if (!postId || !postOwnerUid || !friendUid) {
+    throw new HttpsError("invalid-argument", "postId, postOwnerUid, friendUid are required.");
   }
   if (uid !== postOwnerUid && uid !== friendUid) {
     throw new HttpsError("permission-denied", "Caller must be post owner or thread friend.");
   }
   if (postOwnerUid === friendUid) {
     throw new HttpsError("invalid-argument", "owner and friend must differ.");
+  }
+  assertReasonableCiphertext(ciphertext);
+  if (!nonce || nonce.length > 200) throw new HttpsError("invalid-argument", "nonce is required.");
+  const ownerEnvelope = envelopes[postOwnerUid];
+  const friendEnvelope = envelopes[friendUid];
+  if (typeof ownerEnvelope !== "string" || typeof friendEnvelope !== "string" || !ownerEnvelope || !friendEnvelope) {
+    throw new HttpsError("invalid-argument", "Comment must be sealed for both people.");
+  }
+  if (ciphertext.length > 20000 || ownerEnvelope.length > 8000 || friendEnvelope.length > 8000) {
+    throw new HttpsError("invalid-argument", "Encrypted comment is too large.");
   }
   await assertAcceptedFriendship(postOwnerUid, friendUid);
   /**
@@ -2373,7 +2459,12 @@ export const createPrivatePostThreadMessage = onCall(async (req) => {
     friendUid,
     authorUid: uid,
     participantAuthUids,
-    text,
+    ciphertext,
+    nonce,
+    envelopes: {
+      [postOwnerUid]: ownerEnvelope,
+      [friendUid]: friendEnvelope,
+    },
     reactions: {},
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
@@ -2470,14 +2561,22 @@ export const listPrivatePostThreadMessages = onCall(async (req) => {
     const data = doc.data() as {
       messageId?: string;
       authorUid: string;
-      text: string;
+      text?: string;
+      ciphertext?: string;
+      nonce?: string;
+      envelopes?: Record<string, unknown>;
       reactions?: Record<string, string>;
       createdAt?: unknown;
     };
+    const envelope = data.envelopes?.[uid];
+    const hasCipher = Boolean(data.ciphertext && data.nonce && typeof envelope === "string" && envelope);
     return {
       messageId: data.messageId ?? doc.id,
       authorUid: data.authorUid,
-      text: data.text,
+      ciphertext: hasCipher ? data.ciphertext : "",
+      nonce: hasCipher ? data.nonce : "",
+      envelope: hasCipher ? envelope : "",
+      text: hasCipher ? "" : typeof data.text === "string" ? data.text : "",
       reactions: data.reactions ?? {},
       createdAtMs: timestampToMs(data.createdAt),
     };

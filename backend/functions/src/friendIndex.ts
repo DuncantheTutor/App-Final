@@ -112,17 +112,16 @@ async function removeFromIndex(owner: string, friend: string): Promise<void> {
   const ref = indexRef(owner);
   const snap = await ref.get();
   const data = snap.data() as IndexData | undefined;
-  if (snap.exists && data?.ready === true) {
-    await ref.set(
-      {
-        uids: admin.firestore.FieldValue.arrayRemove(friend),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-    return;
+  if (!(snap.exists && data?.ready === true)) {
+    await rebuildFriendIndex(owner);
   }
-  await rebuildFriendIndex(owner);
+  await ref.set(
+    {
+      uids: admin.firestore.FieldValue.arrayRemove(friend),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 /** Record a new accepted pair on both indexes. Safe to call after the edge commit. */
@@ -131,7 +130,7 @@ export async function linkAcceptedFriends(a: string, b: string): Promise<void> {
   await Promise.all([addToIndex(a, b), addToIndex(b, a)]);
 }
 
-/** Drop a pair from both indexes after the edge is deleted. */
+/** Drop a pair from both indexes. A rebuild still removes this friend if the edge is not gone yet. */
 export async function unlinkAcceptedFriends(a: string, b: string): Promise<void> {
   if (!a.startsWith("u_") || !b.startsWith("u_") || a === b) return;
   await Promise.all([removeFromIndex(a, b), removeFromIndex(b, a)]);

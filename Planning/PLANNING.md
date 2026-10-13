@@ -205,10 +205,10 @@ These scenarios are motivation only, not product specs.
 - Non-friends cannot communicate.
 - Non-friends cannot read profile identity fields (`username`, `email`, `profilePictureUrl`, `bio`) or any profile details.
 - Enforce access primarily in Firestore rules and server-side validation. Client reads of posts, profiles, messages, and presence require the caller's Firebase Auth uid in the server-written mirror array. `users` documents are not client-writable.
-- Production friendships are created only by the QR offer (proximity + dual confirm). Legacy voucher, BLE, HS2, and one-shot handshake callables are refused outside the emulator.
+- Production friendships are created only by the QR offer (proximity + dual confirm). Register, scan confirm, and final confirm each require a one-time hardware attestation of the genuine app on a locked phone with verified boot. Certificate time may be two minutes off the server clock. The GPS sample is taken after the attestation. The allowed signing-certificate SHA-256 is `PAIRING_ATTESTATION_CERT_SHA256`. Mock locations are refused. The emulator skips this check. Legacy voucher, BLE, HS2, and one-shot handshake callables are refused outside the emulator.
 - Friend encryption keys must be signed. Unsigned bundles are refused by `publishUserKeyBundle` and by the client pin check. Profile and posts share one friends key. Adding a friend adds a wrap of that key. Removing a friend replaces the key and re-seals the profile and posts. Direct messages stay locked per conversation.
 - Chat membership is stored on the conversation. `upsertConversation` creates a conversation or leaves the stored member list unchanged. `sendEncryptedMessage` sends to that stored list. A different client list is refused. Add, leave, and kick go through `manageConversationMembership`.
-- E2E for message content.
+- E2E for message content. Private post comments use the same sealed payload. The server stores ciphertext and envelopes, not the comment text.
 - Email OTP callables are refused in production until a mail sender exists. The client flag stays off.
 - Pairing replay resistance via short-lived, one-time **PIN reservation / session** tokens (NFC PIN path; legacy BLE/voucher same idea).
 - Screenshot/recording prevention is best-effort only.

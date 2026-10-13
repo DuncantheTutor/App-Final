@@ -78,6 +78,9 @@ On **mint** and **redeem**, client sends:
 - `lat`, `lng`
 - `horizontalAccuracyM`
 - `locationTimestampMs`
+- `locationMocked` when Android marks the fix as mock (production refuses it)
+
+Production `registerNfcPinPairOffer`, `confirmNfcPinPairOffer`, and `finalizeNfcPinPairOffer` also require `deviceCheckId` and `certificateChain` from `beginPairingDeviceCheck`. The certificate chain must be an Android hardware key attestation: trusted environment or StrongBox, locked device, verified boot, package `com.duncanharper42.appv2build2` (or the `.demo` suffix), and a signing-certificate SHA-256 listed in `PAIRING_ATTESTATION_CERT_SHA256`. The emulator does not require this. The certificate may be dated two minutes ahead of or behind the server. The GPS sample is taken after the attestation, and the final confirm allows the 45-second dual-confirm window on top of the 60-second fix age. The current debug keystore is public, so pinning that certificate does not stop a rebuilt app. A private release key is what makes the check hold. Unlocked bootloaders cannot add a friend.
 
 ### A) GPS-first path (primary)
 

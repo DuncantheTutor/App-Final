@@ -1,7 +1,7 @@
 import { callEmulatorFunction } from "../../backendBridge";
 import { logAppError, logAppEvent } from "../../telemetry";
-import type { PairingProximityEvidence } from "../domain/types";
 import type { BackendSession } from "../messaging/types";
+import { collectPairingDeviceProof } from "./pairingDeviceProof";
 
 function parseRegisterResponse(res: { pairingToken?: string; pin?: string }): string | null {
   const token = String(res.pairingToken ?? res.pin ?? "")
@@ -12,13 +12,11 @@ function parseRegisterResponse(res: { pairingToken?: string; pin?: string }): st
 }
 
 /** Server-minted QR/NFC offer token (opaque hex). */
-export async function registerPairOfferToken(
-  session: BackendSession,
-  proximityEvidence: PairingProximityEvidence
-): Promise<string | null> {
+export async function registerPairOfferToken(session: BackendSession): Promise<string | null> {
   logAppEvent("pairing.session.create", {});
 
   try {
+    const proof = await collectPairingDeviceProof(session);
     const res = await callEmulatorFunction<{
       ok?: boolean;
       pin?: string;
@@ -26,7 +24,7 @@ export async function registerPairOfferToken(
     }>("registerNfcPinPairOffer", {
       uid: session.uid,
       deviceId: session.deviceId,
-      proximityEvidence,
+      ...proof,
     });
     return parseRegisterResponse(res);
   } catch (e: unknown) {
